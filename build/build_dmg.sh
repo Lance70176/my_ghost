@@ -12,6 +12,9 @@ echo "==> Building MyGhost (ReleaseFast)..."
 cd "$PROJECT_DIR"
 zig build -Doptimize=ReleaseFast 2>&1 | tail -5
 
+echo "==> Replacing app icon with MyGhost icon..."
+cp "$PROJECT_DIR/macos/MyGhost.icns" "zig-out/$APP_NAME/Contents/Resources/Ghostty.icns"
+
 echo "==> Cleaning extended attributes..."
 xattr -cr "zig-out/$APP_NAME"
 
