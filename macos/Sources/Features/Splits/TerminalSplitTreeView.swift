@@ -1,5 +1,25 @@
 import SwiftUI
 
+// MARK: - Environment key for split pane title bars
+
+private struct SplitPaneTitleBarKey: EnvironmentKey {
+    static let defaultValue: Bool = false
+}
+
+extension EnvironmentValues {
+    var splitPaneTitleBarVisible: Bool {
+        get { self[SplitPaneTitleBarKey.self] }
+        set { self[SplitPaneTitleBarKey.self] = newValue }
+    }
+}
+
+extension View {
+    func splitPaneTitleBar(_ visible: Bool) -> some View {
+        environment(\.splitPaneTitleBarVisible, visible)
+    }
+}
+
+
 /// A single operation within the split tree.
 ///
 /// Rather than binding the split tree (which is immutable), any mutable operations are
@@ -91,38 +111,45 @@ private struct TerminalSplitLeaf: View {
     let isSplit: Bool
     let action: (TerminalSplitOperation) -> Void
 
+    @Environment(\.splitPaneTitleBarVisible) private var showTitleBar
     @State private var dropState: DropState = .idle
     @State private var isSelfDragging: Bool = false
 
     var body: some View {
         GeometryReader { geometry in
-            Ghostty.InspectableSurface(
-                surfaceView: surfaceView,
-                isSplit: isSplit)
-            .background {
-                // If we're dragging ourself, we hide the entire drop zone. This makes
-                // it so that a released drop animates back to its source properly
-                // so it is a proper invalid drop zone.
-                if !isSelfDragging {
-                    Color.clear
-                        .onDrop(of: [.ghosttySurfaceId], delegate: SplitDropDelegate(
-                            dropState: $dropState,
-                            viewSize: geometry.size,
-                            destinationSurface: surfaceView,
-                            action: action
-                        ))
+            VStack(spacing: 0) {
+                if showTitleBar {
+                    SplitPaneTitleBar(surfaceView: surfaceView, action: action)
                 }
-            }
-            .overlay {
-                if !isSelfDragging, case .dropping(let zone) = dropState {
-                    zone.overlay(in: geometry)
-                        .allowsHitTesting(false)
+
+                Ghostty.InspectableSurface(
+                    surfaceView: surfaceView,
+                    isSplit: isSplit)
+                .background {
+                    // If we're dragging ourself, we hide the entire drop zone. This makes
+                    // it so that a released drop animates back to its source properly
+                    // so it is a proper invalid drop zone.
+                    if !isSelfDragging {
+                        Color.clear
+                            .onDrop(of: [.ghosttySurfaceId], delegate: SplitDropDelegate(
+                                dropState: $dropState,
+                                viewSize: geometry.size,
+                                destinationSurface: surfaceView,
+                                action: action
+                            ))
+                    }
                 }
-            }
-            .onPreferenceChange(Ghostty.DraggingSurfaceKey.self) { value in
-                isSelfDragging = value == surfaceView.id
-                if isSelfDragging {
-                    dropState = .idle
+                .overlay {
+                    if !isSelfDragging, case .dropping(let zone) = dropState {
+                        zone.overlay(in: geometry)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .onPreferenceChange(Ghostty.DraggingSurfaceKey.self) { value in
+                    isSelfDragging = value == surfaceView.id
+                    if isSelfDragging {
+                        dropState = .idle
+                    }
                 }
             }
             .accessibilityElement(children: .contain)
@@ -252,6 +279,64 @@ enum TerminalSplitDropZone: String, Equatable {
                     .fill(overlayColor)
                     .frame(width: geometry.size.width / 2)
             }
+        }
+    }
+}
+
+// MARK: - Split Pane Title Bar
+
+/// A small title bar shown above each split pane when in sidebar mode.
+/// Shows the terminal title, an X close button, and supports drag-to-swap between panes.
+struct SplitPaneTitleBar: View {
+    @ObservedObject var surfaceView: Ghostty.SurfaceView
+    let action: (TerminalSplitOperation) -> Void
+
+    @State private var isHovering = false
+    @State private var isDropTarget = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 10))
+                .foregroundColor(.secondary.opacity(isHovering ? 1 : 0.5))
+
+            Text(surfaceView.title)
+                .font(.callout)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .foregroundColor(.secondary)
+
+            Spacer()
+
+            Button {
+                NotificationCenter.default.post(
+                    name: Ghostty.Notification.ghosttyCloseSurface,
+                    object: surfaceView
+                )
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.secondary.opacity(isHovering ? 1 : 0.3))
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            (isDropTarget
+                ? Color.accentColor.opacity(0.3)
+                : Color(nsColor: .windowBackgroundColor).opacity(0.6))
+        )
+        .contentShape(Rectangle())
+        .onHover { isHovering = $0 }
+        .draggable(surfaceView)
+        .dropDestination(for: Ghostty.SurfaceView.self) { items, _ in
+            guard let source = items.first, source !== surfaceView else { return false }
+            // Swap: drop source onto this title bar → move source to this pane's position
+            action(.drop(.init(payload: source, destination: surfaceView, zone: .left)))
+            return true
+        } isTargeted: { targeted in
+            isDropTarget = targeted
         }
     }
 }

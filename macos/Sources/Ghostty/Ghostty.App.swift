@@ -1128,7 +1128,14 @@ extension Ghostty {
 
                     // Similar to goto_split (see comment there) about our performability,
                     // we should make this more accurate later.
-                    guard (surfaceView.window?.tabGroup?.windows.count ?? 0) > 1 else { return false }
+                    // For SidebarTerminalController, check tabs count instead of tabGroup.
+                    let hasTabs: Bool
+                    if let sidebarController = surfaceView.window?.windowController as? SidebarTerminalController {
+                        hasTabs = sidebarController.tabs.count > 1
+                    } else {
+                        hasTabs = (surfaceView.window?.tabGroup?.windows.count ?? 0) > 1
+                    }
+                    guard hasTabs else { return false }
 
                     NotificationCenter.default.post(
                         name: Notification.ghosttyGotoTab,

@@ -49,7 +49,7 @@ pub fn init(
     };
 
     const env = try std.process.getEnvMap(b.allocator);
-    const app_path = b.fmt("macos/build/{s}/Ghostty.app", .{xc_config});
+    const app_path = b.fmt("macos/build/{s}/my_ghost.app", .{xc_config});
 
     // Our step to build the Ghostty macOS app.
     const build = build: {
@@ -66,7 +66,7 @@ pub fn init(
         step.addArgs(&.{
             "xcodebuild",
             "-target",
-            "Ghostty",
+            "my_ghost",
             "-configuration",
             xc_config,
         });
@@ -103,7 +103,7 @@ pub fn init(
             "xcodebuild",
             "test",
             "-scheme",
-            "Ghostty",
+            "my_ghost",
         });
         if (xc_arch) |arch| step.addArgs(&.{ "-arch", arch });
 
@@ -141,7 +141,7 @@ pub fn init(
         open.has_side_effects = true;
         open.cwd = b.path("");
         open.addArgs(&.{b.fmt(
-            "{s}/Contents/MacOS/ghostty",
+            "{s}/Contents/MacOS/my_ghost",
             .{app_path},
         )});
 

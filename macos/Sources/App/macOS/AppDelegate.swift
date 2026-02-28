@@ -88,6 +88,11 @@ class AppDelegate: NSObject,
     /// This is only true before application has become active.
     private var applicationHasBecomeActive: Bool = false
 
+    /// Whether any SidebarTerminalController windows currently exist.
+    private var hasAnySidebarWindows: Bool {
+        NSApp.windows.contains { $0.windowController is SidebarTerminalController }
+    }
+
     /// This is set in applicationDidFinishLaunching with the system uptime so we can determine the
     /// seconds since the process was launched.
     private var applicationLaunchTime: TimeInterval = 0
@@ -155,6 +160,10 @@ class AppDelegate: NSObject,
     @Published private(set) var appIcon: NSImage?
 
     override init() {
+        // Remove CLAUDECODE env var so terminals spawned by this app
+        // don't think they're inside a Claude Code session.
+        unsetenv("CLAUDECODE")
+
 #if DEBUG
         ghostty = Ghostty.App(configPath: ProcessInfo.processInfo.environment["GHOSTTY_CONFIG_PATH"])
 #else
@@ -341,9 +350,9 @@ class AppDelegate: NSObject,
             // is possible to have other windows in a few scenarios:
             //   - if we're opening a URL since `application(_:openFile:)` is called before this.
             //   - if we're restoring from persisted state
-            if TerminalController.all.isEmpty && derivedConfig.initialWindow {
+            if TerminalController.all.isEmpty && !hasAnySidebarWindows && derivedConfig.initialWindow {
                 undoManager.disableUndoRegistration()
-                _ = TerminalController.newWindow(ghostty)
+                _ = SidebarTerminalController.newWindow(ghostty)
                 undoManager.enableUndoRegistration()
             }
         }
@@ -429,7 +438,7 @@ class AppDelegate: NSObject,
         // This is possible with flag set to false if there a race where the
         // window is still initializing and is not visible but the user clicked
         // the dock icon.
-        guard TerminalController.all.isEmpty else { return true }
+        guard TerminalController.all.isEmpty && !hasAnySidebarWindows else { return true }
 
         // If the application isn't active yet then we don't want to process
         // this because we're not ready. This happens sometimes in Xcode runs
@@ -437,7 +446,7 @@ class AppDelegate: NSObject,
         guard applicationHasBecomeActive else { return true }
 
         // No visible windows, open a new one.
-        _ = TerminalController.newWindow(ghostty)
+        _ = SidebarTerminalController.newWindow(ghostty)
         return false
     }
 
@@ -505,12 +514,18 @@ class AppDelegate: NSObject,
 
         switch ghostty.config.macosDockDropBehavior {
         case .new_tab:
-            _ = TerminalController.newTab(
-                ghostty,
-                from: TerminalController.preferredParent?.window,
-                withBaseConfig: config
-            )
-        case .new_window: _ = TerminalController.newWindow(ghostty, withBaseConfig: config)
+            // If we have a sidebar window, add a tab there.
+            if let sidebarController = NSApp.keyWindow?.windowController as? SidebarTerminalController ??
+                NSApp.windows.lazy.compactMap({ $0.windowController as? SidebarTerminalController }).first {
+                sidebarController.addNewTab(baseConfig: config)
+            } else {
+                _ = TerminalController.newTab(
+                    ghostty,
+                    from: TerminalController.preferredParent?.window,
+                    withBaseConfig: config
+                )
+            }
+        case .new_window: _ = SidebarTerminalController.newWindow(ghostty, withBaseConfig: config)
         }
 
         return true
@@ -830,20 +845,24 @@ class AppDelegate: NSObject,
     @objc private func ghosttyNewWindow(_ notification: Notification) {
         let configAny = notification.userInfo?[Ghostty.Notification.NewSurfaceConfigKey]
         let config = configAny as? Ghostty.SurfaceConfiguration
-        _ = TerminalController.newWindow(ghostty, withBaseConfig: config)
+        _ = SidebarTerminalController.newWindow(ghostty, withBaseConfig: config)
     }
 
     @objc private func ghosttyNewTab(_ notification: Notification) {
         guard let surfaceView = notification.object as? Ghostty.SurfaceView else { return }
         guard let window = surfaceView.window else { return }
 
-        // We only want to listen to new tabs if the focused parent is
-        // a regular terminal controller.
-        guard window.windowController is TerminalController else { return }
-
         let configAny = notification.userInfo?[Ghostty.Notification.NewSurfaceConfigKey]
         let config = configAny as? Ghostty.SurfaceConfiguration
 
+        // If the window is managed by a SidebarTerminalController, add a tab there.
+        if let sidebarController = window.windowController as? SidebarTerminalController {
+            sidebarController.addNewTab(baseConfig: config)
+            return
+        }
+
+        // Otherwise fall back to native tab behavior.
+        guard window.windowController is TerminalController else { return }
         _ = TerminalController.newTab(ghostty, from: window, withBaseConfig: config)
     }
 
@@ -1075,10 +1094,15 @@ class AppDelegate: NSObject,
     }
 
     @IBAction func newWindow(_ sender: Any?) {
-        _ = TerminalController.newWindow(ghostty)
+        _ = SidebarTerminalController.newWindow(ghostty)
     }
 
     @IBAction func newTab(_ sender: Any?) {
+        // If the key window is a SidebarTerminalController, add a tab there.
+        if let sidebarController = NSApp.keyWindow?.windowController as? SidebarTerminalController {
+            sidebarController.addNewTab()
+            return
+        }
         _ = TerminalController.newTab(
             ghostty,
             from: TerminalController.preferredParent?.window

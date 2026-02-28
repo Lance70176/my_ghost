@@ -747,6 +747,10 @@ const Subprocess = struct {
         // This is not apprt-specific, so we do it here.
         env.remove("VTE_VERSION");
 
+        // CLAUDECODE is set by Claude Code CLI. Remove it so terminals spawned
+        // by this app don't think they're inside a Claude Code session.
+        env.remove("CLAUDECODE");
+
         // Setup our shell integration, if we can.
         const shell_command: configpkg.Command = shell: {
             const default_shell_command: configpkg.Command =
