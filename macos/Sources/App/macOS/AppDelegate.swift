@@ -408,7 +408,7 @@ class AppDelegate: NSObject,
         let alert = NSAlert()
         alert.messageText = "Quit Ghostty?"
         alert.informativeText = "All terminal sessions will be terminated."
-        alert.addButton(withTitle: "Close Ghostty")
+        alert.addButton(withTitle: "Close MyGhost")
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning
         switch alert.runModal() {
