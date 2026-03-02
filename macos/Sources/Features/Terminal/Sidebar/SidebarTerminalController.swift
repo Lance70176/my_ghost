@@ -26,10 +26,24 @@ class SidebarTerminalController: BaseTerminalController {
     init(_ ghostty: Ghostty.App, withBaseConfig base: Ghostty.SurfaceConfiguration? = nil) {
         self.derivedConfig = DerivedConfig(ghostty.config)
 
-        super.init(ghostty, baseConfig: base)
+        // If screen is available and no custom command, wrap in screen
+        let mgr = ScreenSessionManager.shared
+        var config = base
+        var initialScreenName: String? = nil
+        if mgr.isAvailable && (base == nil || base?.command == nil) {
+            var c = base ?? Ghostty.SurfaceConfiguration()
+            let tabID = UUID()
+            let name = mgr.sessionName(for: tabID)
+            c.command = mgr.createCommand(sessionName: name, workingDirectory: c.workingDirectory)
+            config = c
+            initialScreenName = name
+        }
+
+        super.init(ghostty, baseConfig: config)
 
         // Wrap the initial surface tree (created by super) into the first tab entry.
         let firstTab = SidebarTabEntry(surfaceTree: surfaceTree, focusedSurface: focusedSurface)
+        firstTab.screenSessionName = initialScreenName
         tabs.append(firstTab)
         selectedTabID = firstTab.id
 
@@ -135,15 +149,62 @@ class SidebarTerminalController: BaseTerminalController {
     }
 
     /// Add a new tab with a fresh terminal surface.
+    /// If screen is available and no custom command is set, wraps the shell in a screen session.
     func addNewTab(baseConfig: Ghostty.SurfaceConfiguration? = nil) {
         guard let ghostty_app = ghostty.app else { return }
 
-        let newSurface = Ghostty.SurfaceView(ghostty_app, baseConfig: baseConfig)
+        var config = baseConfig ?? Ghostty.SurfaceConfiguration()
+
+        // Inherit working directory from the current tab if not explicitly set
+        if config.workingDirectory == nil {
+            if let pwd = focusedSurface?.pwd {
+                config.workingDirectory = pwd
+            } else if let tab = currentTab, let screenName = tab.screenSessionName {
+                // Screen eats OSC 7 so pwd may be nil. Query the shell process directly.
+                config.workingDirectory = ScreenSessionManager.shared.getSessionWorkingDirectory(sessionName: screenName)
+            }
+        }
+
+        let mgr = ScreenSessionManager.shared
+        var screenName: String? = nil
+
+        // Wrap in screen if available and no custom command specified
+        if mgr.isAvailable && config.command == nil {
+            let tabID = UUID()
+            let name = mgr.sessionName(for: tabID)
+            config.command = mgr.createCommand(sessionName: name, workingDirectory: config.workingDirectory)
+            screenName = name
+        }
+
+        let newSurface = Ghostty.SurfaceView(ghostty_app, baseConfig: config)
         let newTree = SplitTree<Ghostty.SurfaceView>(view: newSurface)
         let newTab = SidebarTabEntry(surfaceTree: newTree, focusedSurface: newSurface)
+        newTab.screenSessionName = screenName
 
         tabs.append(newTab)
         // Don't set selectedTabID here — selectTab() handles it.
+        selectTab(newTab)
+        saveScreenSessionState()
+    }
+
+    /// Add a restored tab that reattaches to an existing screen session.
+    func addRestoredTab(screenName: String, title: String, workingDirectory: String?) {
+        guard let ghostty_app = ghostty.app else { return }
+
+        let mgr = ScreenSessionManager.shared
+        var config = Ghostty.SurfaceConfiguration()
+        config.command = mgr.reattachCommand(sessionName: screenName)
+        if let wd = workingDirectory {
+            config.workingDirectory = wd
+        }
+
+        let newSurface = Ghostty.SurfaceView(ghostty_app, baseConfig: config)
+        let newTree = SplitTree<Ghostty.SurfaceView>(view: newSurface)
+        let newTab = SidebarTabEntry(surfaceTree: newTree, focusedSurface: newSurface)
+        newTab.screenSessionName = screenName
+        newTab.defaultTitle = title
+
+        tabs.append(newTab)
         selectTab(newTab)
     }
 
@@ -167,11 +228,23 @@ class SidebarTerminalController: BaseTerminalController {
     }
 
     private func closeTabImmediately(_ tab: SidebarTabEntry, at index: Int) {
+        // Kill screen sessions for this tab and its children
+        let mgr = ScreenSessionManager.shared
+        if let name = tab.screenSessionName {
+            mgr.killSession(name: name)
+        }
+        for child in tab.children {
+            if let name = child.screenSessionName {
+                mgr.killSession(name: name)
+            }
+        }
+
         let wasSelected = (tab.id == selectedTabID)
         tabs.remove(at: index)
 
         if tabs.isEmpty {
             // No more tabs — close the window.
+            saveScreenSessionState()
             window?.close()
             return
         }
@@ -182,6 +255,8 @@ class SidebarTerminalController: BaseTerminalController {
             let newTab = tabs[newIndex]
             selectTab(newTab)
         }
+
+        saveScreenSessionState()
     }
 
     /// Join `source` tab into `target` tab with smart layout:
@@ -189,19 +264,42 @@ class SidebarTerminalController: BaseTerminalController {
     /// - 2→3 panes: top row (2) + bottom row (1)
     /// - 3→4 panes: 2x2 grid
     /// - 4+ panes: not allowed
+    ///
+    /// If target is already a group, source is added to it.
+    /// If target is a standalone tab, a new group ("New Tab Area") is created
+    /// containing both target and source as split pane children.
     func joinTab(_ source: SidebarTabEntry, into target: SidebarTabEntry) {
         guard source.id != target.id else { return }
         guard let sourceIndex = tabs.firstIndex(where: { $0.id == source.id }) else { return }
+        guard let targetIndex = tabs.firstIndex(where: { $0.id == target.id }) else { return }
 
         // Get the surface from the source tab's tree
         guard let sourceRoot = source.surfaceTree.root else { return }
         let sourceSurface = sourceRoot.leftmostLeaf()
 
+        // Determine the actual group to insert into
+        let group: SidebarTabEntry
+        let isNewGroup: Bool
+
+        if target.isGroup {
+            // Target is already a group — add source into it
+            group = target
+            isNewGroup = false
+        } else {
+            // Target is a standalone tab — create a new group
+            isNewGroup = true
+            group = SidebarTabEntry(
+                groupName: "New Tab Area",
+                surfaceTree: target.surfaceTree,
+                children: [target]
+            )
+        }
+
         // Determine current tree to work with
-        let currentTree = (target.id == selectedTabID) ? surfaceTree : target.surfaceTree
+        let currentTree = (target.id == selectedTabID || group.id == selectedTabID) ? surfaceTree : group.surfaceTree
         let leafCount = currentTree.root?.leaves().count ?? 0
 
-        // Max 4 panes per tab
+        // Max 4 panes per tab area
         guard leafCount < 4 else { return }
 
         // Determine insertion point and direction based on current leaf count
@@ -210,19 +308,16 @@ class SidebarTerminalController: BaseTerminalController {
 
         switch leafCount {
         case 1:
-            // 1→2: left-right split → [1 | 2]
             guard let leaf = currentTree.root?.leftmostLeaf() else { return }
             insertionSurface = leaf
             direction = .right
 
         case 2:
-            // 2→3: split the RIGHT leaf downward → [1 | [2 / 3]]
             guard let root = currentTree.root else { return }
             insertionSurface = root.rightmostLeaf()
             direction = .down
 
         case 3:
-            // 3→4: split the LEFT-TOP leaf downward → [[1 / 4] | [2 / 3]] = 2x2
             guard let leaf = currentTree.root?.leftmostLeaf() else { return }
             insertionSurface = leaf
             direction = .down
@@ -231,8 +326,9 @@ class SidebarTerminalController: BaseTerminalController {
             return
         }
 
-        // Perform the insertion
-        if target.id == selectedTabID {
+        // Perform the insertion into the group's tree
+        let isActive = (target.id == selectedTabID) || (group.id == selectedTabID)
+        if isActive {
             do {
                 let newTree = try surfaceTree.inserting(
                     view: sourceSurface,
@@ -240,61 +336,117 @@ class SidebarTerminalController: BaseTerminalController {
                     direction: direction
                 )
                 surfaceTree = newTree
-                target.surfaceTree = newTree
+                group.surfaceTree = newTree
             } catch {
                 return
             }
         } else {
             do {
-                let newTree = try target.surfaceTree.inserting(
+                let newTree = try group.surfaceTree.inserting(
                     view: sourceSurface,
                     at: insertionSurface,
                     direction: direction
                 )
-                target.surfaceTree = newTree
+                group.surfaceTree = newTree
             } catch {
                 return
             }
         }
 
-        // Remove source from top-level and add as child of target
-        tabs.remove(at: sourceIndex)
-        target.children.append(source)
-        // If the source was selected, switch to target
-        if selectedTabID == source.id {
-            selectTab(target)
+        // Add source as a child of the group
+        group.children.append(source)
+
+        // Remove source from top-level tabs
+        // Re-fetch source index since it may have shifted
+        if let idx = tabs.firstIndex(where: { $0.id == source.id }) {
+            tabs.remove(at: idx)
         }
+
+        if isNewGroup {
+            // Replace target with the new group in the tabs array
+            if let idx = tabs.firstIndex(where: { $0.id == target.id }) {
+                tabs[idx] = group
+            }
+            // If target was selected, switch selection to the group
+            if selectedTabID == target.id {
+                selectedTabID = group.id
+            }
+        }
+
+        // If the source was selected, switch to the group
+        if selectedTabID == source.id {
+            selectTab(group)
+        }
+
+        saveScreenSessionState()
     }
 
-    /// Unjoin a child tab from its parent, restoring it as an independent top-level tab.
-    func unjoinTab(_ child: SidebarTabEntry, from parent: SidebarTabEntry) {
-        // Find and remove the child's surface from the parent's tree
+    /// Unjoin a child tab from its group, restoring it as an independent top-level tab.
+    /// If the group is left with only one child, the group dissolves and that child
+    /// becomes a standalone top-level tab.
+    func unjoinTab(_ child: SidebarTabEntry, from group: SidebarTabEntry) {
+        // Find and remove the child's surface from the group's tree
         guard let childSurface = child.originalSurface else { return }
         let leafNode = SplitTree<Ghostty.SurfaceView>.Node.leaf(view: childSurface)
 
-        if parent.id == selectedTabID {
-            // Parent is active — modify live tree
+        if group.id == selectedTabID {
             let newTree = surfaceTree.removing(leafNode)
             surfaceTree = newTree
-            parent.surfaceTree = newTree
+            group.surfaceTree = newTree
         } else {
-            let newTree = parent.surfaceTree.removing(leafNode)
-            parent.surfaceTree = newTree
+            let newTree = group.surfaceTree.removing(leafNode)
+            group.surfaceTree = newTree
         }
 
-        // Remove from parent's children
-        parent.children.removeAll { $0.id == child.id }
+        // Remove from group's children
+        group.children.removeAll { $0.id == child.id }
 
         // Restore child as an independent tab with its own tree
         let newTree = SplitTree<Ghostty.SurfaceView>(view: childSurface)
         child.surfaceTree = newTree
         child.focusedSurface = childSurface
 
-        // Insert as a new top-level tab right after the parent
-        if let parentIndex = tabs.firstIndex(where: { $0.id == parent.id }) {
-            tabs.insert(child, at: parentIndex + 1)
+        // Insert child right after the group
+        if let groupIndex = tabs.firstIndex(where: { $0.id == group.id }) {
+            tabs.insert(child, at: groupIndex + 1)
         } else {
             tabs.append(child)
+        }
+
+        // If only one child remains in a group, dissolve the group
+        if group.isGroup && group.children.count == 1 {
+            dissolveGroup(group)
+        }
+
+        saveScreenSessionState()
+    }
+
+    /// Dissolve a group with a single remaining child, promoting that child
+    /// back to a standalone top-level tab.
+    private func dissolveGroup(_ group: SidebarTabEntry) {
+        guard let remaining = group.children.first else { return }
+        guard let groupIndex = tabs.firstIndex(where: { $0.id == group.id }) else { return }
+
+        // Restore the remaining child's own surface tree
+        if let surface = remaining.originalSurface {
+            remaining.surfaceTree = SplitTree<Ghostty.SurfaceView>(view: surface)
+            remaining.focusedSurface = surface
+        } else {
+            remaining.surfaceTree = group.surfaceTree
+        }
+
+        // Replace group with the remaining child
+        tabs[groupIndex] = remaining
+
+        // If the group was selected, switch to the remaining child
+        if selectedTabID == group.id {
+            selectedTabID = remaining.id
+            surfaceTree = remaining.surfaceTree
+            if let surface = remaining.focusedSurface {
+                DispatchQueue.main.async {
+                    Ghostty.moveFocus(to: surface)
+                }
+            }
         }
     }
 
@@ -308,8 +460,9 @@ class SidebarTerminalController: BaseTerminalController {
     override func surfaceTreeDidChange(from: SplitTree<Ghostty.SurfaceView>, to: SplitTree<Ghostty.SurfaceView>) {
         super.surfaceTreeDidChange(from: from, to: to)
 
-        // If tree becomes empty, close the current tab instead of the window.
+        // If tree becomes empty, the user typed `exit` — screen session is already dead.
         if to.isEmpty, let tab = currentTab {
+            tab.screenSessionName = nil
             if let index = tabs.firstIndex(where: { $0.id == tab.id }) {
                 closeTabImmediately(tab, at: index)
             }
@@ -371,6 +524,136 @@ class SidebarTerminalController: BaseTerminalController {
             Notification.Name.GhosttyConfigChangeKey
         ] as? Ghostty.Config else { return }
         derivedConfig = DerivedConfig(config)
+    }
+
+    // MARK: - Screen Session Persistence
+
+    /// Collect all tabs' screen session info and persist to disk.
+    func saveScreenSessionState() {
+        let mgr = ScreenSessionManager.shared
+        guard mgr.isAvailable else { return }
+
+        func stateFor(_ tab: SidebarTabEntry) -> ScreenSessionManager.SessionState? {
+            if tab.isGroup {
+                let childStates = tab.children.compactMap { stateFor($0) }
+                guard !childStates.isEmpty else { return nil }
+                return ScreenSessionManager.SessionState(
+                    screenSessionName: "",
+                    title: tab.displayTitle,
+                    workingDirectory: nil,
+                    isGroup: true,
+                    groupName: tab.groupName,
+                    children: childStates
+                )
+            } else {
+                guard let name = tab.screenSessionName else { return nil }
+                return ScreenSessionManager.SessionState(
+                    screenSessionName: name,
+                    title: tab.displayTitle,
+                    workingDirectory: nil,
+                    isGroup: false,
+                    groupName: nil,
+                    children: nil
+                )
+            }
+        }
+
+        let sessions = tabs.compactMap { stateFor($0) }
+        let selectedName = currentTab?.screenSessionName
+        mgr.saveState(ScreenSessionManager.SavedState(sessions: sessions, selectedScreenName: selectedName))
+    }
+
+    /// Attempt to restore a window from saved screen sessions.
+    /// Returns nil if no sessions could be restored.
+    static func restoreWindow(_ ghostty: Ghostty.App) -> SidebarTerminalController? {
+        let mgr = ScreenSessionManager.shared
+        guard mgr.isAvailable else { return nil }
+        guard let state = mgr.loadState() else { return nil }
+
+        let aliveSessions = Set(mgr.listAliveSessions())
+
+        // Filter to sessions that are still alive
+        func isAlive(_ s: ScreenSessionManager.SessionState) -> Bool {
+            if s.isGroup {
+                return s.children?.contains(where: isAlive) ?? false
+            }
+            return aliveSessions.contains(s.screenSessionName)
+        }
+
+        let restorableSessions = state.sessions.filter { isAlive($0) }
+        guard !restorableSessions.isEmpty else { return nil }
+
+        // Build a config for the first restorable leaf session
+        func firstLeaf(_ s: ScreenSessionManager.SessionState) -> ScreenSessionManager.SessionState? {
+            if s.isGroup {
+                return s.children?.compactMap({ firstLeaf($0) }).first
+            }
+            return aliveSessions.contains(s.screenSessionName) ? s : nil
+        }
+
+        guard let firstSession = restorableSessions.compactMap({ firstLeaf($0) }).first else {
+            return nil
+        }
+
+        // Create the controller with the first session as the base
+        var baseConfig = Ghostty.SurfaceConfiguration()
+        baseConfig.command = mgr.reattachCommand(sessionName: firstSession.screenSessionName)
+        if let wd = firstSession.workingDirectory {
+            baseConfig.workingDirectory = wd
+        }
+
+        let controller = SidebarTerminalController(ghostty, withBaseConfig: baseConfig)
+        // Set screen session name on the first tab
+        controller.tabs.first?.screenSessionName = firstSession.screenSessionName
+        controller.tabs.first?.defaultTitle = firstSession.title
+
+        var firstLeafUsed = true
+
+        // Restore remaining sessions
+        for session in restorableSessions {
+            if session.isGroup {
+                // For groups, restore each alive child as a separate tab
+                // (simplified — full group restore would require join logic)
+                guard let children = session.children else { continue }
+                for child in children where aliveSessions.contains(child.screenSessionName) {
+                    if firstLeafUsed, child.screenSessionName == firstSession.screenSessionName {
+                        firstLeafUsed = false
+                        continue
+                    }
+                    controller.addRestoredTab(
+                        screenName: child.screenSessionName,
+                        title: child.title,
+                        workingDirectory: child.workingDirectory
+                    )
+                }
+            } else if aliveSessions.contains(session.screenSessionName) {
+                if firstLeafUsed, session.screenSessionName == firstSession.screenSessionName {
+                    firstLeafUsed = false
+                    continue
+                }
+                controller.addRestoredTab(
+                    screenName: session.screenSessionName,
+                    title: session.title,
+                    workingDirectory: session.workingDirectory
+                )
+            }
+        }
+
+        // Try to restore the selected tab
+        if let selectedName = state.selectedScreenName,
+           let tab = controller.tabs.first(where: { $0.screenSessionName == selectedName }) {
+            controller.selectTab(tab)
+        }
+
+        // Set up the window and show it (same as newWindow)
+        controller.setupWindow()
+        allControllers.insert(controller)
+        DispatchQueue.main.async {
+            controller.showWindow(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+
+        return controller
     }
 
     // MARK: - Static Factory

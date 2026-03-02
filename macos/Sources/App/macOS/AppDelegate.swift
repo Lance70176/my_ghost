@@ -164,11 +164,14 @@ class AppDelegate: NSObject,
         // don't think they're inside a Claude Code session.
         unsetenv("CLAUDECODE")
 
-#if DEBUG
-        ghostty = Ghostty.App(configPath: ProcessInfo.processInfo.environment["GHOSTTY_CONFIG_PATH"])
-#else
-        ghostty = Ghostty.App()
-#endif
+        // Use MyGhost config if it exists, otherwise fall back to env var / default
+        let myGhostConfigPath: String? = {
+            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            let path = appSupport.appendingPathComponent("MyGhost/config").path
+            if FileManager.default.fileExists(atPath: path) { return path }
+            return ProcessInfo.processInfo.environment["GHOSTTY_CONFIG_PATH"]
+        }()
+        ghostty = Ghostty.App(configPath: myGhostConfigPath)
         super.init()
 
         ghostty.delegate = self
@@ -352,7 +355,15 @@ class AppDelegate: NSObject,
             //   - if we're restoring from persisted state
             if TerminalController.all.isEmpty && !hasAnySidebarWindows && derivedConfig.initialWindow {
                 undoManager.disableUndoRegistration()
-                _ = SidebarTerminalController.newWindow(ghostty)
+
+                // Try to restore from saved screen sessions first
+                if ScreenSessionManager.shared.isAvailable,
+                   let _ = SidebarTerminalController.restoreWindow(ghostty) {
+                    ScreenSessionManager.shared.clearState()
+                } else {
+                    _ = SidebarTerminalController.newWindow(ghostty)
+                }
+
                 undoManager.enableUndoRegistration()
             }
         }
@@ -406,8 +417,12 @@ class AppDelegate: NSObject,
 
         // We have some visible window. Show an app-wide modal to confirm quitting.
         let alert = NSAlert()
-        alert.messageText = "Quit Ghostty?"
-        alert.informativeText = "All terminal sessions will be terminated."
+        alert.messageText = "Quit MyGhost?"
+        if ScreenSessionManager.shared.isAvailable {
+            alert.informativeText = "Terminal sessions will be preserved and restored on next launch."
+        } else {
+            alert.informativeText = "All terminal sessions will be terminated."
+        }
         alert.addButton(withTitle: "Close MyGhost")
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning
@@ -421,6 +436,13 @@ class AppDelegate: NSObject,
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Save screen session state from all sidebar controllers before quitting.
+        for window in NSApp.windows {
+            if let controller = window.windowController as? SidebarTerminalController {
+                controller.saveScreenSessionState()
+            }
+        }
+
         // We have no notifications we want to persist after death,
         // so remove them all now. In the future we may want to be
         // more selective and only remove surface-targeted notifications.

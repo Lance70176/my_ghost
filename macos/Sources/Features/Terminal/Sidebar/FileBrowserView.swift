@@ -1,18 +1,77 @@
 import SwiftUI
 import AppKit
 
-/// A simple file entry for listing directory contents.
-struct FileEntry: Identifiable {
+/// A tree node representing a file or directory.
+class FileNode: Identifiable, ObservableObject {
     let id = UUID()
     let name: String
     let url: URL
     let isDirectory: Bool
+    let depth: Int
+
+    @Published var isExpanded: Bool = false
+    @Published var children: [FileNode]?
+
+    init(url: URL, isDirectory: Bool, depth: Int) {
+        self.name = url.lastPathComponent
+        self.url = url
+        self.isDirectory = isDirectory
+        self.depth = depth
+    }
+
+    func loadChildren() {
+        guard isDirectory, children == nil else { return }
+        let fm = FileManager.default
+        do {
+            let urls = try fm.contentsOfDirectory(
+                at: url,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            )
+            children = urls.compactMap { childURL in
+                let isDir = (try? childURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+                return FileNode(url: childURL, isDirectory: isDir, depth: depth + 1)
+            }
+            .sorted { lhs, rhs in
+                if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
+                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            }
+        } catch {
+            children = []
+        }
+    }
+
+    func toggle() {
+        if isExpanded {
+            isExpanded = false
+        } else {
+            loadChildren()
+            isExpanded = true
+        }
+    }
+
+    func reload() {
+        children = nil
+        if isExpanded {
+            loadChildren()
+        }
+    }
 }
 
 /// Observable state for the file browser, persisted across mode switches.
 class FileBrowserState: ObservableObject {
     @Published var currentPath: URL = FileManager.default.homeDirectoryForCurrentUser
+    @Published var rootNodes: [FileNode] = []
+
+    /// For backward compatibility with breadcrumb and flat entry access
     @Published var entries: [FileEntry] = []
+
+    /// Callback to send text (e.g. cd command) to the focused terminal surface.
+    var onSendText: ((String) -> Void)?
+    /// Callback to open a new terminal tab at a given directory.
+    var onOpenInNewTab: ((String) -> Void)?
+    /// Callback to refocus the terminal after interacting with the file browser.
+    var onRefocusTerminal: (() -> Void)?
 
     var pathComponents: [(name: String, url: URL)] {
         var components: [(name: String, url: URL)] = []
@@ -33,18 +92,16 @@ class FileBrowserState: ObservableObject {
                 includingPropertiesForKeys: [.isDirectoryKey],
                 options: [.skipsHiddenFiles]
             )
-            entries = urls.compactMap { url in
+            rootNodes = urls.compactMap { url in
                 let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-                return FileEntry(name: url.lastPathComponent, url: url, isDirectory: isDir)
+                return FileNode(url: url, isDirectory: isDir, depth: 0)
             }
             .sorted { lhs, rhs in
-                if lhs.isDirectory != rhs.isDirectory {
-                    return lhs.isDirectory
-                }
+                if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
                 return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
             }
         } catch {
-            entries = []
+            rootNodes = []
         }
     }
 
@@ -52,12 +109,34 @@ class FileBrowserState: ObservableObject {
         currentPath = url
         loadEntries()
     }
+
+    /// Flatten the visible tree for keyboard shortcut support
+    func visibleNode(withID id: UUID) -> FileNode? {
+        func find(in nodes: [FileNode]) -> FileNode? {
+            for node in nodes {
+                if node.id == id { return node }
+                if node.isExpanded, let children = node.children {
+                    if let found = find(in: children) { return found }
+                }
+            }
+            return nil
+        }
+        return find(in: rootNodes)
+    }
 }
 
-/// A file browser view that displays directory contents.
+/// Backward-compatible simple entry (used by keyboard shortcuts)
+struct FileEntry: Identifiable {
+    let id = UUID()
+    let name: String
+    let url: URL
+    let isDirectory: Bool
+}
+
+/// A file browser view that displays directory contents as an expandable tree.
 struct FileBrowserView: View {
     @ObservedObject var state: FileBrowserState
-    @State private var selectedEntryID: UUID?
+    @State private var selectedNodeID: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -73,7 +152,7 @@ struct FileBrowserView: View {
                             }
                             Button(action: {
                                 state.navigate(to: component.url)
-                                selectedEntryID = nil
+                                selectedNodeID = nil
                             }) {
                                 Text(component.name)
                                     .font(.system(size: 14))
@@ -97,92 +176,249 @@ struct FileBrowserView: View {
 
             Divider()
 
-            // File list
-            List(state.entries, selection: $selectedEntryID) { entry in
-                FileRowView(entry: entry, state: state)
-                    .tag(entry.id)
-            }
-            .listStyle(.sidebar)
-            .onChange(of: selectedEntryID) { newValue in
-                guard let newValue = newValue,
-                      let entry = state.entries.first(where: { $0.id == newValue }),
-                      entry.isDirectory else { return }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                    state.navigate(to: entry.url)
-                    selectedEntryID = nil
+            // Tree list
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(state.rootNodes) { node in
+                        TreeNodeView(node: node, state: state, selectedNodeID: $selectedNodeID)
+                    }
                 }
+                .padding(.vertical, 4)
             }
         }
         .onAppear {
-            if state.entries.isEmpty {
+            if state.rootNodes.isEmpty {
                 state.loadEntries()
             }
         }
-        .background(FileListKeyMonitor(
+        .background(FileBrowserKeyMonitor(
+            isFileBrowserActive: true,
             onSpace: {
-                guard let selectedID = selectedEntryID,
-                      let entry = state.entries.first(where: { $0.id == selectedID }) else { return }
-                let task = Process()
-                task.executableURL = URL(fileURLWithPath: "/usr/bin/qlmanage")
-                task.arguments = ["-p", entry.url.path]
-                task.standardOutput = FileHandle.nullDevice
-                task.standardError = FileHandle.nullDevice
-                try? task.run()
+                guard let id = selectedNodeID, let node = state.visibleNode(withID: id) else { return }
+                if !node.isDirectory {
+                    let task = Process()
+                    task.executableURL = URL(fileURLWithPath: "/usr/bin/qlmanage")
+                    task.arguments = ["-p", node.url.path]
+                    task.standardOutput = FileHandle.nullDevice
+                    task.standardError = FileHandle.nullDevice
+                    try? task.run()
+                }
             },
             onReturn: {
-                guard let selectedID = selectedEntryID,
-                      let entry = state.entries.first(where: { $0.id == selectedID }) else { return }
+                guard let id = selectedNodeID, let node = state.visibleNode(withID: id) else { return }
+                let entry = FileEntry(name: node.name, url: node.url, isDirectory: node.isDirectory)
                 FileBrowserActions.rename(entry: entry, state: state)
             },
             onDelete: {
-                guard let selectedID = selectedEntryID,
-                      let entry = state.entries.first(where: { $0.id == selectedID }) else { return }
+                guard let id = selectedNodeID, let node = state.visibleNode(withID: id) else { return }
+                let entry = FileEntry(name: node.name, url: node.url, isDirectory: node.isDirectory)
                 FileBrowserActions.delete(entry: entry, state: state)
             }
         ))
     }
 }
 
-// MARK: - Keyboard shortcuts (only when List has focus)
+// MARK: - Tree node row
 
-/// Monitors key presses only when the first responder is
-/// an NSTableView/NSOutlineView (SwiftUI List), not the terminal.
-private struct FileListKeyMonitor: NSViewRepresentable {
+private struct TreeNodeView: View {
+    @ObservedObject var node: FileNode
+    @ObservedObject var state: FileBrowserState
+    @Binding var selectedNodeID: UUID?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // The row itself
+            TreeRowContent(node: node, state: state, selectedNodeID: $selectedNodeID)
+
+            // Expanded children
+            if node.isExpanded, let children = node.children {
+                ForEach(children) { child in
+                    TreeNodeView(node: child, state: state, selectedNodeID: $selectedNodeID)
+                }
+            }
+        }
+    }
+}
+
+private struct TreeRowContent: View {
+    @ObservedObject var node: FileNode
+    @ObservedObject var state: FileBrowserState
+    @Binding var selectedNodeID: UUID?
+
+    var isSelected: Bool { selectedNodeID == node.id }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            // Indent based on depth
+            if node.depth > 0 {
+                Spacer()
+                    .frame(width: CGFloat(node.depth) * 16)
+            }
+
+            // Disclosure triangle for directories
+            if node.isDirectory {
+                Image(systemName: node.isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundColor(.secondary)
+                    .frame(width: 12, height: 16)
+                    .contentShape(Rectangle())
+                    .onTapGesture { node.toggle() }
+            } else {
+                Spacer().frame(width: 12)
+            }
+
+            // Icon (directories only)
+            if node.isDirectory {
+                Image(systemName: "folder.fill")
+                    .font(.system(size: 13))
+                    .foregroundColor(.accentColor)
+                    .frame(width: 18, height: 16)
+            }
+
+            // Name
+            Text(node.name)
+                .font(.system(size: NSFont.smallSystemFontSize))
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 3)
+        .padding(.horizontal, 8)
+        .background(isSelected ? Color.accentColor.opacity(0.2) : Color.clear)
+        .cornerRadius(4)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            selectedNodeID = node.id
+            if node.isDirectory {
+                node.toggle()
+            }
+        }
+        .onDrag {
+            // Drag file → provide path as text for terminal drop
+            let escapedPath = node.url.path.replacingOccurrences(of: " ", with: "\\ ")
+            return NSItemProvider(object: escapedPath as NSString)
+        }
+        .contextMenu {
+            if node.isDirectory {
+                Button("cd to Directory") {
+                    let escapedPath = node.url.path.replacingOccurrences(of: "'", with: "'\\''")
+                    state.onSendText?("cd '\(escapedPath)'\n")
+                }
+                Button("Open in New Tab") {
+                    state.onOpenInNewTab?(node.url.path)
+                }
+                Divider()
+            }
+            Button("New File") {
+                FileBrowserActions.newFile(in: state)
+            }
+            Button("Reveal in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([node.url])
+            }
+            Divider()
+            Button("Rename") {
+                let entry = FileEntry(name: node.name, url: node.url, isDirectory: node.isDirectory)
+                FileBrowserActions.rename(entry: entry, state: state)
+            }
+            Button("Delete") {
+                let entry = FileEntry(name: node.name, url: node.url, isDirectory: node.isDirectory)
+                FileBrowserActions.delete(entry: entry, state: state)
+            }
+            Divider()
+            Button("Copy Path") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(node.url.path, forType: .string)
+            }
+            Button("Copy Relative Path") {
+                let basePath = state.currentPath.path
+                var relativePath = node.url.path
+                if relativePath.hasPrefix(basePath) {
+                    relativePath = String(relativePath.dropFirst(basePath.count))
+                    if relativePath.hasPrefix("/") {
+                        relativePath = String(relativePath.dropFirst())
+                    }
+                }
+                if relativePath.isEmpty { relativePath = node.name }
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(relativePath, forType: .string)
+            }
+        }
+    }
+}
+
+// MARK: - Focus-stealing click interceptor
+
+/// An invisible NSView overlay that steals first responder from the terminal
+/// when the user clicks in the file browser area. Also monitors key events
+/// for Space (Quick Look), Return (Rename), Cmd+Delete (Trash).
+private struct FileBrowserKeyMonitor: NSViewRepresentable {
+    let isFileBrowserActive: Bool
     let onSpace: () -> Void
     let onReturn: () -> Void
     let onDelete: () -> Void
 
-    func makeNSView(context: Context) -> FileListKeyNSView {
-        let view = FileListKeyNSView()
+    func makeNSView(context: Context) -> FileBrowserKeyNSView {
+        let view = FileBrowserKeyNSView()
         view.onSpace = onSpace
         view.onReturn = onReturn
         view.onDelete = onDelete
         return view
     }
 
-    func updateNSView(_ nsView: FileListKeyNSView, context: Context) {
+    func updateNSView(_ nsView: FileBrowserKeyNSView, context: Context) {
         nsView.onSpace = onSpace
         nsView.onReturn = onReturn
         nsView.onDelete = onDelete
     }
 }
 
-private class FileListKeyNSView: NSView {
+private class FileBrowserKeyNSView: NSView {
     var onSpace: (() -> Void)?
     var onReturn: (() -> Void)?
     var onDelete: (() -> Void)?
     private var monitor: Any?
+    private var clickMonitor: Any?
+
+    override var acceptsFirstResponder: Bool { true }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window != nil && monitor == nil {
+        guard window != nil else { return }
+
+        // Monitor mouse clicks in the file browser area to steal focus from terminal
+        if clickMonitor == nil {
+            clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] event in
+                guard let self = self, let myWindow = self.window else { return event }
+                guard myWindow == event.window else { return event }
+
+                // Check if click is within our view's frame
+                let locationInWindow = event.locationInWindow
+                let locationInView = self.convert(locationInWindow, from: nil)
+                if self.bounds.contains(locationInView) {
+                    // Steal focus from terminal
+                    myWindow.makeFirstResponder(self)
+                }
+                return event
+            }
+        }
+
+        // Monitor key events when we are first responder
+        if monitor == nil {
             monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
                 guard let self = self else { return event }
                 guard self.window == event.window else { return event }
+                // Only intercept when WE are first responder (file browser has focus)
+                guard self.window?.firstResponder === self else { return event }
 
-                // Only intercept when first responder is a table view (List)
-                guard let responder = self.window?.firstResponder,
-                      responder is NSTableView || responder is NSOutlineView else {
+                // Let Cmd+key combinations pass through (e.g. Cmd+1..9 for tab switching)
+                let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                if flags.contains(.command) {
+                    // Except Cmd+Delete which we handle
+                    if event.keyCode == 51 {
+                        self.onDelete?()
+                        return nil
+                    }
                     return event
                 }
 
@@ -193,14 +429,9 @@ private class FileListKeyNSView: NSView {
                 case 36: // Return → Rename
                     self.onReturn?()
                     return nil
-                case 51: // Delete/Backspace
-                    if event.modifierFlags.contains(.command) { // Cmd+Delete → Move to Trash
-                        self.onDelete?()
-                        return nil
-                    }
-                    return event
                 default:
-                    return event
+                    // Consume other key events so they don't reach the terminal
+                    return nil
                 }
             }
         }
@@ -208,22 +439,65 @@ private class FileListKeyNSView: NSView {
 
     override func viewDidMoveToSuperview() {
         super.viewDidMoveToSuperview()
-        if superview == nil, let monitor = monitor {
+        if superview == nil {
+            removeMonitors()
+        }
+    }
+
+    private func removeMonitors() {
+        if let monitor = monitor {
             NSEvent.removeMonitor(monitor)
             self.monitor = nil
+        }
+        if let clickMonitor = clickMonitor {
+            NSEvent.removeMonitor(clickMonitor)
+            self.clickMonitor = nil
         }
     }
 
     deinit {
-        if let monitor = monitor {
-            NSEvent.removeMonitor(monitor)
-        }
+        removeMonitors()
     }
 }
 
 // MARK: - File browser actions
 
 enum FileBrowserActions {
+
+    static func newFile(in state: FileBrowserState) {
+        let alert = NSAlert()
+        alert.messageText = "New File"
+        alert.informativeText = "Enter a name for the new file:"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Create")
+        alert.addButton(withTitle: "Cancel")
+
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.stringValue = "untitled"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { return }
+            let newURL = state.currentPath.appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: newURL.path) {
+                let errAlert = NSAlert()
+                errAlert.messageText = "A file named \"\(name)\" already exists."
+                errAlert.runModal()
+                return
+            }
+            let success = FileManager.default.createFile(atPath: newURL.path, contents: nil)
+            if success {
+                state.loadEntries()
+            } else {
+                let errAlert = NSAlert()
+                errAlert.messageText = "Failed to create file \"\(name)\"."
+                errAlert.runModal()
+            }
+        }
+    }
 
     static func rename(entry: FileEntry, state: FileBrowserState) {
         let alert = NSAlert()
@@ -271,184 +545,5 @@ enum FileBrowserActions {
                 errAlert.runModal()
             }
         }
-    }
-}
-
-// MARK: - Row view using NSViewRepresentable for proper context menu + drag
-
-/// Each file row is an NSView so we get native right-click menu and drag support,
-/// bypassing SwiftUI's broken .contextMenu + .draggable interaction.
-private struct FileRowView: NSViewRepresentable {
-    let entry: FileEntry
-    let state: FileBrowserState
-
-    func makeNSView(context: Context) -> FileRowNSView {
-        let view = FileRowNSView()
-        view.configure(entry: entry, state: state)
-        return view
-    }
-
-    func updateNSView(_ nsView: FileRowNSView, context: Context) {
-        nsView.configure(entry: entry, state: state)
-    }
-}
-
-private class FileRowNSView: NSView {
-    private var entry: FileEntry?
-    private var state: FileBrowserState?
-    private let iconView = NSImageView()
-    private let label = NSTextField(labelWithString: "")
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        setupViews()
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        setupViews()
-    }
-
-    private func setupViews() {
-        let stack = NSStackView()
-        stack.orientation = .horizontal
-        stack.spacing = 6
-        stack.alignment = .centerY
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-        iconView.imageScaling = .scaleProportionallyUpOrDown
-        NSLayoutConstraint.activate([
-            iconView.widthAnchor.constraint(equalToConstant: 16),
-            iconView.heightAnchor.constraint(equalToConstant: 16),
-        ])
-
-        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        label.lineBreakMode = .byTruncatingMiddle
-        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        stack.addArrangedSubview(iconView)
-        stack.addArrangedSubview(label)
-
-        addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
-            stack.topAnchor.constraint(equalTo: topAnchor),
-            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
-    }
-
-    func configure(entry: FileEntry, state: FileBrowserState) {
-        self.entry = entry
-        self.state = state
-
-        let iconName = entry.isDirectory ? NSImage.folderName : "doc"
-        if entry.isDirectory {
-            iconView.image = NSImage(systemSymbolName: "folder.fill", accessibilityDescription: nil)
-            iconView.contentTintColor = .controlAccentColor
-        } else {
-            iconView.image = NSWorkspace.shared.icon(forFile: entry.url.path)
-        }
-        label.stringValue = entry.name
-    }
-
-    // MARK: - Right-click context menu
-
-    override func menu(for event: NSEvent) -> NSMenu? {
-        guard let entry = entry else { return nil }
-        let menu = NSMenu()
-
-        if entry.isDirectory {
-            let openItem = NSMenuItem(title: "Open", action: #selector(openFolder), keyEquivalent: "")
-            openItem.target = self
-            menu.addItem(openItem)
-            menu.addItem(.separator())
-        }
-
-        let qlItem = NSMenuItem(title: "Quick Look", action: #selector(quickLookFile), keyEquivalent: " ")
-        qlItem.target = self
-        menu.addItem(qlItem)
-
-        let openDefaultItem = NSMenuItem(title: "Open with Default App", action: #selector(openWithDefault), keyEquivalent: "")
-        openDefaultItem.target = self
-        menu.addItem(openDefaultItem)
-
-        menu.addItem(.separator())
-
-        let renameItem = NSMenuItem(title: "Rename…", action: #selector(renameFile), keyEquivalent: "\r")
-        renameItem.target = self
-        menu.addItem(renameItem)
-
-        let deleteItem = NSMenuItem(title: "Move to Trash", action: #selector(deleteFile), keyEquivalent: "\u{8}")
-        deleteItem.keyEquivalentModifierMask = .command
-        deleteItem.target = self
-        menu.addItem(deleteItem)
-
-        menu.addItem(.separator())
-
-        let finderItem = NSMenuItem(title: "Show in Finder", action: #selector(showInFinder), keyEquivalent: "")
-        finderItem.target = self
-        menu.addItem(finderItem)
-
-        return menu
-    }
-
-    @objc private func openFolder() {
-        guard let entry = entry, entry.isDirectory else { return }
-        state?.navigate(to: entry.url)
-    }
-
-    @objc private func quickLookFile() {
-        guard let entry = entry else { return }
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/qlmanage")
-        task.arguments = ["-p", entry.url.path]
-        task.standardOutput = FileHandle.nullDevice
-        task.standardError = FileHandle.nullDevice
-        try? task.run()
-    }
-
-    @objc private func openWithDefault() {
-        guard let entry = entry else { return }
-        NSWorkspace.shared.open(entry.url)
-    }
-
-    @objc private func renameFile() {
-        guard let entry = entry, let state = state else { return }
-        FileBrowserActions.rename(entry: entry, state: state)
-    }
-
-    @objc private func deleteFile() {
-        guard let entry = entry, let state = state else { return }
-        FileBrowserActions.delete(entry: entry, state: state)
-    }
-
-    @objc private func showInFinder() {
-        guard let entry = entry else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([entry.url])
-    }
-
-    // MARK: - Drag support
-
-    override func mouseDown(with event: NSEvent) {
-        super.mouseDown(with: event)
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        guard let entry = entry else { return }
-        let pasteboardItem = NSPasteboardItem()
-        pasteboardItem.setString(entry.url.absoluteString, forType: .fileURL)
-
-        let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
-        draggingItem.setDraggingFrame(bounds, contents: NSWorkspace.shared.icon(forFile: entry.url.path))
-
-        beginDraggingSession(with: [draggingItem], event: event, source: self)
-    }
-}
-
-extension FileRowNSView: NSDraggingSource {
-    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
-        return .copy
     }
 }

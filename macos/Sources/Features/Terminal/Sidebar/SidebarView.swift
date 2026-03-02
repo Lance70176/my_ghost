@@ -8,13 +8,18 @@ enum SidebarMode {
 
 /// A flattened row item for stable List identity.
 private enum SidebarRowItem: Identifiable {
-    case parent(tab: SidebarTabEntry, index: Int)
-    case child(child: SidebarTabEntry, parent: SidebarTabEntry)
+    /// A standalone tab (not in a group).
+    case tab(tab: SidebarTabEntry, index: Int)
+    /// A group header row (Tab Area).
+    case group(group: SidebarTabEntry, index: Int)
+    /// A child tab within a group (split pane).
+    case groupChild(child: SidebarTabEntry, group: SidebarTabEntry)
 
     var id: UUID {
         switch self {
-        case .parent(let tab, _): return tab.id
-        case .child(let child, _): return child.id
+        case .tab(let tab, _): return tab.id
+        case .group(let group, _): return group.id
+        case .groupChild(let child, _): return child.id
         }
     }
 }
@@ -37,9 +42,13 @@ struct SidebarView: View {
     private var flatRows: [SidebarRowItem] {
         var rows: [SidebarRowItem] = []
         for (index, tab) in controller.tabs.enumerated() {
-            rows.append(.parent(tab: tab, index: index))
-            for child in tab.children {
-                rows.append(.child(child: child, parent: tab))
+            if tab.isGroup {
+                rows.append(.group(group: tab, index: index))
+                for child in tab.children {
+                    rows.append(.groupChild(child: child, group: tab))
+                }
+            } else {
+                rows.append(.tab(tab: tab, index: index))
             }
         }
         return rows
@@ -93,9 +102,32 @@ struct SidebarView: View {
 
             case .fileBrowser:
                 FileBrowserView(state: fileBrowserState)
+                    .onAppear {
+                        fileBrowserState.onSendText = { [weak controller] text in
+                            guard let surface = controller?.focusedSurface else { return }
+                            surface.surfaceModel?.sendText(text)
+                        }
+                        fileBrowserState.onOpenInNewTab = { [weak controller] path in
+                            var config = Ghostty.SurfaceConfiguration()
+                            config.workingDirectory = path
+                            controller?.addNewTab(baseConfig: config)
+                        }
+                        fileBrowserState.onRefocusTerminal = { [weak controller] in
+                            guard let surface = controller?.focusedSurface else { return }
+                            DispatchQueue.main.async {
+                                Ghostty.moveFocus(to: surface)
+                            }
+                        }
+                    }
             }
         }
         .frame(minWidth: 150, idealWidth: 200)
+        .onChange(of: controller.selectedTabID) { _ in
+            // Auto-switch sidebar to terminal tab list when tab changes (e.g. Cmd+number)
+            if sidebarMode != .terminal {
+                sidebarMode = .terminal
+            }
+        }
     }
 
     /// The terminal tab list view.
@@ -103,8 +135,8 @@ struct SidebarView: View {
         List(selection: $selection) {
             ForEach(flatRows) { item in
                 switch item {
-                case .parent(let tab, let index):
-                    SidebarParentTabRow(
+                case .tab(let tab, let index):
+                    SidebarStandaloneTabRow(
                         tab: tab,
                         shortcutIndex: index < 9 ? index + 1 : nil,
                         controller: controller,
@@ -112,10 +144,18 @@ struct SidebarView: View {
                     )
                     .tag(tab.id)
 
-                case .child(let child, let parent):
-                    SidebarChildTabRow(
+                case .group(let group, _):
+                    SidebarGroupHeaderRow(
+                        group: group,
+                        controller: controller,
+                        selection: $selection
+                    )
+                    .tag(group.id)
+
+                case .groupChild(let child, let group):
+                    SidebarGroupChildRow(
                         child: child,
-                        parent: parent,
+                        group: group,
                         controller: controller,
                         selection: $selection
                     )
@@ -129,10 +169,19 @@ struct SidebarView: View {
         }
         .onChange(of: selection) { newValue in
             guard let newValue else { return }
-            // Check if it's a top-level tab
+            // Check if it's a top-level tab or group
             if let tab = controller.tabs.first(where: { $0.id == newValue }) {
-                if tab.id == controller.selectedTabID {
-                    // Already selected — just focus back to the parent's own surface
+                if tab.isGroup {
+                    // Group selected — activate it and focus the first child's surface
+                    if tab.id != controller.selectedTabID {
+                        controller.selectTab(tab)
+                    }
+                    if let surface = tab.children.first?.focusedSurface ?? tab.children.first?.originalSurface {
+                        DispatchQueue.main.async {
+                            Ghostty.moveFocus(to: surface)
+                        }
+                    }
+                } else if tab.id == controller.selectedTabID {
                     if let surface = tab.originalSurface {
                         DispatchQueue.main.async {
                             Ghostty.moveFocus(to: surface)
@@ -143,15 +192,13 @@ struct SidebarView: View {
                 }
                 return
             }
-            // Check if it's a child tab — select the parent and focus the child's surface
-            for parent in controller.tabs {
-                if let child = parent.children.first(where: { $0.id == newValue }) {
-                    // Select parent first (will no-op if already selected)
-                    if parent.id != controller.selectedTabID {
-                        controller.selectTab(parent)
+            // Check if it's a child tab within a group
+            for group in controller.tabs where group.isGroup {
+                if let child = group.children.first(where: { $0.id == newValue }) {
+                    if group.id != controller.selectedTabID {
+                        controller.selectTab(group)
                     }
-                    // Focus the child's surface
-                    if let surface = child.focusedSurface {
+                    if let surface = child.focusedSurface ?? child.originalSurface {
                         DispatchQueue.main.async {
                             Ghostty.moveFocus(to: surface)
                         }
@@ -168,9 +215,9 @@ struct SidebarView: View {
     }
 }
 
-// MARK: - Parent tab row (top-level)
+// MARK: - Standalone tab row (not in a group)
 
-private struct SidebarParentTabRow: View {
+private struct SidebarStandaloneTabRow: View {
     @ObservedObject var tab: SidebarTabEntry
     let shortcutIndex: Int?
     let controller: SidebarTerminalController
@@ -210,7 +257,6 @@ private struct SidebarParentTabRow: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            // Update selection and focus the parent's own surface
             selection = tab.id
             controller.selectTab(tab)
             if let surface = tab.originalSurface {
@@ -221,7 +267,7 @@ private struct SidebarParentTabRow: View {
         }
         .onHover { isHovering = $0 }
         .contextMenu {
-            // Only show targets that have fewer than 4 panes
+            // Join into another tab or group (max 4 panes)
             let joinableTargets = controller.tabs.filter {
                 $0.id != tab.id && ($0.surfaceTree.root?.leaves().count ?? 0) < 4
             }
@@ -243,11 +289,90 @@ private struct SidebarParentTabRow: View {
     }
 }
 
-// MARK: - Child tab row (joined tab under parent)
+// MARK: - Group header row (Tab Area)
 
-private struct SidebarChildTabRow: View {
+private struct SidebarGroupHeaderRow: View {
+    @ObservedObject var group: SidebarTabEntry
+    let controller: SidebarTerminalController
+    @Binding var selection: UUID?
+
+    @State private var isHovering = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "rectangle.split.2x1")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            Text(group.displayTitle)
+                .font(.body)
+                .fontWeight(.medium)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Spacer()
+
+            if isHovering {
+                Button(action: { closeGroup() }) {
+                    Image(systemName: "xmark")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.borderless)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            selection = group.id
+            controller.selectTab(group)
+        }
+        .onHover { isHovering = $0 }
+        .contextMenu {
+            Button("Rename…") {
+                renameGroup()
+            }
+
+            Divider()
+
+            Button("Close Tab Area") {
+                closeGroup()
+            }
+        }
+    }
+
+    private func renameGroup() {
+        let alert = NSAlert()
+        alert.messageText = "Rename Tab Area"
+        alert.informativeText = "Enter a new name:"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.stringValue = group.groupName ?? "New Tab Area"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            let newName = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !newName.isEmpty {
+                group.groupName = newName
+            }
+        }
+    }
+
+    private func closeGroup() {
+        // Close all children then the group
+        controller.closeTab(group)
+    }
+}
+
+// MARK: - Group child row (split pane within a group)
+
+private struct SidebarGroupChildRow: View {
     @ObservedObject var child: SidebarTabEntry
-    let parent: SidebarTabEntry
+    let group: SidebarTabEntry
     let controller: SidebarTerminalController
     @Binding var selection: UUID?
 
@@ -260,6 +385,10 @@ private struct SidebarChildTabRow: View {
             Rectangle()
                 .fill(Color.secondary.opacity(0.3))
                 .frame(width: 8, height: 1)
+
+            Image(systemName: "terminal")
+                .font(.caption2)
+                .foregroundColor(.secondary)
 
             Text(child.displayTitle)
                 .font(.callout)
@@ -274,14 +403,12 @@ private struct SidebarChildTabRow: View {
                     .font(.caption)
             }
         }
-        .padding(.leading, 16)
+        .padding(.leading, 12)
         .contentShape(Rectangle())
         .onTapGesture {
-            // Update selection to highlight this child row
             selection = child.id
-            // Select parent (if not already) and focus the child's surface
-            if parent.id != controller.selectedTabID {
-                controller.selectTab(parent)
+            if group.id != controller.selectedTabID {
+                controller.selectTab(group)
             }
             if let surface = child.originalSurface {
                 DispatchQueue.main.async {
@@ -291,7 +418,7 @@ private struct SidebarChildTabRow: View {
         }
         .contextMenu {
             Button("Unjoin") {
-                controller.unjoinTab(child, from: parent)
+                controller.unjoinTab(child, from: group)
             }
         }
     }
