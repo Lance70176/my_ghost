@@ -1,15 +1,15 @@
 import Foundation
 
-/// Manages GNU screen sessions for terminal session persistence across app restarts.
-/// Each terminal tab runs inside a screen session so that when the app quits, the shell
+/// Manages tmux sessions for terminal session persistence across app restarts.
+/// Each terminal tab runs inside a tmux session so that when the app quits, the shell
 /// processes survive and can be reattached on next launch.
 class ScreenSessionManager {
     static let shared = ScreenSessionManager()
 
-    /// Whether `/usr/bin/screen` exists on the system.
+    /// Whether tmux exists on the system.
     let isAvailable: Bool
 
-    private let screenPath = "/usr/bin/screen"
+    private let tmuxPath: String
     private let fileManager = FileManager.default
 
     /// Directory for MyGhost support files.
@@ -18,9 +18,9 @@ class ScreenSessionManager {
         return appSupport.appendingPathComponent("MyGhost")
     }
 
-    /// Path to the custom screenrc file.
-    private var screenrcPath: URL {
-        supportDirectory.appendingPathComponent("screenrc")
+    /// Path to the custom tmux config file.
+    private var tmuxConfPath: URL {
+        supportDirectory.appendingPathComponent("tmux.conf")
     }
 
     /// Path to the persisted session state JSON.
@@ -29,34 +29,62 @@ class ScreenSessionManager {
     }
 
     private init() {
-        isAvailable = FileManager.default.fileExists(atPath: "/usr/bin/screen")
+        // Prefer Homebrew tmux, fall back to system
+        let candidates = ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"]
+        if let found = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) {
+            tmuxPath = found
+            isAvailable = true
+        } else {
+            tmuxPath = "/opt/homebrew/bin/tmux"
+            isAvailable = false
+        }
     }
 
-    // MARK: - Screenrc
+    // MARK: - Tmux Config
 
-    /// Ensure the support directory and minimal screenrc exist.
-    func ensureScreenrc() {
+    /// Ensure the support directory and minimal tmux.conf exist.
+    func ensureTmuxConf() {
         do {
             try fileManager.createDirectory(at: supportDirectory, withIntermediateDirectories: true)
         } catch {
             return
         }
 
-        // Always overwrite to keep screenrc in sync with app version
-        let rc = [
-            "startup_message off",
-            "escape ^Zz",
-            "vbell off",
-            "defscrollback 10000",
-            "hardstatus off",
-            "caption never",
+        // Always overwrite to keep config in sync with app version
+        let conf = [
+            // No status bar — Ghostty handles tab UI
+            "set -g status off",
+            // True color support
+            "set -g default-terminal 'xterm-256color'",
+            "set -sa terminal-features ',xterm-256color:RGB'",
+            // Don't intercept any key sequences — let Ghostty handle them
+            "set -g prefix None",
+            "unbind-key -a",
+            // Large scrollback
+            "set -g history-limit 10000",
+            // No visual bell
+            "set -g visual-bell off",
+            // Allow passthrough of escape sequences (OSC, etc.)
+            "set -g allow-passthrough on",
+            // Forward terminal title from shell to Ghostty
+            "set -g set-titles on",
+            "set -g set-titles-string '#T'",
+            // Allow shell/programs to set window/pane title
+            "set -g allow-rename on",
+            "set -g automatic-rename on",
+            // Ensure OSC title sequences are forwarded to the outer terminal
+            "set -ga terminal-overrides ',xterm-256color:title'",
+            // Disable escape delay for responsive input
+            "set -sg escape-time 0",
+            // Destroy session when shell exits
+            "set -g remain-on-exit off",
         ].joined(separator: "\n")
-        try? rc.data(using: .utf8)?.write(to: screenrcPath)
+        try? conf.data(using: .utf8)?.write(to: tmuxConfPath)
     }
 
     // MARK: - Session Naming
 
-    /// Generate a screen session name for a given tab UUID.
+    /// Generate a tmux session name for a given tab UUID.
     func sessionName(for id: UUID) -> String {
         "myghost_\(id.uuidString.lowercased())"
     }
@@ -93,65 +121,50 @@ class ScreenSessionManager {
         return ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
     }
 
-    /// Path to a launcher script that `cd`s then `exec`s the user shell.
-    private var launcherScriptPath: URL {
-        supportDirectory.appendingPathComponent("launch.sh")
+    /// Escape spaces with backslashes for shell commands.
+    private func escapeForShell(_ path: String) -> String {
+        path.replacingOccurrences(of: " ", with: "\\ ")
     }
 
-    /// Write a launcher script: `cd "$1" && exec <shell>`
-    private func ensureLauncherScript() {
-        let script = """
-        #!/bin/sh
-        cd "$1" 2>/dev/null
-        exec \(userShell)
-        """
-        let path = launcherScriptPath
-        try? script.data(using: .utf8)?.write(to: path)
-        // Make executable
-        try? fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: path.path)
-    }
-
-    /// Return the shell command to create a new screen session.
-    /// When `workingDirectory` is provided, uses a launcher script
-    /// so the shell starts in the correct directory.
+    /// Return the shell command to create a new tmux session.
+    /// When `workingDirectory` is provided, tmux starts in that directory via `-c`.
     func createCommand(sessionName: String, workingDirectory: String? = nil) -> String {
-        ensureScreenrc()
-        let escapedRcPath = screenrcPath.path.replacingOccurrences(of: " ", with: "\\ ")
+        ensureTmuxConf()
+        let escapedConf = escapeForShell(tmuxConfPath.path)
+        let shell = userShell
+        var cmd = "\(tmuxPath) -f \(escapedConf) new-session -s \(sessionName)"
         if let wd = workingDirectory {
-            ensureLauncherScript()
-            let escapedLauncher = launcherScriptPath.path.replacingOccurrences(of: " ", with: "\\ ")
-            let escapedWd = wd.replacingOccurrences(of: " ", with: "\\ ")
-            return "\(screenPath) -c \(escapedRcPath) -S \(sessionName) \(escapedLauncher) \(escapedWd)"
+            cmd += " -c \(escapeForShell(wd))"
         }
-        return "\(screenPath) -c \(escapedRcPath) -S \(sessionName) \(userShell)"
+        cmd += " \(escapeForShell(shell))"
+        return cmd
     }
 
-    /// Return the shell command to reattach to an existing screen session.
-    /// Uses `-d -r` to force detach then reattach.
+    /// Return the shell command to reattach to an existing tmux session.
     func reattachCommand(sessionName: String) -> String {
-        ensureScreenrc()
-        let escapedRcPath = screenrcPath.path.replacingOccurrences(of: " ", with: "\\ ")
-        return "\(screenPath) -c \(escapedRcPath) -d -r \(sessionName)"
+        ensureTmuxConf()
+        let escapedConf = escapeForShell(tmuxConfPath.path)
+        return "\(tmuxPath) -f \(escapedConf) attach-session -t \(sessionName)"
     }
 
     // MARK: - Session Lifecycle
 
-    /// Kill a screen session by name.
+    /// Kill a tmux session by name.
     func killSession(name: String) {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: screenPath)
-        process.arguments = ["-S", name, "-X", "quit"]
+        process.executableURL = URL(fileURLWithPath: tmuxPath)
+        process.arguments = ["kill-session", "-t", name]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try? process.run()
         process.waitUntilExit()
     }
 
-    /// List all alive screen sessions that start with `myghost_`.
+    /// List all alive tmux sessions that start with `myghost_`.
     func listAliveSessions() -> [String] {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: screenPath)
-        process.arguments = ["-ls"]
+        process.executableURL = URL(fileURLWithPath: tmuxPath)
+        process.arguments = ["list-sessions", "-F", "#{session_name}"]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
@@ -166,69 +179,58 @@ class ScreenSessionManager {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         guard let output = String(data: data, encoding: .utf8) else { return [] }
 
-        // Parse screen -ls output. Each line looks like:
-        //   12345.myghost_uuid  (Detached)
-        var sessions: [String] = []
-        for line in output.components(separatedBy: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            // Extract the session name (after the PID dot)
-            guard let dotIndex = trimmed.firstIndex(of: ".") else { continue }
-            let afterDot = trimmed[trimmed.index(after: dotIndex)...]
-            // Take the session name up to the next whitespace or tab
-            let name = String(afterDot.prefix(while: { !$0.isWhitespace }))
-            if name.hasPrefix("myghost_") {
-                sessions.append(name)
-            }
-        }
-        return sessions
+        return output.components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.hasPrefix("myghost_") }
     }
 
     // MARK: - Working Directory Detection
 
-    /// Get the current working directory of the shell running inside a screen session.
-    /// Walks the process tree: screen → login → fish, then uses `lsof` to get cwd.
+    /// Get the current working directory of the shell running inside a tmux session.
+    /// Uses `tmux display-message` to get the pane PID, then walks the process tree.
     func getSessionWorkingDirectory(sessionName: String) -> String? {
-        // Find the screen process PID from session name
-        let lsOutput = runScreenLs()
-        guard let screenPid = parseScreenPid(from: lsOutput, sessionName: sessionName) else { return nil }
+        // Try tmux's built-in pane_current_path first
+        let tmuxCwd = getTmuxPaneCwd(sessionName: sessionName)
+        if let cwd = tmuxCwd, !cwd.isEmpty {
+            return cwd
+        }
 
-        // Walk down the process tree to find the innermost shell
-        guard let shellPid = findInnermostChild(of: screenPid) else { return nil }
-
-        // Get cwd via lsof
+        // Fallback: get the pane PID and walk the process tree
+        guard let panePid = getTmuxPanePid(sessionName: sessionName) else { return nil }
+        guard let shellPid = findInnermostChild(of: panePid) else { return nil }
         return getCwd(of: shellPid)
     }
 
-    private func runScreenLs() -> String {
+    private func getTmuxPaneCwd(sessionName: String) -> String? {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: screenPath)
-        process.arguments = ["-ls"]
+        process.executableURL = URL(fileURLWithPath: tmuxPath)
+        process.arguments = ["display-message", "-t", sessionName, "-p", "#{pane_current_path}"]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
-        do { try process.run() } catch { return "" }
+        do { try process.run() } catch { return nil }
         process.waitUntilExit()
-        return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
-    private func parseScreenPid(from output: String, sessionName: String) -> pid_t? {
-        for line in output.components(separatedBy: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.contains(sessionName) {
-                // Format: "12345.myghost_uuid  (Attached)"
-                if let dotIndex = trimmed.firstIndex(of: ".") {
-                    let pidStr = String(trimmed[trimmed.startIndex..<dotIndex])
-                    if let pid = Int32(pidStr) { return pid }
-                }
-            }
-        }
-        return nil
+    private func getTmuxPanePid(sessionName: String) -> pid_t? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: tmuxPath)
+        process.arguments = ["display-message", "-t", sessionName, "-p", "#{pane_pid}"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return nil }
+        process.waitUntilExit()
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        return Int32(output.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     private func findInnermostChild(of pid: pid_t) -> pid_t? {
-        // Use pgrep to find child, then recurse
         var current = pid
-        for _ in 0..<5 { // max depth to avoid infinite loop
+        for _ in 0..<5 {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
             process.arguments = ["-P", "\(current)"]
