@@ -112,6 +112,7 @@ class SidebarTerminalController: BaseTerminalController {
     }
 
     override func windowWillClose(_ notification: Notification) {
+        saveScreenSessionState()
         super.windowWillClose(notification)
         Self.allControllers.remove(self)
     }
@@ -514,6 +515,9 @@ class SidebarTerminalController: BaseTerminalController {
 
         // Remove from group's children
         group.children.removeAll { $0.id == child.id }
+
+        // Notify the controller so SidebarView recomputes flatRows
+        objectWillChange.send()
 
         // Kill the child's screen session
         if let name = child.screenSessionName {
