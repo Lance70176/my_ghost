@@ -84,7 +84,31 @@ class FileBrowserState: ObservableObject {
         return components
     }
 
+    /// Collect all expanded folder paths from a node tree.
+    private func expandedPaths(in nodes: [FileNode]) -> Set<URL> {
+        var paths = Set<URL>()
+        for node in nodes where node.isDirectory && node.isExpanded {
+            paths.insert(node.url)
+            if let children = node.children {
+                paths.formUnion(expandedPaths(in: children))
+            }
+        }
+        return paths
+    }
+
+    /// Restore expansion state for nodes whose paths are in the given set.
+    private func restoreExpanded(_ paths: Set<URL>, in nodes: [FileNode]) {
+        for node in nodes where node.isDirectory && paths.contains(node.url) {
+            node.loadChildren()
+            node.isExpanded = true
+            if let children = node.children {
+                restoreExpanded(paths, in: children)
+            }
+        }
+    }
+
     func loadEntries() {
+        let previouslyExpanded = expandedPaths(in: rootNodes)
         let fm = FileManager.default
         do {
             let urls = try fm.contentsOfDirectory(
@@ -100,6 +124,7 @@ class FileBrowserState: ObservableObject {
                 if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
                 return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
             }
+            restoreExpanded(previouslyExpanded, in: rootNodes)
         } catch {
             rootNodes = []
         }
@@ -137,6 +162,7 @@ struct FileEntry: Identifiable {
 struct FileBrowserView: View {
     @ObservedObject var state: FileBrowserState
     @State private var selectedNodeID: UUID?
+    @State private var refreshTimer: Timer?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -190,6 +216,14 @@ struct FileBrowserView: View {
             if state.rootNodes.isEmpty {
                 state.loadEntries()
             }
+            refreshTimer?.invalidate()
+            refreshTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in
+                state.loadEntries()
+            }
+        }
+        .onDisappear {
+            refreshTimer?.invalidate()
+            refreshTimer = nil
         }
         .background(FileBrowserKeyMonitor(
             isFileBrowserActive: true,

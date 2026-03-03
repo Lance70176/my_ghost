@@ -37,6 +37,15 @@ class SidebarTabEntry: ObservableObject, Identifiable {
     /// The group header displays this name, which can be renamed via right-click.
     @Published var groupName: String?
 
+    /// Whether this group is in "full mode" (showing one child at a time instead of split panes).
+    @Published var isFullMode: Bool = false
+
+    /// The split tree saved before entering full mode, so it can be restored on exit.
+    var savedSplitTree: SplitTree<Ghostty.SurfaceView>?
+
+    /// The ID of the child currently displayed in full mode.
+    @Published var fullModeActiveChildID: UUID?
+
     /// Whether this entry is a group container.
     var isGroup: Bool { groupName != nil }
 

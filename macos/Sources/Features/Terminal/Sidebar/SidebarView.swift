@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Sidebar display mode.
 enum SidebarMode {
@@ -32,11 +33,25 @@ struct SidebarView: View {
     /// Local selection state for the List.
     @State private var selection: UUID?
 
-    /// Current sidebar mode.
-    @State private var sidebarMode: SidebarMode = .terminal
+    /// The tab ID currently being hovered during a drag operation.
+    @State private var dropTargetID: UUID?
+
+    /// Current sidebar mode — bound to the controller so the right-side view can switch.
+    @Binding var sidebarMode: SidebarMode
 
     /// Persistent file browser state across mode switches.
     @StateObject private var fileBrowserState = FileBrowserState()
+
+    /// A mapping from tab/child ID to its Cmd+Number shortcut index (1-based), using the flat activatable list.
+    private var shortcutIndexMap: [UUID: Int] {
+        var map: [UUID: Int] = [:]
+        for (i, item) in controller.flatActivatableItems.enumerated() {
+            if i < 9 {
+                map[item.tab.id] = i + 1
+            }
+        }
+        return map
+    }
 
     /// Build a flat list of row items — children are always shown.
     private var flatRows: [SidebarRowItem] {
@@ -76,9 +91,18 @@ struct SidebarView: View {
                     .buttonStyle(.borderless)
 
                     Button(action: {
-                        if let selectedID = controller.selectedTabID,
-                           let tab = controller.tabs.first(where: { $0.id == selectedID }) {
-                            controller.closeTab(tab)
+                        if let sel = selection {
+                            // Check if selection is a child within a group
+                            for group in controller.tabs where group.isGroup {
+                                if let child = group.children.first(where: { $0.id == sel }) {
+                                    controller.closeChildTab(child, from: group)
+                                    return
+                                }
+                            }
+                            // Otherwise close the top-level tab/group
+                            if let tab = controller.tabs.first(where: { $0.id == sel }) {
+                                controller.closeTab(tab)
+                            }
                         }
                     }) {
                         Image(systemName: "minus")
@@ -119,30 +143,80 @@ struct SidebarView: View {
                             }
                         }
                     }
+
             }
         }
         .frame(minWidth: 150, idealWidth: 200)
         .onChange(of: controller.selectedTabID) { _ in
             // Auto-switch sidebar to terminal tab list when tab changes (e.g. Cmd+number)
-            if sidebarMode != .terminal {
+            if sidebarMode == .fileBrowser {
                 sidebarMode = .terminal
             }
         }
     }
 
+    /// Create a Binding<Bool> that sets/clears dropTargetID for a specific tab.
+    private func dropTargetBinding(for tabID: UUID) -> Binding<Bool> {
+        Binding(
+            get: { dropTargetID == tabID },
+            set: { isTargeted in
+                dropTargetID = isTargeted ? tabID : (dropTargetID == tabID ? nil : dropTargetID)
+            }
+        )
+    }
+
+    /// Visual indicator shown on the drop target row.
+    @ViewBuilder
+    private func dropIndicator(for tabID: UUID) -> some View {
+        if dropTargetID == tabID {
+            RoundedRectangle(cornerRadius: 4)
+                .stroke(Color.accentColor, lineWidth: 2)
+                .padding(.horizontal, 2)
+        }
+    }
+
+    /// Handle a drop of a dragged tab UUID onto a target tab index.
+    private func handleDrop(of providers: [NSItemProvider], targetTabID: UUID) -> Bool {
+        dropTargetID = nil
+        guard let provider = providers.first else { return false }
+        provider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { data, _ in
+            guard let data = data as? Data, let uuidString = String(data: data, encoding: .utf8),
+                  let draggedID = UUID(uuidString: uuidString) else { return }
+            DispatchQueue.main.async {
+                guard let fromIndex = controller.tabs.firstIndex(where: { $0.id == draggedID }),
+                      let toIndex = controller.tabs.firstIndex(where: { $0.id == targetTabID }) else { return }
+                guard fromIndex != toIndex else { return }
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    let tab = controller.tabs.remove(at: fromIndex)
+                    controller.tabs.insert(tab, at: toIndex)
+                    controller.saveScreenSessionState()
+                }
+            }
+        }
+        return true
+    }
+
     /// The terminal tab list view.
     private var terminalTabList: some View {
-        List(selection: $selection) {
+        let shortcuts = shortcutIndexMap
+        return List(selection: $selection) {
             ForEach(flatRows) { item in
                 switch item {
-                case .tab(let tab, let index):
+                case .tab(let tab, _):
                     SidebarStandaloneTabRow(
                         tab: tab,
-                        shortcutIndex: index < 9 ? index + 1 : nil,
+                        shortcutIndex: shortcuts[tab.id],
                         controller: controller,
                         selection: $selection
                     )
                     .tag(tab.id)
+                    .overlay(dropIndicator(for: tab.id))
+                    .onDrag {
+                        NSItemProvider(object: tab.id.uuidString as NSString)
+                    }
+                    .onDrop(of: [.plainText], isTargeted: dropTargetBinding(for: tab.id)) { providers in
+                        handleDrop(of: providers, targetTabID: tab.id)
+                    }
 
                 case .group(let group, _):
                     SidebarGroupHeaderRow(
@@ -151,11 +225,19 @@ struct SidebarView: View {
                         selection: $selection
                     )
                     .tag(group.id)
+                    .overlay(dropIndicator(for: group.id))
+                    .onDrag {
+                        NSItemProvider(object: group.id.uuidString as NSString)
+                    }
+                    .onDrop(of: [.plainText], isTargeted: dropTargetBinding(for: group.id)) { providers in
+                        handleDrop(of: providers, targetTabID: group.id)
+                    }
 
                 case .groupChild(let child, let group):
                     SidebarGroupChildRow(
                         child: child,
                         group: group,
+                        shortcutIndex: shortcuts[child.id],
                         controller: controller,
                         selection: $selection
                     )
@@ -198,7 +280,9 @@ struct SidebarView: View {
                     if group.id != controller.selectedTabID {
                         controller.selectTab(group)
                     }
-                    if let surface = child.focusedSurface ?? child.originalSurface {
+                    if group.isFullMode {
+                        controller.switchFullModeChild(to: child, in: group)
+                    } else if let surface = child.focusedSurface ?? child.originalSurface {
                         DispatchQueue.main.async {
                             Ghostty.moveFocus(to: surface)
                         }
@@ -213,6 +297,7 @@ struct SidebarView: View {
             }
         }
     }
+
 }
 
 // MARK: - Standalone tab row (not in a group)
@@ -300,7 +385,7 @@ private struct SidebarGroupHeaderRow: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            Image(systemName: "rectangle.split.2x1")
+            Image(systemName: group.isFullMode ? "rectangle.stack" : "rectangle.split.2x1")
                 .font(.caption)
                 .foregroundColor(.secondary)
 
@@ -330,6 +415,18 @@ private struct SidebarGroupHeaderRow: View {
         .contextMenu {
             Button("Rename…") {
                 renameGroup()
+            }
+
+            Divider()
+
+            if group.isFullMode {
+                Button("All Unfull") {
+                    controller.exitFullMode(for: group)
+                }
+            } else {
+                Button("All Full") {
+                    controller.enterFullMode(for: group)
+                }
             }
 
             Divider()
@@ -372,9 +469,17 @@ private struct SidebarGroupHeaderRow: View {
 
 private struct SidebarGroupChildRow: View {
     @ObservedObject var child: SidebarTabEntry
-    let group: SidebarTabEntry
+    @ObservedObject var group: SidebarTabEntry
+    let shortcutIndex: Int?
     let controller: SidebarTerminalController
     @Binding var selection: UUID?
+
+    @State private var isHovering = false
+
+    /// Whether this child is the active one in full mode.
+    private var isFullModeActive: Bool {
+        group.isFullMode && group.fullModeActiveChildID == child.id
+    }
 
     var body: some View {
         HStack(spacing: 4) {
@@ -388,19 +493,41 @@ private struct SidebarGroupChildRow: View {
 
             Image(systemName: "terminal")
                 .font(.caption2)
-                .foregroundColor(.secondary)
+                .foregroundColor(isFullModeActive ? .accentColor : .secondary)
 
             Text(child.displayTitle)
                 .font(.callout)
+                .fontWeight(isFullModeActive ? .semibold : .regular)
                 .lineLimit(1)
                 .truncationMode(.tail)
 
             Spacer()
 
+            if isFullModeActive {
+                Image(systemName: "circle.fill")
+                    .font(.system(size: 6))
+                    .foregroundColor(.accentColor)
+            }
+
             if child.bell {
                 Image(systemName: "bell.fill")
                     .foregroundColor(.yellow)
                     .font(.caption)
+            }
+
+            if let shortcutIndex {
+                Text("\u{2318}\(shortcutIndex)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+
+            if isHovering {
+                Button(action: { controller.closeChildTab(child, from: group) }) {
+                    Image(systemName: "xmark")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.borderless)
             }
         }
         .padding(.leading, 12)
@@ -410,15 +537,24 @@ private struct SidebarGroupChildRow: View {
             if group.id != controller.selectedTabID {
                 controller.selectTab(group)
             }
-            if let surface = child.originalSurface {
+            if group.isFullMode {
+                controller.switchFullModeChild(to: child, in: group)
+            } else if let surface = child.originalSurface {
                 DispatchQueue.main.async {
                     Ghostty.moveFocus(to: surface)
                 }
             }
         }
+        .onHover { isHovering = $0 }
         .contextMenu {
             Button("Unjoin") {
                 controller.unjoinTab(child, from: group)
+            }
+
+            Divider()
+
+            Button("Close Tab") {
+                controller.closeChildTab(child, from: group)
             }
         }
     }

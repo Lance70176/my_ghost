@@ -18,6 +18,9 @@ class SidebarTerminalController: BaseTerminalController {
     /// The ID of the currently selected tab.
     @Published var selectedTabID: UUID?
 
+    /// Shared UI state for sidebar mode switching.
+    let sidebarUIState = SidebarUIState()
+
     /// Derived config for window-level settings.
     private var derivedConfig: DerivedConfig
 
@@ -99,17 +102,9 @@ class SidebarTerminalController: BaseTerminalController {
         window.delegate = self
         window.isReleasedWhenClosed = false
 
-        // Build the content: sidebar on the left, terminal on the right.
+        // Build the content: sidebar on the left, terminal or editor on the right.
         window.contentView = TerminalViewContainer {
-            HSplitView {
-                SidebarView(controller: self)
-                    .frame(minWidth: 150, maxWidth: 300)
-
-                TerminalView(ghostty: self.ghostty, viewModel: self, delegate: self)
-                    .splitPaneTitleBar(true)
-                    .frame(minWidth: 400)
-                    .padding(.leading, 4)
-            }
+            SidebarRootView(controller: self, uiState: self.sidebarUIState)
         }
 
         window.center()
@@ -296,7 +291,15 @@ class SidebarTerminalController: BaseTerminalController {
         }
 
         // Determine current tree to work with
-        let currentTree = (target.id == selectedTabID || group.id == selectedTabID) ? surfaceTree : group.surfaceTree
+        // If group is in full mode, operate on the savedSplitTree (the actual layout)
+        let currentTree: SplitTree<Ghostty.SurfaceView>
+        if group.isFullMode, let saved = group.savedSplitTree {
+            currentTree = saved
+        } else if target.id == selectedTabID || group.id == selectedTabID {
+            currentTree = surfaceTree
+        } else {
+            currentTree = group.surfaceTree
+        }
         let leafCount = currentTree.root?.leaves().count ?? 0
 
         // Max 4 panes per tab area
@@ -328,7 +331,21 @@ class SidebarTerminalController: BaseTerminalController {
 
         // Perform the insertion into the group's tree
         let isActive = (target.id == selectedTabID) || (group.id == selectedTabID)
-        if isActive {
+
+        if group.isFullMode {
+            // In full mode, insert into the savedSplitTree (the real layout)
+            guard let saved = group.savedSplitTree else { return }
+            do {
+                let newTree = try saved.inserting(
+                    view: sourceSurface,
+                    at: insertionSurface,
+                    direction: direction
+                )
+                group.savedSplitTree = newTree
+            } catch {
+                return
+            }
+        } else if isActive {
             do {
                 let newTree = try surfaceTree.inserting(
                     view: sourceSurface,
@@ -389,13 +406,40 @@ class SidebarTerminalController: BaseTerminalController {
         guard let childSurface = child.originalSurface else { return }
         let leafNode = SplitTree<Ghostty.SurfaceView>.Node.leaf(view: childSurface)
 
-        if group.id == selectedTabID {
-            let newTree = surfaceTree.removing(leafNode)
-            surfaceTree = newTree
-            group.surfaceTree = newTree
+        if group.isFullMode {
+            // In full mode, remove from savedSplitTree
+            if let saved = group.savedSplitTree {
+                group.savedSplitTree = saved.removing(leafNode)
+            }
+
+            // If the active child is being removed, switch to another child
+            if group.fullModeActiveChildID == child.id {
+                let remaining = group.children.filter { $0.id != child.id }
+                if let next = remaining.first {
+                    group.fullModeActiveChildID = next.id
+                    if let surface = next.originalSurface {
+                        let singleTree = SplitTree<Ghostty.SurfaceView>(view: surface)
+                        if group.id == selectedTabID {
+                            surfaceTree = singleTree
+                            group.surfaceTree = singleTree
+                            DispatchQueue.main.async {
+                                Ghostty.moveFocus(to: surface)
+                            }
+                        } else {
+                            group.surfaceTree = singleTree
+                        }
+                    }
+                }
+            }
         } else {
-            let newTree = group.surfaceTree.removing(leafNode)
-            group.surfaceTree = newTree
+            if group.id == selectedTabID {
+                let newTree = surfaceTree.removing(leafNode)
+                surfaceTree = newTree
+                group.surfaceTree = newTree
+            } else {
+                let newTree = group.surfaceTree.removing(leafNode)
+                group.surfaceTree = newTree
+            }
         }
 
         // Remove from group's children
@@ -415,7 +459,89 @@ class SidebarTerminalController: BaseTerminalController {
 
         // If only one child remains in a group, dissolve the group
         if group.isGroup && group.children.count == 1 {
+            // Exit full mode first if needed
+            if group.isFullMode {
+                group.isFullMode = false
+                group.savedSplitTree = nil
+                group.fullModeActiveChildID = nil
+            }
             dissolveGroup(group)
+        }
+
+        saveScreenSessionState()
+    }
+
+    /// Close a single child tab within a group, removing its surface from the
+    /// group's split tree and killing its screen session. If the group is left
+    /// with only one child, the group dissolves into a standalone tab.
+    func closeChildTab(_ child: SidebarTabEntry, from group: SidebarTabEntry) {
+        guard let childSurface = child.originalSurface else { return }
+        let leafNode = SplitTree<Ghostty.SurfaceView>.Node.leaf(view: childSurface)
+
+        // Remove the child's surface from the group's tree
+        if group.isFullMode {
+            if let saved = group.savedSplitTree {
+                group.savedSplitTree = saved.removing(leafNode)
+            }
+            if group.fullModeActiveChildID == child.id {
+                let remaining = group.children.filter { $0.id != child.id }
+                if let next = remaining.first {
+                    group.fullModeActiveChildID = next.id
+                    if let surface = next.originalSurface {
+                        let singleTree = SplitTree<Ghostty.SurfaceView>(view: surface)
+                        if group.id == selectedTabID {
+                            surfaceTree = singleTree
+                            group.surfaceTree = singleTree
+                            DispatchQueue.main.async {
+                                Ghostty.moveFocus(to: surface)
+                            }
+                        } else {
+                            group.surfaceTree = singleTree
+                        }
+                    }
+                }
+            }
+        } else {
+            if group.id == selectedTabID {
+                let newTree = surfaceTree.removing(leafNode)
+                surfaceTree = newTree
+                group.surfaceTree = newTree
+            } else {
+                let newTree = group.surfaceTree.removing(leafNode)
+                group.surfaceTree = newTree
+            }
+        }
+
+        // Remove from group's children
+        group.children.removeAll { $0.id == child.id }
+
+        // Kill the child's screen session
+        if let name = child.screenSessionName {
+            ScreenSessionManager.shared.killSession(name: name)
+        }
+
+        // If only one child remains, dissolve the group
+        if group.isGroup && group.children.count == 1 {
+            if group.isFullMode {
+                group.isFullMode = false
+                group.savedSplitTree = nil
+                group.fullModeActiveChildID = nil
+            }
+            dissolveGroup(group)
+        } else if group.children.isEmpty {
+            // No children left — close the group entirely
+            if let index = tabs.firstIndex(where: { $0.id == group.id }) {
+                tabs.remove(at: index)
+                if tabs.isEmpty {
+                    saveScreenSessionState()
+                    window?.close()
+                    return
+                }
+                if group.id == selectedTabID {
+                    let newIndex = min(index, tabs.count - 1)
+                    selectTab(tabs[newIndex])
+                }
+            }
         }
 
         saveScreenSessionState()
@@ -455,6 +581,101 @@ class SidebarTerminalController: BaseTerminalController {
         tabs.first(where: { $0.id == selectedTabID })
     }
 
+    // MARK: - Full Mode (Group)
+
+    /// Enter full mode for a group: save the current split tree and show only one child.
+    func enterFullMode(for group: SidebarTabEntry) {
+        guard group.isGroup, !group.isFullMode else { return }
+        guard !group.children.isEmpty else { return }
+
+        // Save the current split tree
+        let isActive = group.id == selectedTabID
+        group.savedSplitTree = isActive ? surfaceTree : group.surfaceTree
+
+        // Pick the first child as the active one
+        let activeChild = group.children.first!
+        group.fullModeActiveChildID = activeChild.id
+        group.isFullMode = true
+
+        // Build a single-surface tree for the active child
+        if let surface = activeChild.originalSurface {
+            let singleTree = SplitTree<Ghostty.SurfaceView>(view: surface)
+            if isActive {
+                surfaceTree = singleTree
+                group.surfaceTree = singleTree
+                DispatchQueue.main.async {
+                    Ghostty.moveFocus(to: surface)
+                }
+            } else {
+                group.surfaceTree = singleTree
+            }
+        }
+
+        saveScreenSessionState()
+    }
+
+    /// Exit full mode for a group: restore the saved split tree.
+    func exitFullMode(for group: SidebarTabEntry) {
+        guard group.isGroup, group.isFullMode else { return }
+        guard let savedTree = group.savedSplitTree else { return }
+
+        let isActive = group.id == selectedTabID
+        group.isFullMode = false
+        group.fullModeActiveChildID = nil
+        group.savedSplitTree = nil
+
+        if isActive {
+            surfaceTree = savedTree
+            group.surfaceTree = savedTree
+            // Focus the first leaf
+            if let firstLeaf = savedTree.root?.leftmostLeaf() {
+                DispatchQueue.main.async {
+                    Ghostty.moveFocus(to: firstLeaf)
+                }
+            }
+        } else {
+            group.surfaceTree = savedTree
+        }
+
+        saveScreenSessionState()
+    }
+
+    /// Switch the displayed child in full mode.
+    func switchFullModeChild(to child: SidebarTabEntry, in group: SidebarTabEntry) {
+        guard group.isGroup, group.isFullMode else { return }
+        guard group.children.contains(where: { $0.id == child.id }) else { return }
+        guard child.id != group.fullModeActiveChildID else { return }
+
+        group.fullModeActiveChildID = child.id
+
+        let isActive = group.id == selectedTabID
+        if let surface = child.originalSurface {
+            let singleTree = SplitTree<Ghostty.SurfaceView>(view: surface)
+            if isActive {
+                surfaceTree = singleTree
+                group.surfaceTree = singleTree
+                DispatchQueue.main.async {
+                    Ghostty.moveFocus(to: surface)
+                }
+            } else {
+                group.surfaceTree = singleTree
+            }
+        }
+    }
+
+    // MARK: - Tab Reordering
+
+    /// Move a top-level tab from one index to another.
+    func moveTab(fromIndex: Int, toIndex: Int) {
+        guard fromIndex != toIndex else { return }
+        guard fromIndex >= 0, fromIndex < tabs.count else { return }
+        guard toIndex >= 0, toIndex <= tabs.count else { return }
+        let tab = tabs.remove(at: fromIndex)
+        let insertAt = toIndex > fromIndex ? toIndex - 1 : toIndex
+        tabs.insert(tab, at: insertAt)
+        saveScreenSessionState()
+    }
+
     // MARK: - Overrides
 
     override func surfaceTreeDidChange(from: SplitTree<Ghostty.SurfaceView>, to: SplitTree<Ghostty.SurfaceView>) {
@@ -486,6 +707,23 @@ class SidebarTerminalController: BaseTerminalController {
         toggleFullscreen(mode: .native)
     }
 
+    /// A flattened list of activatable items for Cmd+Number shortcuts.
+    /// Standalone tabs and group children are included; group headers are skipped.
+    /// Each element is (tab: the tab/child entry, group: the parent group if child, otherwise nil).
+    var flatActivatableItems: [(tab: SidebarTabEntry, group: SidebarTabEntry?)] {
+        var items: [(tab: SidebarTabEntry, group: SidebarTabEntry?)] = []
+        for tab in tabs {
+            if tab.isGroup {
+                for child in tab.children {
+                    items.append((tab: child, group: tab))
+                }
+            } else {
+                items.append((tab: tab, group: nil))
+            }
+        }
+        return items
+    }
+
     @objc private func onGotoTab(notification: Notification) {
         guard let target = notification.object as? Ghostty.SurfaceView else { return }
         guard target == focusedSurface else { return }
@@ -494,29 +732,53 @@ class SidebarTerminalController: BaseTerminalController {
         guard let tabEnum = tabEnumAny as? ghostty_action_goto_tab_e else { return }
         let tabIndex: Int32 = tabEnum.rawValue
 
-        guard !tabs.isEmpty else { return }
-        guard let currentIndex = tabs.firstIndex(where: { $0.id == selectedTabID }) else { return }
+        let flatItems = flatActivatableItems
+        guard !flatItems.isEmpty else { return }
+
+        // Find current position in the flat list
+        let currentFlatIndex: Int
+        if let selectedID = selectedTabID {
+            // Try to find the currently focused item in the flat list
+            currentFlatIndex = flatItems.firstIndex(where: { $0.tab.id == selectedID }) ?? 0
+        } else {
+            currentFlatIndex = 0
+        }
 
         let finalIndex: Int
 
         if tabIndex <= 0 {
             if tabIndex == GHOSTTY_GOTO_TAB_PREVIOUS.rawValue {
-                finalIndex = currentIndex == 0 ? tabs.count - 1 : currentIndex - 1
+                finalIndex = currentFlatIndex == 0 ? flatItems.count - 1 : currentFlatIndex - 1
             } else if tabIndex == GHOSTTY_GOTO_TAB_NEXT.rawValue {
-                finalIndex = currentIndex == tabs.count - 1 ? 0 : currentIndex + 1
+                finalIndex = currentFlatIndex == flatItems.count - 1 ? 0 : currentFlatIndex + 1
             } else if tabIndex == GHOSTTY_GOTO_TAB_LAST.rawValue {
-                finalIndex = tabs.count - 1
+                finalIndex = flatItems.count - 1
             } else {
                 return
             }
         } else {
             guard tabIndex >= 1 else { return }
-            finalIndex = min(Int(tabIndex - 1), tabs.count - 1)
+            finalIndex = min(Int(tabIndex - 1), flatItems.count - 1)
         }
 
         guard finalIndex >= 0 else { return }
-        let targetTab = tabs[finalIndex]
-        selectTab(targetTab)
+        let item = flatItems[finalIndex]
+
+        if let group = item.group {
+            // It's a child inside a group — select the group, then focus the child
+            if group.id != selectedTabID {
+                selectTab(group)
+            }
+            if group.isFullMode {
+                switchFullModeChild(to: item.tab, in: group)
+            } else if let surface = item.tab.focusedSurface ?? item.tab.originalSurface {
+                DispatchQueue.main.async {
+                    Ghostty.moveFocus(to: surface)
+                }
+            }
+        } else {
+            selectTab(item.tab)
+        }
     }
 
     @objc private func ghosttyConfigDidChange(_ notification: Notification) {
@@ -569,6 +831,7 @@ class SidebarTerminalController: BaseTerminalController {
         let mgr = ScreenSessionManager.shared
         guard mgr.isAvailable else { return nil }
         guard let state = mgr.loadState() else { return nil }
+        guard let ghostty_app = ghostty.app else { return nil }
 
         let aliveSessions = Set(mgr.listAliveSessions())
 
@@ -607,24 +870,102 @@ class SidebarTerminalController: BaseTerminalController {
         controller.tabs.first?.screenSessionName = firstSession.screenSessionName
         controller.tabs.first?.defaultTitle = firstSession.title
 
+        // Track whether the first leaf (used to bootstrap the controller) has been consumed
         var firstLeafUsed = true
 
-        // Restore remaining sessions
+        /// Helper: create a SidebarTabEntry for a leaf session by reattaching to its tmux session.
+        func makeChildTab(_ session: ScreenSessionManager.SessionState) -> SidebarTabEntry {
+            var config = Ghostty.SurfaceConfiguration()
+            config.command = mgr.reattachCommand(sessionName: session.screenSessionName)
+            if let wd = session.workingDirectory {
+                config.workingDirectory = wd
+            }
+            let surface = Ghostty.SurfaceView(ghostty_app, baseConfig: config)
+            let tree = SplitTree<Ghostty.SurfaceView>(view: surface)
+            let tab = SidebarTabEntry(surfaceTree: tree, focusedSurface: surface)
+            tab.screenSessionName = session.screenSessionName
+            tab.defaultTitle = session.title
+            return tab
+        }
+
+        /// Helper: build a combined split tree from an array of surfaces using the same
+        /// layout strategy as joinTab (left-right, then top rows).
+        func buildSplitTree(from surfaces: [Ghostty.SurfaceView]) -> SplitTree<Ghostty.SurfaceView> {
+            guard !surfaces.isEmpty else { return SplitTree<Ghostty.SurfaceView>() }
+            if surfaces.count == 1 {
+                return SplitTree<Ghostty.SurfaceView>(view: surfaces[0])
+            }
+
+            var tree = SplitTree<Ghostty.SurfaceView>(view: surfaces[0])
+            for (i, surface) in surfaces.dropFirst().enumerated() {
+                let direction: SplitTree<Ghostty.SurfaceView>.NewDirection
+                switch i {
+                case 0: direction = .right   // 1→2: left-right
+                case 1: direction = .down    // 2→3: bottom row
+                default: direction = .down   // 3→4: grid-ish
+                }
+                // Insert at the appropriate existing surface
+                let insertAt: Ghostty.SurfaceView
+                switch i {
+                case 0: insertAt = surfaces[0]
+                case 1: insertAt = tree.root!.rightmostLeaf()
+                default: insertAt = tree.root!.leftmostLeaf()
+                }
+                if let newTree = try? tree.inserting(view: surface, at: insertAt, direction: direction) {
+                    tree = newTree
+                }
+            }
+            return tree
+        }
+
+        // Restore all sessions, rebuilding groups properly
         for session in restorableSessions {
             if session.isGroup {
-                // For groups, restore each alive child as a separate tab
-                // (simplified — full group restore would require join logic)
                 guard let children = session.children else { continue }
-                for child in children where aliveSessions.contains(child.screenSessionName) {
+                let aliveChildren = children.filter { aliveSessions.contains($0.screenSessionName) }
+                guard !aliveChildren.isEmpty else { continue }
+
+                // Build child tab entries
+                var childTabs: [SidebarTabEntry] = []
+                for child in aliveChildren {
                     if firstLeafUsed, child.screenSessionName == firstSession.screenSessionName {
+                        // Reuse the controller's initial tab as the first child
                         firstLeafUsed = false
-                        continue
+                        if let existingTab = controller.tabs.first {
+                            childTabs.append(existingTab)
+                        }
+                    } else {
+                        childTabs.append(makeChildTab(child))
                     }
-                    controller.addRestoredTab(
-                        screenName: child.screenSessionName,
-                        title: child.title,
-                        workingDirectory: child.workingDirectory
+                }
+
+                if childTabs.count == 1 {
+                    // Only one child survived — restore as standalone tab with the group name
+                    // (don't create a group for a single child)
+                    let tab = childTabs[0]
+                    if controller.tabs.contains(where: { $0.id == tab.id }) {
+                        // Already in tabs (reused initial tab) — just keep it
+                    } else {
+                        controller.tabs.append(tab)
+                    }
+                } else {
+                    // Multiple children — build a proper group
+                    let surfaces = childTabs.compactMap { $0.originalSurface }
+                    let combinedTree = buildSplitTree(from: surfaces)
+
+                    let group = SidebarTabEntry(
+                        groupName: session.groupName ?? "Tab Area",
+                        surfaceTree: combinedTree,
+                        children: childTabs
                     )
+
+                    // Remove the initial tab from top-level if it was consumed into this group
+                    if let initialTab = controller.tabs.first,
+                       childTabs.contains(where: { $0.id == initialTab.id }) {
+                        controller.tabs.removeAll { $0.id == initialTab.id }
+                    }
+
+                    controller.tabs.append(group)
                 }
             } else if aliveSessions.contains(session.screenSessionName) {
                 if firstLeafUsed, session.screenSessionName == firstSession.screenSessionName {
@@ -639,10 +980,28 @@ class SidebarTerminalController: BaseTerminalController {
             }
         }
 
+        // Select the first tab/group and set up the surface tree
+        if let first = controller.tabs.first {
+            controller.selectedTabID = first.id
+            controller.surfaceTree = first.surfaceTree
+        }
+
         // Try to restore the selected tab
-        if let selectedName = state.selectedScreenName,
-           let tab = controller.tabs.first(where: { $0.screenSessionName == selectedName }) {
-            controller.selectTab(tab)
+        if let selectedName = state.selectedScreenName {
+            // Search in top-level tabs and group children
+            for tab in controller.tabs {
+                if tab.screenSessionName == selectedName {
+                    controller.selectTab(tab)
+                    break
+                }
+                if tab.isGroup {
+                    // If the selected session was in a group, select the group
+                    if tab.children.contains(where: { $0.screenSessionName == selectedName }) {
+                        controller.selectTab(tab)
+                        break
+                    }
+                }
+            }
         }
 
         // Set up the window and show it (same as newWindow)
@@ -684,6 +1043,34 @@ class SidebarTerminalController: BaseTerminalController {
 
         init(_ config: Ghostty.Config) {
             self.focusFollowsMouse = config.focusFollowsMouse
+        }
+    }
+}
+
+// MARK: - Sidebar UI State
+
+/// Standalone ObservableObject for sidebar mode,
+/// so SwiftUI can properly observe changes (NSWindowController doesn't
+/// conform to ObservableObject).
+class SidebarUIState: ObservableObject {
+    @Published var sidebarMode: SidebarMode = .terminal
+}
+
+// MARK: - Root SwiftUI View (observes SidebarUIState for mode switching)
+
+private struct SidebarRootView: View {
+    let controller: SidebarTerminalController
+    @ObservedObject var uiState: SidebarUIState
+
+    var body: some View {
+        HSplitView {
+            SidebarView(controller: controller, sidebarMode: $uiState.sidebarMode)
+                .frame(minWidth: 150, maxWidth: 300)
+
+            TerminalView(ghostty: controller.ghostty, viewModel: controller, delegate: controller)
+                .splitPaneTitleBar(true)
+                .padding(.leading, 4)
+                .frame(minWidth: 400)
         }
     }
 }

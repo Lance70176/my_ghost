@@ -58,8 +58,10 @@ class ScreenSessionManager {
             "set -g default-terminal 'xterm-256color'",
             "set -sa terminal-features ',xterm-256color:RGB'",
             // Don't intercept any key sequences — let Ghostty handle them
+            // prefix None is sufficient; unbind-key -a would also remove mouse bindings
             "set -g prefix None",
-            "unbind-key -a",
+            // Enable mouse scrolling for scrollback
+            "set -g mouse on",
             // Large scrollback
             "set -g history-limit 10000",
             // No visual bell
