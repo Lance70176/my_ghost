@@ -198,6 +198,11 @@ class AppDelegate: NSObject,
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Set the app icon to MG icon from the asset catalog
+        if let mgIcon = NSImage(named: "AppIconImage") {
+            NSApp.applicationIconImage = mgIcon
+        }
+
         // System settings overrides
         UserDefaults.standard.register(defaults: [
             // Disable this so that repeated key events make it through to our terminal views.
