@@ -15,14 +15,27 @@ class SidebarTerminalController: BaseTerminalController {
     /// All tabs managed by this controller.
     @Published var tabs: [SidebarTabEntry] = []
 
-    /// The ID of the currently selected tab.
+    /// The ID of the currently selected tab (top-level tab or group).
     @Published var selectedTabID: UUID?
+
+    /// The ID of the item that should be highlighted in the sidebar.
+    /// For standalone tabs this equals selectedTabID; for group children
+    /// it tracks which child is focused.
+    @Published var highlightedItemID: UUID?
 
     /// Shared UI state for sidebar mode switching.
     let sidebarUIState = SidebarUIState()
 
     /// Derived config for window-level settings.
     private var derivedConfig: DerivedConfig
+
+    /// Set to true during window close to prevent surfaceTreeDidChange from
+    /// overwriting the saved session state.
+    private var isClosing = false
+
+    /// Set to true while closeChildTab is modifying the tree, to prevent
+    /// surfaceTreeDidChange from double-processing the removal.
+    private var isModifyingChildren = false
 
     // MARK: - Init
 
@@ -91,12 +104,13 @@ class SidebarTerminalController: BaseTerminalController {
 
     /// Set up the window programmatically (no nib).
     private func setupWindow() {
-        let window = NSWindow(
+        let window = SidebarTerminalWindow(
             contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
+        window.sidebarController = self
         window.title = "Ghostty"
         window.tabbingMode = .disallowed
         window.delegate = self
@@ -111,7 +125,33 @@ class SidebarTerminalController: BaseTerminalController {
         self.window = window
     }
 
+    /// Switch to a tab by its 1-based flat index (Cmd+1 → index 1, etc.).
+    func switchToFlatIndex(_ index: Int) {
+        let flatItems = flatActivatableItems
+        guard !flatItems.isEmpty else { return }
+        let finalIndex = min(index - 1, flatItems.count - 1)
+        guard finalIndex >= 0 else { return }
+        let item = flatItems[finalIndex]
+
+        if let group = item.group {
+            if group.id != selectedTabID {
+                selectTab(group)
+            }
+            highlightedItemID = item.tab.id
+            if group.isFullMode {
+                switchFullModeChild(to: item.tab, in: group)
+            } else if let surface = item.tab.focusedSurface ?? item.tab.originalSurface {
+                DispatchQueue.main.async {
+                    Ghostty.moveFocus(to: surface)
+                }
+            }
+        } else {
+            selectTab(item.tab)
+        }
+    }
+
     override func windowWillClose(_ notification: Notification) {
+        isClosing = true
         saveScreenSessionState()
         super.windowWillClose(notification)
         Self.allControllers.remove(self)
@@ -131,6 +171,7 @@ class SidebarTerminalController: BaseTerminalController {
 
         // Load new tab's state
         selectedTabID = tab.id
+        highlightedItemID = tab.id
         surfaceTree = tab.surfaceTree
 
         // Update window title to current tab
@@ -479,6 +520,10 @@ class SidebarTerminalController: BaseTerminalController {
         guard let childSurface = child.originalSurface else { return }
         let leafNode = SplitTree<Ghostty.SurfaceView>.Node.leaf(view: childSurface)
 
+        // Prevent surfaceTreeDidChange from double-processing
+        isModifyingChildren = true
+        defer { isModifyingChildren = false }
+
         // Remove the child's surface from the group's tree
         if group.isFullMode {
             if let saved = group.savedSplitTree {
@@ -516,8 +561,9 @@ class SidebarTerminalController: BaseTerminalController {
         // Remove from group's children
         group.children.removeAll { $0.id == child.id }
 
-        // Notify the controller so SidebarView recomputes flatRows
-        objectWillChange.send()
+        // Force @Published tabs to fire so SwiftUI re-computes flatRows.
+        let snapshot = tabs
+        tabs = snapshot
 
         // Kill the child's screen session
         if let name = child.screenSessionName {
@@ -685,11 +731,66 @@ class SidebarTerminalController: BaseTerminalController {
     override func surfaceTreeDidChange(from: SplitTree<Ghostty.SurfaceView>, to: SplitTree<Ghostty.SurfaceView>) {
         super.surfaceTreeDidChange(from: from, to: to)
 
+        // During window close, surfaces are torn down which triggers tree changes.
+        // We've already saved the correct state in windowWillClose, so skip all processing.
+        guard !isClosing else { return }
+
+        // If closeChildTab is actively modifying the tree, skip — it handles everything.
+        guard !isModifyingChildren else { return }
+
+        guard let tab = currentTab else { return }
+
         // If tree becomes empty, the user typed `exit` — screen session is already dead.
-        if to.isEmpty, let tab = currentTab {
+        if to.isEmpty {
             tab.screenSessionName = nil
             if let index = tabs.firstIndex(where: { $0.id == tab.id }) {
                 closeTabImmediately(tab, at: index)
+            }
+            return
+        }
+
+        // Keep the current tab's surfaceTree in sync
+        tab.surfaceTree = to
+
+        // For groups: detect which children's surfaces were removed from the tree
+        // (e.g. via Cmd+W closing a split pane) and sync group.children accordingly.
+        if tab.isGroup {
+            let remainingSurfaces = to.root?.leaves() ?? []
+            let removedChildren = tab.children.filter { child in
+                guard let surface = child.originalSurface else { return true }
+                return !remainingSurfaces.contains(where: { $0 === surface })
+            }
+
+            if !removedChildren.isEmpty {
+                for child in removedChildren {
+                    if let name = child.screenSessionName {
+                        ScreenSessionManager.shared.killSession(name: name)
+                    }
+                    tab.children.removeAll { $0.id == child.id }
+                }
+
+                // Force @Published tabs to fire so SwiftUI re-computes flatRows.
+                // Modifying tab.children alone doesn't trigger controller.objectWillChange
+                // because the tabs array reference hasn't changed.
+                let snapshot = tabs
+                tabs = snapshot
+
+                // If only one child remains, dissolve the group
+                if tab.children.count == 1 {
+                    if tab.isFullMode {
+                        tab.isFullMode = false
+                        tab.savedSplitTree = nil
+                        tab.fullModeActiveChildID = nil
+                    }
+                    dissolveGroup(tab)
+                } else if tab.children.isEmpty {
+                    if let index = tabs.firstIndex(where: { $0.id == tab.id }) {
+                        closeTabImmediately(tab, at: index)
+                        return
+                    }
+                }
+
+                saveScreenSessionState()
             }
         }
     }
@@ -698,8 +799,14 @@ class SidebarTerminalController: BaseTerminalController {
         super.focusedSurfaceDidChange(to: surface)
 
         // Keep the current tab's focused surface in sync.
-        if let surface {
-            currentTab?.updateFocusedSurface(surface)
+        guard let surface else { return }
+        currentTab?.updateFocusedSurface(surface)
+
+        // Update sidebar highlight to follow focus within a group.
+        if let tab = currentTab, tab.isGroup {
+            if let child = tab.children.first(where: { $0.originalSurface === surface }) {
+                highlightedItemID = child.id
+            }
         }
     }
 
@@ -1090,5 +1197,31 @@ extension SplitTree.Node where ViewType == Ghostty.SurfaceView {
         case .split(let split):
             return split.left.needsConfirmQuit || split.right.needsConfirmQuit
         }
+    }
+}
+
+// MARK: - Custom NSWindow for Cmd+1~9 interception
+
+/// NSWindow subclass that intercepts Cmd+1~9 key equivalents for sidebar tab switching.
+/// This is necessary because SidebarTerminalController disables native macOS tabs,
+/// so the default tab-switching key equivalents don't exist. By overriding
+/// performKeyEquivalent, we intercept BEFORE the SurfaceView's performKeyEquivalent
+/// sends the key to the terminal.
+class SidebarTerminalWindow: NSWindow {
+    weak var sidebarController: SidebarTerminalController?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // Only intercept Cmd+digit (no other modifiers)
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags == .command,
+           let chars = event.charactersIgnoringModifiers,
+           let digit = chars.first?.wholeNumberValue,
+           digit >= 1, digit <= 9,
+           let controller = sidebarController {
+            controller.switchToFlatIndex(digit)
+            return true  // consumed
+        }
+
+        return super.performKeyEquivalent(with: event)
     }
 }

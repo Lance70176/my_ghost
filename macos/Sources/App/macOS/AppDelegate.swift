@@ -90,7 +90,7 @@ class AppDelegate: NSObject,
 
     /// Whether any SidebarTerminalController windows currently exist.
     private var hasAnySidebarWindows: Bool {
-        NSApp.windows.contains { $0.windowController is SidebarTerminalController }
+        NSApp.windows.contains { $0.windowController is SidebarTerminalController && $0.isVisible }
     }
 
     /// This is set in applicationDidFinishLaunching with the system uptime so we can determine the
@@ -467,8 +467,10 @@ class AppDelegate: NSObject,
         // but I haven't seen it happen in releases. I'm unsure why.
         guard applicationHasBecomeActive else { return true }
 
-        // No visible windows, open a new one.
-        _ = SidebarTerminalController.newWindow(ghostty)
+        // No visible windows — try to restore saved sessions, otherwise open a new one.
+        if SidebarTerminalController.restoreWindow(ghostty) == nil {
+            _ = SidebarTerminalController.newWindow(ghostty)
+        }
         return false
     }
 

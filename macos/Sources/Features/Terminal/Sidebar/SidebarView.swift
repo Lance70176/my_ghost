@@ -247,10 +247,13 @@ struct SidebarView: View {
         }
         .listStyle(.sidebar)
         .onAppear {
-            selection = controller.selectedTabID
+            selection = controller.highlightedItemID ?? controller.selectedTabID
         }
         .onChange(of: selection) { newValue in
             guard let newValue else { return }
+            // Update the controller's highlight to match user click
+            controller.highlightedItemID = newValue
+
             // Check if it's a top-level tab or group
             if let tab = controller.tabs.first(where: { $0.id == newValue }) {
                 if tab.isGroup {
@@ -291,7 +294,7 @@ struct SidebarView: View {
                 }
             }
         }
-        .onChange(of: controller.selectedTabID) { newValue in
+        .onChange(of: controller.highlightedItemID) { newValue in
             if selection != newValue {
                 selection = newValue
             }
@@ -476,9 +479,9 @@ private struct SidebarGroupChildRow: View {
 
     @State private var isHovering = false
 
-    /// Whether this child is the active one in full mode.
-    private var isFullModeActive: Bool {
-        group.isFullMode && group.fullModeActiveChildID == child.id
+    /// Whether this child is currently the active/focused one.
+    private var isActiveChild: Bool {
+        controller.highlightedItemID == child.id
     }
 
     var body: some View {
@@ -493,17 +496,17 @@ private struct SidebarGroupChildRow: View {
 
             Image(systemName: "terminal")
                 .font(.caption2)
-                .foregroundColor(isFullModeActive ? .accentColor : .secondary)
+                .foregroundColor(isActiveChild ? .accentColor : .secondary)
 
             Text(child.displayTitle)
                 .font(.callout)
-                .fontWeight(isFullModeActive ? .semibold : .regular)
+                .fontWeight(isActiveChild ? .semibold : .regular)
                 .lineLimit(1)
                 .truncationMode(.tail)
 
             Spacer()
 
-            if isFullModeActive {
+            if isActiveChild {
                 Image(systemName: "circle.fill")
                     .font(.system(size: 6))
                     .foregroundColor(.accentColor)
