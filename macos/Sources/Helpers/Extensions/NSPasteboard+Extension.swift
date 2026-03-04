@@ -32,85 +32,48 @@ extension NSPasteboard {
         NSPasteboard(name: .init("com.mitchellh.ghostty.selection"))
     }()
 
-    /// Save image data from the pasteboard to a temporary file and return the escaped path.
-    /// Returns nil if no image data is available.
-    private func saveImageToTemp() -> String? {
-        // Check for image data (TIFF, PNG)
-        guard let image = readObjects(forClasses: [NSImage.self]) as? [NSImage],
-              let first = image.first,
-              let tiffData = first.tiffRepresentation,
-              let bitmapRep = NSBitmapImageRep(data: tiffData),
-              let pngData = bitmapRep.representation(using: .png, properties: [:])
-        else {
-            return nil
-        }
-
-        let timestamp = Int(Date().timeIntervalSince1970)
-        let filename = "paste_\(timestamp).png"
-        let destURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Pictures")
-            .appendingPathComponent(filename)
-
-        // Ensure ~/Pictures exists
-        try? FileManager.default.createDirectory(
-            at: destURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-
-        do {
-            try pngData.write(to: destURL)
-            return Ghostty.Shell.escape(destURL.path)
-        } catch {
-            return nil
-        }
-    }
-
-    /// Check if a file URL is accessible; if not and it's an image, copy it to ~/Pictures.
-    private func accessiblePath(for url: URL) -> String {
-        if FileManager.default.isReadableFile(atPath: url.path) {
-            return Ghostty.Shell.escape(url.path)
-        }
-
-        // File not accessible — try to copy it to ~/Pictures
-        let filename = url.lastPathComponent
-        let destURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Pictures")
-            .appendingPathComponent(filename)
-
-        try? FileManager.default.createDirectory(
-            at: destURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-
-        if let _ = try? FileManager.default.copyItem(at: url, to: destURL) {
-            return Ghostty.Shell.escape(destURL.path)
-        }
-
-        // Couldn't copy either, return original escaped path
-        return Ghostty.Shell.escape(url.path)
-    }
-
     /// Gets the contents of the pasteboard as a string following a specific set of semantics.
     /// Does these things in order:
     /// - Tries to get the absolute filesystem path of the file in the pasteboard if there is one and ensures the file path is properly escaped.
-    ///   If the file is in a restricted temp directory, copies it to ~/Pictures first.
-    /// - Tries to get image data from the pasteboard, saves it as PNG to ~/Pictures, and returns the escaped path.
     /// - Tries to get any string from the pasteboard.
     /// If all of the above fail, returns None.
     func getOpinionatedStringContents() -> String? {
         if let urls = readObjects(forClasses: [NSURL.self]) as? [URL],
            urls.count > 0 {
             return urls
-                .map { $0.isFileURL ? accessiblePath(for: $0) : $0.absoluteString }
+                .map { url -> String in
+                    guard url.isFileURL else { return url.absoluteString }
+                    // Ephemeral screenshot files in NSIRD_* directories are cleaned up
+                    // quickly by macOS. Copy them to a stable location so that child
+                    // processes (especially those running inside tmux) can still read them.
+                    let path = url.path
+                    if path.contains("/TemporaryItems/NSIRD_") {
+                        if let stable = Self.copyToStableTemp(url) {
+                            return Ghostty.Shell.escape(stable)
+                        }
+                    }
+                    return Ghostty.Shell.escape(path)
+                }
                 .joined(separator: " ")
         }
 
-        // Check for image data (e.g. copied screenshot, Cmd+Shift+Ctrl+4)
-        if let imagePath = saveImageToTemp() {
-            return imagePath
-        }
-
         return self.string(forType: .string)
+    }
+
+    /// Copy a file to /tmp/myghost_paste/ so it survives NSIRD cleanup.
+    private static func copyToStableTemp(_ url: URL) -> String? {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("myghost_paste")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dest = dir.appendingPathComponent(url.lastPathComponent)
+        // Remove previous copy if it exists
+        try? FileManager.default.removeItem(at: dest)
+        do {
+            try FileManager.default.copyItem(at: url, to: dest)
+            return dest.path
+        } catch {
+            return nil
+        }
     }
 
     /// The pasteboard for the Ghostty enum type.

@@ -163,6 +163,10 @@ class SidebarTerminalController: BaseTerminalController {
     func selectTab(_ tab: SidebarTabEntry) {
         guard tab.id != selectedTabID else { return }
 
+        // Prevent surfaceTreeDidChange from misinterpreting the tree swap
+        isModifyingChildren = true
+        defer { isModifyingChildren = false }
+
         // Save current state to the old tab
         if let oldTab = currentTab {
             oldTab.surfaceTree = surfaceTree
@@ -499,15 +503,11 @@ class SidebarTerminalController: BaseTerminalController {
             tabs.append(child)
         }
 
-        // If only one child remains in a group, dissolve the group
-        if group.isGroup && group.children.count == 1 {
-            // Exit full mode first if needed
-            if group.isFullMode {
-                group.isFullMode = false
-                group.savedSplitTree = nil
-                group.fullModeActiveChildID = nil
-            }
-            dissolveGroup(group)
+        // Exit full mode if only 1 child remains
+        if group.isGroup && group.children.count == 1 && group.isFullMode {
+            group.isFullMode = false
+            group.savedSplitTree = nil
+            group.fullModeActiveChildID = nil
         }
 
         saveScreenSessionState()
@@ -570,16 +570,8 @@ class SidebarTerminalController: BaseTerminalController {
             ScreenSessionManager.shared.killSession(name: name)
         }
 
-        // If only one child remains, dissolve the group
-        if group.isGroup && group.children.count == 1 {
-            if group.isFullMode {
-                group.isFullMode = false
-                group.savedSplitTree = nil
-                group.fullModeActiveChildID = nil
-            }
-            dissolveGroup(group)
-        } else if group.children.isEmpty {
-            // No children left — close the group entirely
+        // If no children left, close the group entirely
+        if group.children.isEmpty {
             if let index = tabs.firstIndex(where: { $0.id == group.id }) {
                 tabs.remove(at: index)
                 if tabs.isEmpty {
@@ -592,6 +584,11 @@ class SidebarTerminalController: BaseTerminalController {
                     selectTab(tabs[newIndex])
                 }
             }
+        } else if group.isFullMode, group.children.count == 1 {
+            // Exit full mode when only 1 child remains (no need to switch)
+            group.isFullMode = false
+            group.savedSplitTree = nil
+            group.fullModeActiveChildID = nil
         }
 
         saveScreenSessionState()
@@ -638,6 +635,10 @@ class SidebarTerminalController: BaseTerminalController {
         guard group.isGroup, !group.isFullMode else { return }
         guard !group.children.isEmpty else { return }
 
+        // Prevent surfaceTreeDidChange from interpreting the tree swap as child removal
+        isModifyingChildren = true
+        defer { isModifyingChildren = false }
+
         // Save the current split tree
         let isActive = group.id == selectedTabID
         group.savedSplitTree = isActive ? surfaceTree : group.surfaceTree
@@ -669,6 +670,10 @@ class SidebarTerminalController: BaseTerminalController {
         guard group.isGroup, group.isFullMode else { return }
         guard let savedTree = group.savedSplitTree else { return }
 
+        // Prevent surfaceTreeDidChange from interpreting the tree swap as child removal
+        isModifyingChildren = true
+        defer { isModifyingChildren = false }
+
         let isActive = group.id == selectedTabID
         group.isFullMode = false
         group.fullModeActiveChildID = nil
@@ -695,6 +700,10 @@ class SidebarTerminalController: BaseTerminalController {
         guard group.isGroup, group.isFullMode else { return }
         guard group.children.contains(where: { $0.id == child.id }) else { return }
         guard child.id != group.fullModeActiveChildID else { return }
+
+        // Prevent surfaceTreeDidChange from interpreting the tree swap as child removal
+        isModifyingChildren = true
+        defer { isModifyingChildren = false }
 
         group.fullModeActiveChildID = child.id
 
@@ -775,19 +784,16 @@ class SidebarTerminalController: BaseTerminalController {
                 let snapshot = tabs
                 tabs = snapshot
 
-                // If only one child remains, dissolve the group
-                if tab.children.count == 1 {
-                    if tab.isFullMode {
-                        tab.isFullMode = false
-                        tab.savedSplitTree = nil
-                        tab.fullModeActiveChildID = nil
-                    }
-                    dissolveGroup(tab)
-                } else if tab.children.isEmpty {
+                // If no children left, close the group
+                if tab.children.isEmpty {
                     if let index = tabs.firstIndex(where: { $0.id == tab.id }) {
                         closeTabImmediately(tab, at: index)
                         return
                     }
+                } else if tab.isFullMode, tab.children.count == 1 {
+                    tab.isFullMode = false
+                    tab.savedSplitTree = nil
+                    tab.fullModeActiveChildID = nil
                 }
 
                 saveScreenSessionState()
@@ -910,13 +916,20 @@ class SidebarTerminalController: BaseTerminalController {
             if tab.isGroup {
                 let childStates = tab.children.compactMap { stateFor($0) }
                 guard !childStates.isEmpty else { return nil }
+                // Find active child index for full mode
+                var activeIndex: Int? = nil
+                if tab.isFullMode, let activeID = tab.fullModeActiveChildID {
+                    activeIndex = tab.children.firstIndex(where: { $0.id == activeID })
+                }
                 return ScreenSessionManager.SessionState(
                     screenSessionName: "",
                     title: tab.displayTitle,
                     workingDirectory: nil,
                     isGroup: true,
                     groupName: tab.groupName,
-                    children: childStates
+                    children: childStates,
+                    isFullMode: tab.isFullMode ? true : nil,
+                    fullModeActiveChildIndex: activeIndex
                 )
             } else {
                 guard let name = tab.screenSessionName else { return nil }
@@ -1069,6 +1082,20 @@ class SidebarTerminalController: BaseTerminalController {
                         surfaceTree: combinedTree,
                         children: childTabs
                     )
+
+                    // Restore full mode if it was saved
+                    if session.isFullMode == true {
+                        group.savedSplitTree = combinedTree
+                        group.isFullMode = true
+                        let activeIdx = session.fullModeActiveChildIndex ?? 0
+                        let clampedIdx = min(activeIdx, childTabs.count - 1)
+                        let activeChild = childTabs[clampedIdx]
+                        group.fullModeActiveChildID = activeChild.id
+                        // Show only the active child's surface
+                        if let surface = activeChild.originalSurface {
+                            group.surfaceTree = SplitTree<Ghostty.SurfaceView>(view: surface)
+                        }
+                    }
 
                     // Remove the initial tab from top-level if it was consumed into this group
                     if let initialTab = controller.tabs.first,

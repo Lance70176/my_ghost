@@ -276,6 +276,10 @@ class ScreenSessionManager {
         let isGroup: Bool
         let groupName: String?
         let children: [SessionState]?
+        /// Whether this group is in full mode (one child at a time).
+        var isFullMode: Bool?
+        /// The index of the active child in full mode.
+        var fullModeActiveChildIndex: Int?
     }
 
     struct SavedState: Codable {
