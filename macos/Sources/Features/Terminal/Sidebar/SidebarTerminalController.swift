@@ -448,6 +448,11 @@ class SidebarTerminalController: BaseTerminalController {
     /// If the group is left with only one child, the group dissolves and that child
     /// becomes a standalone top-level tab.
     func unjoinTab(_ child: SidebarTabEntry, from group: SidebarTabEntry) {
+        // Prevent surfaceTreeDidChange from interpreting the tree change as child removal
+        // (which would kill the child's screen session)
+        isModifyingChildren = true
+        defer { isModifyingChildren = false }
+
         // Find and remove the child's surface from the group's tree
         guard let childSurface = child.originalSurface else { return }
         let leafNode = SplitTree<Ghostty.SurfaceView>.Node.leaf(view: childSurface)
@@ -749,8 +754,87 @@ class SidebarTerminalController: BaseTerminalController {
 
         guard let tab = currentTab else { return }
 
-        // If tree becomes empty, the user typed `exit` — screen session is already dead.
+        // If tree becomes empty, the user typed `exit` or Cmd+W closed the last surface.
         if to.isEmpty {
+            // For groups: the tree may be empty because the active full-mode child
+            // exited, but other children still exist. Handle the closed child and
+            // switch to the next one instead of closing the entire group.
+            if tab.isGroup && !tab.children.isEmpty {
+                // Find which child's surface was in the old tree
+                let oldSurfaces = from.root?.leaves() ?? []
+                let closedChildren = tab.children.filter { child in
+                    guard let surface = child.originalSurface else { return false }
+                    return oldSurfaces.contains(where: { $0 === surface })
+                }
+
+                for child in closedChildren {
+                    if let name = child.screenSessionName {
+                        ScreenSessionManager.shared.killSession(name: name)
+                    }
+                    tab.children.removeAll { $0.id == child.id }
+                }
+
+                if tab.children.isEmpty {
+                    // All children gone — close the group
+                    tab.screenSessionName = nil
+                    if let index = tabs.firstIndex(where: { $0.id == tab.id }) {
+                        closeTabImmediately(tab, at: index)
+                    }
+                    return
+                }
+
+                // Switch to the next remaining child
+                let next = tab.children.first!
+                if tab.isFullMode {
+                    // Stay in full mode, show the next child
+                    tab.fullModeActiveChildID = next.id
+                    if let surface = next.originalSurface {
+                        let singleTree = SplitTree<Ghostty.SurfaceView>(view: surface)
+                        surfaceTree = singleTree
+                        tab.surfaceTree = singleTree
+                        DispatchQueue.main.async {
+                            Ghostty.moveFocus(to: surface)
+                        }
+                    }
+                    // Also remove from savedSplitTree
+                    if let saved = tab.savedSplitTree {
+                        var updated = saved
+                        for child in closedChildren {
+                            if let surface = child.originalSurface {
+                                let leafNode = SplitTree<Ghostty.SurfaceView>.Node.leaf(view: surface)
+                                updated = updated.removing(leafNode)
+                            }
+                        }
+                        tab.savedSplitTree = updated
+                    }
+                } else {
+                    // Not in full mode but tree became empty (shouldn't normally happen
+                    // with multiple children, but handle gracefully). Rebuild from
+                    // remaining children's saved split tree or single surface.
+                    if let surface = next.originalSurface {
+                        let singleTree = SplitTree<Ghostty.SurfaceView>(view: surface)
+                        surfaceTree = singleTree
+                        tab.surfaceTree = singleTree
+                        DispatchQueue.main.async {
+                            Ghostty.moveFocus(to: surface)
+                        }
+                    }
+                }
+
+                if tab.children.count == 1 {
+                    tab.isFullMode = false
+                    tab.savedSplitTree = nil
+                    tab.fullModeActiveChildID = nil
+                }
+
+                // Force @Published tabs to fire
+                let snapshot = tabs
+                tabs = snapshot
+                saveScreenSessionState()
+                return
+            }
+
+            // Non-group tab: screen session is already dead, close the tab.
             tab.screenSessionName = nil
             if let index = tabs.firstIndex(where: { $0.id == tab.id }) {
                 closeTabImmediately(tab, at: index)
