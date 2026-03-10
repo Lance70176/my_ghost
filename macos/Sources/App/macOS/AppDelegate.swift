@@ -363,10 +363,88 @@ class AppDelegate: NSObject,
 
                 // Try to restore from saved screen sessions first
                 if ScreenSessionManager.shared.isAvailable,
-                   let _ = SidebarTerminalController.restoreWindow(ghostty) {
-                    ScreenSessionManager.shared.clearState()
+                   let controller = SidebarTerminalController.restoreWindow(ghostty) {
+                    // Re-save state immediately so it survives crashes before
+                    // the next tab operation triggers a save.
+                    controller.saveScreenSessionState()
                 } else {
-                    _ = SidebarTerminalController.newWindow(ghostty)
+                    let controller = SidebarTerminalController.newWindow(ghostty)
+
+                    // Fallback: if restoreWindow failed but orphaned tmux sessions exist,
+                    // ask the user whether to recover them.
+                    if ScreenSessionManager.shared.isAvailable {
+                        // Exclude the session that the new tab just created
+                        let currentSession = controller.tabs.first?.screenSessionName
+                        let orphaned = ScreenSessionManager.shared.listAliveSessions()
+                            .filter { $0 != currentSession }
+                        if !orphaned.isEmpty {
+                            DispatchQueue.main.async {
+                                let alert = NSAlert()
+                                alert.messageText = "發現未關閉的終端 Session"
+                                alert.informativeText = "偵測到 \(orphaned.count) 個仍在執行的 tmux session，是否要恢復？"
+                                alert.addButton(withTitle: "恢復")
+                                alert.addButton(withTitle: "清除")
+                                alert.addButton(withTitle: "忽略")
+                                let response = alert.runModal()
+                                if response == .alertFirstButtonReturn {
+                                    // Try to use saved state to reconstruct groups
+                                    let savedState = ScreenSessionManager.shared.loadState()
+                                    let orphanedSet = Set(orphaned)
+                                    var restoredNames = Set<String>()
+
+                                    if let sessions = savedState?.sessions {
+                                        for session in sessions {
+                                            if session.isGroup, let children = session.children {
+                                                let aliveChildren = children.filter { orphanedSet.contains($0.screenSessionName) }
+                                                if aliveChildren.isEmpty { continue }
+                                                for child in aliveChildren {
+                                                    restoredNames.insert(child.screenSessionName)
+                                                }
+                                                if aliveChildren.count == 1 {
+                                                    let child = aliveChildren[0]
+                                                    controller.addRestoredTab(
+                                                        screenName: child.screenSessionName,
+                                                        title: child.title,
+                                                        workingDirectory: ScreenSessionManager.shared.getSessionWorkingDirectory(sessionName: child.screenSessionName)
+                                                    )
+                                                } else {
+                                                    controller.addRestoredGroup(
+                                                        groupName: session.groupName ?? "Tab Area",
+                                                        children: aliveChildren,
+                                                        isFullMode: session.isFullMode ?? false,
+                                                        fullModeActiveChildIndex: session.fullModeActiveChildIndex
+                                                    )
+                                                }
+                                            } else if orphanedSet.contains(session.screenSessionName) {
+                                                restoredNames.insert(session.screenSessionName)
+                                                controller.addRestoredTab(
+                                                    screenName: session.screenSessionName,
+                                                    title: session.title,
+                                                    workingDirectory: ScreenSessionManager.shared.getSessionWorkingDirectory(sessionName: session.screenSessionName)
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    // Restore any remaining orphans not in the saved state
+                                    for name in orphaned where !restoredNames.contains(name) {
+                                        controller.addRestoredTab(
+                                            screenName: name,
+                                            title: name.replacingOccurrences(of: "myghost_", with: "").prefix(8).description,
+                                            workingDirectory: ScreenSessionManager.shared.getSessionWorkingDirectory(sessionName: name)
+                                        )
+                                    }
+                                    controller.saveScreenSessionState()
+                                } else if response == .alertSecondButtonReturn {
+                                    // Clean up: kill all orphaned sessions
+                                    for name in orphaned {
+                                        ScreenSessionManager.shared.killSession(name: name)
+                                    }
+                                }
+                                // Ignore: do nothing, sessions stay alive
+                            }
+                        }
+                    }
                 }
 
                 undoManager.enableUndoRegistration()

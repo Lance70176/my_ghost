@@ -2100,8 +2100,6 @@ extension Ghostty.SurfaceView {
         .string,
         .fileURL,
         .URL,
-        .tiff,
-        .png,
     ]
 
     override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {

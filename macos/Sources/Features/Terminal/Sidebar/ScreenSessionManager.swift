@@ -186,6 +186,14 @@ class ScreenSessionManager {
             .filter { $0.hasPrefix("myghost_") }
     }
 
+    /// Kill orphaned myghost_ tmux sessions that are not in the given active set.
+    func cleanupOrphanedSessions(activeSessionNames: Set<String>) {
+        let alive = listAliveSessions()
+        for name in alive where !activeSessionNames.contains(name) {
+            killSession(name: name)
+        }
+    }
+
     // MARK: - Working Directory Detection
 
     /// Get the current working directory of the shell running inside a tmux session.

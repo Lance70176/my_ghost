@@ -226,6 +226,27 @@ class SidebarTerminalController: BaseTerminalController {
         // Don't set selectedTabID here — selectTab() handles it.
         selectTab(newTab)
         saveScreenSessionState()
+
+        // Clean up orphaned tmux sessions in the background
+        cleanupOrphanedTmuxSessions()
+    }
+
+    /// Kill myghost_ tmux sessions that don't belong to any active tab.
+    private func cleanupOrphanedTmuxSessions() {
+        var activeNames = Set<String>()
+        for tab in tabs {
+            if let name = tab.screenSessionName {
+                activeNames.insert(name)
+            }
+            for child in tab.children {
+                if let name = child.screenSessionName {
+                    activeNames.insert(name)
+                }
+            }
+        }
+        DispatchQueue.global(qos: .utility).async {
+            ScreenSessionManager.shared.cleanupOrphanedSessions(activeSessionNames: activeNames)
+        }
     }
 
     /// Add a restored tab that reattaches to an existing screen session.
@@ -247,6 +268,80 @@ class SidebarTerminalController: BaseTerminalController {
 
         tabs.append(newTab)
         selectTab(newTab)
+    }
+
+    /// Restore a group of sessions from saved state during orphan recovery.
+    func addRestoredGroup(
+        groupName: String,
+        children: [ScreenSessionManager.SessionState],
+        isFullMode: Bool,
+        fullModeActiveChildIndex: Int?
+    ) {
+        guard let ghostty_app = ghostty.app else { return }
+        let mgr = ScreenSessionManager.shared
+
+        // Build child tab entries
+        var childTabs: [SidebarTabEntry] = []
+        for child in children {
+            var config = Ghostty.SurfaceConfiguration()
+            config.command = mgr.reattachCommand(sessionName: child.screenSessionName)
+            if let wd = child.workingDirectory ?? mgr.getSessionWorkingDirectory(sessionName: child.screenSessionName) {
+                config.workingDirectory = wd
+            }
+            let surface = Ghostty.SurfaceView(ghostty_app, baseConfig: config)
+            let tree = SplitTree<Ghostty.SurfaceView>(view: surface)
+            let tab = SidebarTabEntry(surfaceTree: tree, focusedSurface: surface)
+            tab.screenSessionName = child.screenSessionName
+            tab.defaultTitle = child.title
+            childTabs.append(tab)
+        }
+
+        guard !childTabs.isEmpty else { return }
+
+        // Build combined split tree
+        let surfaces = childTabs.compactMap { $0.originalSurface }
+        var combinedTree = SplitTree<Ghostty.SurfaceView>()
+        if !surfaces.isEmpty {
+            combinedTree = SplitTree<Ghostty.SurfaceView>(view: surfaces[0])
+            for (i, surface) in surfaces.dropFirst().enumerated() {
+                let direction: SplitTree<Ghostty.SurfaceView>.NewDirection
+                switch i {
+                case 0: direction = .right
+                case 1: direction = .down
+                default: direction = .down
+                }
+                let insertAt: Ghostty.SurfaceView
+                switch i {
+                case 0: insertAt = surfaces[0]
+                case 1: insertAt = combinedTree.root!.rightmostLeaf()
+                default: insertAt = combinedTree.root!.leftmostLeaf()
+                }
+                if let newTree = try? combinedTree.inserting(view: surface, at: insertAt, direction: direction) {
+                    combinedTree = newTree
+                }
+            }
+        }
+
+        let group = SidebarTabEntry(
+            groupName: groupName,
+            surfaceTree: combinedTree,
+            children: childTabs
+        )
+
+        // Restore full mode if it was saved
+        if isFullMode {
+            group.savedSplitTree = combinedTree
+            group.isFullMode = true
+            let activeIdx = min(fullModeActiveChildIndex ?? 0, childTabs.count - 1)
+            let activeChild = childTabs[activeIdx]
+            group.fullModeActiveChildID = activeChild.id
+            if let surface = activeChild.originalSurface {
+                group.surfaceTree = SplitTree<Ghostty.SurfaceView>(view: surface)
+            }
+        }
+
+        tabs.append(group)
+        selectTab(group)
     }
 
     /// Close a specific tab.
@@ -313,6 +408,10 @@ class SidebarTerminalController: BaseTerminalController {
         guard source.id != target.id else { return }
         guard let sourceIndex = tabs.firstIndex(where: { $0.id == source.id }) else { return }
         guard let targetIndex = tabs.firstIndex(where: { $0.id == target.id }) else { return }
+
+        // Prevent surfaceTreeDidChange from interpreting the tree change as a tab removal
+        isModifyingChildren = true
+        defer { isModifyingChildren = false }
 
         // Get the surface from the source tab's tree
         guard let sourceRoot = source.surfaceTree.root else { return }
@@ -439,6 +538,11 @@ class SidebarTerminalController: BaseTerminalController {
         // If the source was selected, switch to the group
         if selectedTabID == source.id {
             selectTab(group)
+        }
+
+        // Default to full mode for groups
+        if !group.isFullMode {
+            enterFullMode(for: group)
         }
 
         saveScreenSessionState()

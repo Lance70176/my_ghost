@@ -4,18 +4,27 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="$SCRIPT_DIR"
-APP_NAME="my_ghost.app"
 DMG_PATH="$BUILD_DIR/MyGhost.dmg"
 DMG_DIR="$BUILD_DIR/dmg"
 
-echo "==> Building MyGhost (ReleaseFast)..."
+# Detect build mode: zig or xcode
+BUILD_MODE="${1:-xcode}"
+
+echo "==> Building MyGhost ($BUILD_MODE)..."
 cd "$PROJECT_DIR"
-zig build -Doptimize=ReleaseFast 2>&1 | tail -5
+
+if [ "$BUILD_MODE" = "zig" ]; then
+    zig build -Doptimize=ReleaseFast 2>&1 | tail -5
+    APP_SRC="zig-out/my_ghost.app"
+else
+    xcodebuild -project macos/Ghostty.xcodeproj -scheme my_ghost -configuration Release build 2>&1 | tail -5
+    APP_SRC="$(xcodebuild -project macos/Ghostty.xcodeproj -scheme my_ghost -configuration Release -showBuildSettings 2>/dev/null | grep '^\s*TARGET_BUILD_DIR' | awk '{print $3}')/my_ghost.app"
+fi
+
+echo "==> App at: $APP_SRC"
 
 echo "==> Replacing app icon with MyGhost icon..."
-cp "$PROJECT_DIR/macos/MyGhost.icns" "zig-out/$APP_NAME/Contents/Resources/Ghostty.icns"
-
-# Also rebuild Assets.car to replace the compiled icon
+# Build a proper icns from the source PNGs
 ICONSET_DIR="/tmp/MyGhost.iconset"
 rm -rf "$ICONSET_DIR"
 mkdir -p "$ICONSET_DIR"
@@ -29,24 +38,28 @@ sips -z 64 64 "$PROJECT_DIR/macos/mg_icon_256.png" --out "$ICONSET_DIR/icon_32x3
 sips -z 32 32 "$PROJECT_DIR/macos/mg_icon_256.png" --out "$ICONSET_DIR/icon_32x32.png" > /dev/null
 sips -z 32 32 "$PROJECT_DIR/macos/mg_icon_256.png" --out "$ICONSET_DIR/icon_16x16@2x.png" > /dev/null
 sips -z 16 16 "$PROJECT_DIR/macos/mg_icon_256.png" --out "$ICONSET_DIR/icon_16x16.png" > /dev/null
-iconutil -c icns "$ICONSET_DIR" -o "zig-out/$APP_NAME/Contents/Resources/Ghostty.icns"
-
-echo "==> Cleaning extended attributes..."
-xattr -cr "zig-out/$APP_NAME"
-
-# Set custom icon on the app bundle directly (Finder uses this)
-# Must be AFTER xattr -cr since that clears custom icon metadata
-swift -e "
-import AppKit
-let icon = NSImage(contentsOfFile: \"$PROJECT_DIR/macos/mg_icon_1024.png\")!
-NSWorkspace.shared.setIcon(icon, forFile: \"$(pwd)/zig-out/$APP_NAME\", options: [])
-print(\"Custom icon set on app bundle\")
-"
+iconutil -c icns "$ICONSET_DIR" -o "$APP_SRC/Contents/Resources/Ghostty.icns"
 
 echo "==> Preparing DMG contents..."
 rm -rf "$DMG_DIR"
 mkdir -p "$DMG_DIR"
-cp -R "zig-out/$APP_NAME" "$DMG_DIR/MyGhost.app"
+cp -R "$APP_SRC" "$DMG_DIR/MyGhost.app"
+
+echo "==> Cleaning extended attributes..."
+xattr -cr "$DMG_DIR/MyGhost.app"
+
+echo "==> Re-signing app..."
+codesign --deep --force --sign - "$DMG_DIR/MyGhost.app"
+
+# Set custom icon on the app bundle directly (Finder uses this)
+# Must be AFTER codesign and xattr -cr since those clear custom icon metadata
+echo "==> Setting Finder custom icon..."
+swift -e "
+import AppKit
+let icon = NSImage(contentsOfFile: \"$PROJECT_DIR/macos/mg_icon_1024.png\")!
+NSWorkspace.shared.setIcon(icon, forFile: \"$DMG_DIR/MyGhost.app\", options: [])
+print(\"Custom icon set on app bundle\")
+"
 
 echo "==> Creating styled DMG..."
 rm -f "$DMG_PATH"
@@ -66,6 +79,7 @@ if command -v create-dmg &> /dev/null; then
     "$DMG_DIR"
 else
   echo "  (create-dmg not found, using hdiutil fallback)"
+  ln -sf /Applications "$DMG_DIR/Applications"
   hdiutil create -volname "MyGhost" -srcfolder "$DMG_DIR" -ov -format UDZO "$DMG_PATH"
 fi
 
@@ -74,3 +88,4 @@ rm -rf "$DMG_DIR"
 
 echo ""
 echo "Done! DMG saved to: $DMG_PATH"
+ls -lh "$DMG_PATH"
