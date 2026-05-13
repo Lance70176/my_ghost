@@ -342,6 +342,7 @@ pub const App = struct {
 pub const Platform = union(PlatformTag) {
     macos: MacOS,
     ios: IOS,
+    android: Android,
 
     // If our build target for libghostty is not darwin then we do
     // not include macos support at all.
@@ -355,6 +356,15 @@ pub const Platform = union(PlatformTag) {
         uiview: objc.Object,
     } else void;
 
+    /// Android platform configuration. Android uses EGL/OpenGL ES
+    /// managed by the host (GLSurfaceView), so no native window handle
+    /// is needed — the GL context is already current when rendering.
+    pub const Android = if (builtin.target.os.tag == .linux and
+        builtin.target.abi == .android) struct {
+        /// Reserved for future use (e.g., ANativeWindow pointer).
+        reserved: ?*anyopaque = null,
+    } else void;
+
     // The C ABI compatible version of this union. The tag is expected
     // to be stored elsewhere.
     pub const C = extern union {
@@ -364,6 +374,10 @@ pub const Platform = union(PlatformTag) {
 
         ios: extern struct {
             uiview: ?*anyopaque,
+        },
+
+        android: extern struct {
+            reserved: ?*anyopaque,
         },
     };
 
@@ -384,6 +398,10 @@ pub const Platform = union(PlatformTag) {
                     break :ios error.UIViewMustBeSet);
                 break :ios .{ .ios = .{ .uiview = uiview } };
             } else error.UnsupportedPlatform,
+
+            .android => if (Android != void) .{
+                .android = .{ .reserved = c_platform.android.reserved },
+            } else error.UnsupportedPlatform,
         };
     }
 };
@@ -394,6 +412,7 @@ pub const PlatformTag = enum(c_int) {
 
     macos = 1,
     ios = 2,
+    android = 3,
 };
 
 pub const EnvVar = extern struct {

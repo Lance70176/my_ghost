@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const assert = @import("../../quirks.zig").inlineAssert;
 const math = @import("../../math.zig");
@@ -7,36 +8,42 @@ const Pipeline = @import("Pipeline.zig");
 
 const log = std.log.scoped(.opengl);
 
+// Select shader directory based on target: OpenGL ES for Android, desktop GLSL otherwise.
+const shader_dir = if (builtin.target.abi == .android)
+    "../shaders/glsl_es/"
+else
+    "../shaders/glsl/";
+
 const pipeline_descs: []const struct { [:0]const u8, PipelineDescription } =
     &.{
         .{ "bg_color", .{
-            .vertex_fn = loadShaderCode("../shaders/glsl/full_screen.v.glsl"),
-            .fragment_fn = loadShaderCode("../shaders/glsl/bg_color.f.glsl"),
+            .vertex_fn = loadShaderCode(shader_dir ++ "full_screen.v.glsl"),
+            .fragment_fn = loadShaderCode(shader_dir ++ "bg_color.f.glsl"),
             .blending_enabled = false,
         } },
         .{ "cell_bg", .{
-            .vertex_fn = loadShaderCode("../shaders/glsl/full_screen.v.glsl"),
-            .fragment_fn = loadShaderCode("../shaders/glsl/cell_bg.f.glsl"),
+            .vertex_fn = loadShaderCode(shader_dir ++ "full_screen.v.glsl"),
+            .fragment_fn = loadShaderCode(shader_dir ++ "cell_bg.f.glsl"),
             .blending_enabled = true,
         } },
         .{ "cell_text", .{
             .vertex_attributes = CellText,
-            .vertex_fn = loadShaderCode("../shaders/glsl/cell_text.v.glsl"),
-            .fragment_fn = loadShaderCode("../shaders/glsl/cell_text.f.glsl"),
+            .vertex_fn = loadShaderCode(shader_dir ++ "cell_text.v.glsl"),
+            .fragment_fn = loadShaderCode(shader_dir ++ "cell_text.f.glsl"),
             .step_fn = .per_instance,
             .blending_enabled = true,
         } },
         .{ "image", .{
             .vertex_attributes = Image,
-            .vertex_fn = loadShaderCode("../shaders/glsl/image.v.glsl"),
-            .fragment_fn = loadShaderCode("../shaders/glsl/image.f.glsl"),
+            .vertex_fn = loadShaderCode(shader_dir ++ "image.v.glsl"),
+            .fragment_fn = loadShaderCode(shader_dir ++ "image.f.glsl"),
             .step_fn = .per_instance,
             .blending_enabled = true,
         } },
         .{ "bg_image", .{
             .vertex_attributes = BgImage,
-            .vertex_fn = loadShaderCode("../shaders/glsl/bg_image.v.glsl"),
-            .fragment_fn = loadShaderCode("../shaders/glsl/bg_image.f.glsl"),
+            .vertex_fn = loadShaderCode(shader_dir ++ "bg_image.v.glsl"),
+            .fragment_fn = loadShaderCode(shader_dir ++ "bg_image.f.glsl"),
             .step_fn = .per_instance,
             .blending_enabled = true,
         } },
@@ -333,7 +340,7 @@ fn initPostPipelines(
 /// Initialize a single custom shader pipeline from shader source.
 fn initPostPipeline(data: [:0]const u8) !Pipeline {
     return try Pipeline.init(null, .{
-        .vertex_fn = loadShaderCode("../shaders/glsl/full_screen.v.glsl"),
+        .vertex_fn = loadShaderCode(shader_dir ++ "full_screen.v.glsl"),
         .fragment_fn = data,
     });
 }

@@ -427,15 +427,25 @@ pub fn initAtlasTexture(
     const format: gl.Texture.Format, const internal_format: gl.Texture.InternalFormat =
         switch (atlas.format) {
             .grayscale => .{ .red, .red },
-            .bgra => .{ .bgra, .srgba },
+            .bgra => if (builtin.target.abi == .android)
+                .{ .rgba, .rgba }
+            else
+                .{ .bgra, .srgba },
             else => @panic("unsupported atlas format for OpenGL texture"),
         };
+
+    // OpenGL ES does not support GL_TEXTURE_RECTANGLE.
+    // Use GL_TEXTURE_2D with normalized coordinates instead.
+    const target: gl.Texture.Target = if (builtin.target.abi == .android)
+        .@"2D"
+    else
+        .Rectangle;
 
     return try Texture.init(
         .{
             .format = format,
             .internal_format = internal_format,
-            .target = .Rectangle,
+            .target = target,
             .min_filter = .nearest,
             .mag_filter = .nearest,
             .wrap_s = .clamp_to_edge,

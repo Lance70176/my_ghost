@@ -58,6 +58,10 @@ fn buildGlslang(
         const apple_sdk = @import("apple_sdk");
         try apple_sdk.addPaths(b, lib);
     }
+    if (target.result.abi.isAndroid()) {
+        const android_ndk = @import("android_ndk");
+        try android_ndk.addPaths(b, lib);
+    }
 
     var flags: std.ArrayList([]const u8) = .empty;
     defer flags.deinit(b.allocator);

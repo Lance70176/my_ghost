@@ -71,15 +71,29 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Row 1: Mode switcher
-            Picker("", selection: $sidebarMode) {
-                Image(systemName: "terminal").tag(SidebarMode.terminal)
-                Image(systemName: "folder").tag(SidebarMode.fileBrowser)
+            // Row 1: Mode switcher — two buttons each 50% width
+            HStack(spacing: 0) {
+                Button(action: { sidebarMode = .terminal }) {
+                    Image(systemName: "terminal")
+                        .font(.system(size: 15))
+                        .frame(maxWidth: .infinity, minHeight: 28)
+                        .background(sidebarMode == .terminal ? Color.accentColor.opacity(0.25) : Color.clear)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+
+                Button(action: { sidebarMode = .fileBrowser }) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 15))
+                        .frame(maxWidth: .infinity, minHeight: 28)
+                        .background(sidebarMode == .fileBrowser ? Color.accentColor.opacity(0.25) : Color.clear)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
             }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 8)
-            .padding(.top, 6)
-            .padding(.bottom, 4)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .padding(.top, 2)
+            .padding(.bottom, 2)
 
             // Row 2: Action buttons (sub-menu style)
             if sidebarMode == .terminal {
@@ -99,7 +113,18 @@ struct SidebarView: View {
                                     return
                                 }
                             }
-                            // Otherwise close the top-level tab/group
+                            // Check if the selection is a group itself — close the
+                            // active/first child instead of the entire group.
+                            if let tab = controller.tabs.first(where: { $0.id == sel }), tab.isGroup {
+                                if let activeChild = tab.children.first(where: { $0.id == tab.fullModeActiveChildID })
+                                    ?? tab.children.first {
+                                    controller.closeChildTab(activeChild, from: tab)
+                                } else {
+                                    controller.closeTab(tab)
+                                }
+                                return
+                            }
+                            // Otherwise close the top-level standalone tab
                             if let tab = controller.tabs.first(where: { $0.id == sel }) {
                                 controller.closeTab(tab)
                             }

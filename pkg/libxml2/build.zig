@@ -15,6 +15,10 @@ pub fn build(b: *std.Build) !void {
         .linkage = .static,
     });
     lib.linkLibC();
+    if (target.result.abi.isAndroid()) {
+        const android_ndk = @import("android_ndk");
+        try android_ndk.addPaths(b, lib);
+    }
 
     if (upstream_) |upstream| lib.addIncludePath(upstream.path("include"));
     lib.addIncludePath(b.path("override/include"));

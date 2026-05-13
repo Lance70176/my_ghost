@@ -12,6 +12,7 @@
         },
 
         .apple_sdk = .{ .path = "../apple-sdk" },
+        .android_ndk = .{ .path = "../android-ndk" },
         .breakpad = .{ .path = "../breakpad", .lazy = true },
     },
 }

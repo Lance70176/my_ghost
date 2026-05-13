@@ -37,7 +37,7 @@ pub const lib = @import("lib/main.zig");
 /// so that every build has exactly one renderer implementation.
 pub const Renderer = switch (build_config.renderer) {
     .metal => GenericRenderer(Metal),
-    .opengl => GenericRenderer(OpenGL),
+    .opengl, .opengl_es => GenericRenderer(OpenGL),
     .webgl => WebGL,
 };
 

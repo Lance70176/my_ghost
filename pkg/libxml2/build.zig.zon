@@ -9,5 +9,6 @@
             .hash = "N-V-__8AAG3RoQEyRC2Vw7Qoro5SYBf62IHn3HjqtNVY6aWK",
             .lazy = true,
         },
+        .android_ndk = .{ .path = "../android-ndk" },
     },
 }

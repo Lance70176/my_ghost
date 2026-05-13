@@ -217,7 +217,7 @@ struct FileBrowserView: View {
                 state.loadEntries()
             }
             refreshTimer?.invalidate()
-            refreshTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in
+            refreshTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
                 state.loadEntries()
             }
         }

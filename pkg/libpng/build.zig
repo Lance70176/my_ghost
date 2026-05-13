@@ -20,6 +20,10 @@ pub fn build(b: *std.Build) !void {
         const apple_sdk = @import("apple_sdk");
         try apple_sdk.addPaths(b, lib);
     }
+    if (target.result.abi.isAndroid()) {
+        const android_ndk = @import("android_ndk");
+        try android_ndk.addPaths(b, lib);
+    }
 
     // For dynamic linking, we prefer dynamic linking and to search by
     // mode first. Mode first will search all paths for a dynamic library

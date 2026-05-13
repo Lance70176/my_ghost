@@ -75,7 +75,11 @@ fn buildLib(b: *std.Build, module: *std.Build.Module, options: anytype) !*std.Bu
         .linkage = .static,
     });
     lib.linkLibC();
-    if (target.result.os.tag != .windows) {
+    if (target.result.abi.isAndroid()) {
+        const android_ndk = @import("android_ndk");
+        try android_ndk.addPaths(b, lib);
+    }
+    if (target.result.os.tag != .windows and !target.result.abi.isAndroid()) {
         lib.linkSystemLibrary("pthread");
     }
 

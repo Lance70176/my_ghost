@@ -133,6 +133,11 @@ class SidebarTerminalController: BaseTerminalController {
         guard finalIndex >= 0 else { return }
         let item = flatItems[finalIndex]
 
+        // Always switch back to terminal tab list mode (e.g. from file browser)
+        if sidebarUIState.sidebarMode != .terminal {
+            sidebarUIState.sidebarMode = .terminal
+        }
+
         if let group = item.group {
             if group.id != selectedTabID {
                 selectTab(group)
@@ -195,16 +200,6 @@ class SidebarTerminalController: BaseTerminalController {
         guard let ghostty_app = ghostty.app else { return }
 
         var config = baseConfig ?? Ghostty.SurfaceConfiguration()
-
-        // Inherit working directory from the current tab if not explicitly set
-        if config.workingDirectory == nil {
-            if let pwd = focusedSurface?.pwd {
-                config.workingDirectory = pwd
-            } else if let tab = currentTab, let screenName = tab.screenSessionName {
-                // Screen eats OSC 7 so pwd may be nil. Query the shell process directly.
-                config.workingDirectory = ScreenSessionManager.shared.getSessionWorkingDirectory(sessionName: screenName)
-            }
-        }
 
         let mgr = ScreenSessionManager.shared
         var screenName: String? = nil
@@ -887,7 +882,11 @@ class SidebarTerminalController: BaseTerminalController {
                     return
                 }
 
-                // Switch to the next remaining child
+                // Switch to the next remaining child.
+                // Guard against recursive surfaceTreeDidChange while swapping the tree.
+                isModifyingChildren = true
+                defer { isModifyingChildren = false }
+
                 let next = tab.children.first!
                 if tab.isFullMode {
                     // Stay in full mode, show the next child
@@ -1040,11 +1039,14 @@ class SidebarTerminalController: BaseTerminalController {
         let flatItems = flatActivatableItems
         guard !flatItems.isEmpty else { return }
 
-        // Find current position in the flat list
+        // Find current position in the flat list.
+        // Use highlightedItemID (tracks the focused child inside a group) rather than
+        // selectedTabID (which is the group's id for group children and wouldn't match
+        // any entry in flatItems — causing previous/next to always start from 0).
         let currentFlatIndex: Int
-        if let selectedID = selectedTabID {
-            // Try to find the currently focused item in the flat list
-            currentFlatIndex = flatItems.firstIndex(where: { $0.tab.id == selectedID }) ?? 0
+        if let focusedID = highlightedItemID ?? selectedTabID,
+           let idx = flatItems.firstIndex(where: { $0.tab.id == focusedID }) {
+            currentFlatIndex = idx
         } else {
             currentFlatIndex = 0
         }
