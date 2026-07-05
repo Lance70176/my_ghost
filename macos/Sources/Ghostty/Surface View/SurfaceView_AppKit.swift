@@ -1497,6 +1497,7 @@ extension Ghostty {
 
         @IBAction func paste(_ sender: Any?) {
             guard let surface = self.surface else { return }
+            if forwardImagePasteIfNeeded() { return }
             let action = "paste_from_clipboard"
             if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
                 AppDelegate.logger.warning("action failed action=\(action)")
@@ -1505,10 +1506,23 @@ extension Ghostty {
 
         @IBAction func pasteAsPlainText(_ sender: Any?) {
             guard let surface = self.surface else { return }
+            if forwardImagePasteIfNeeded() { return }
             let action = "paste_from_clipboard"
             if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
                 AppDelegate.logger.warning("action failed action=\(action)")
             }
+        }
+
+        /// paste_from_clipboard only handles text, so a clipboard that holds an
+        /// image with no text representation (e.g. a copied screenshot) would
+        /// paste nothing. In that case forward a literal Ctrl+V (0x16) so
+        /// clipboard-aware programs like Claude Code read the image themselves.
+        private func forwardImagePasteIfNeeded() -> Bool {
+            let pb = NSPasteboard.general
+            guard pb.getOpinionatedStringContents() == nil,
+                  NSImage.canInit(with: pb) else { return false }
+            surfaceModel?.sendText("\u{16}")
+            return true
         }
 
         @IBAction func pasteSelection(_ sender: Any?) {
