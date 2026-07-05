@@ -288,6 +288,12 @@ class ScreenSessionManager {
         var isFullMode: Bool?
         /// The index of the active child in full mode.
         var fullModeActiveChildIndex: Int?
+        /// SSH destination for remote tabs (ssh config alias or "user@host"). nil = local.
+        var remoteTarget: String?
+        /// Extra ssh options (port, identity file) for remote tabs.
+        var remoteSSHOptions: [String]?
+        /// Host display name shown as a badge on remote tabs.
+        var remoteDisplayName: String?
     }
 
     struct SavedState: Codable {
