@@ -117,9 +117,14 @@ class SidebarTabEntry: ObservableObject, Identifiable {
     func updateFocusedSurface(_ surface: Ghostty.SurfaceView?) {
         focusedSurface = surface
 
-        // If this tab has no original surface yet (shouldn't happen), adopt this one
+        // If this tab has no original surface yet, adopt this one
         guard let surface else { return }
         if originalSurface == nil {
+            // Only adopt a surface that actually lives in this tab's tree.
+            // During rapid tab switching the controller's focused surface can
+            // still belong to another tab; adopting it would subscribe this
+            // tab's title to the other tab's terminal.
+            guard surfaceTree.root?.leaves().contains(where: { $0 === surface }) ?? false else { return }
             originalSurface = surface
             subscribeTo(surface: surface)
         } else if surface === originalSurface {
