@@ -328,6 +328,11 @@ private struct TreeRowContent: View {
                 node.toggle()
             }
         }
+        .simultaneousGesture(TapGesture(count: 2).onEnded {
+            if !node.isDirectory {
+                NSWorkspace.shared.open(node.url)
+            }
+        })
         .onDrag {
             // Drag file → provide path as text for terminal drop
             let escapedPath = node.url.path.replacingOccurrences(of: " ", with: "\\ ")
@@ -341,6 +346,15 @@ private struct TreeRowContent: View {
                 }
                 Button("Open in New Tab") {
                     state.onOpenInNewTab?(node.url.path)
+                }
+                Divider()
+            }
+            if !node.isDirectory {
+                Button("Open") {
+                    NSWorkspace.shared.open(node.url)
+                }
+                Button("Edit") {
+                    TextEditorManager.shared.open(url: node.url)
                 }
                 Divider()
             }
