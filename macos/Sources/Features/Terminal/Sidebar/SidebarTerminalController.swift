@@ -1223,8 +1223,61 @@ class SidebarTerminalController: BaseTerminalController {
         let sessions = controllers.flatMap { controller in
             controller.tabs.compactMap { stateFor($0) }
         }
+
+        // Merge in entries from the existing state file whose sessions are
+        // still alive but aren't represented by any open window — windows
+        // that already closed (their controller left allControllers) or that
+        // never registered. Without this, the last window to save overwrites
+        // the file with only its own tabs and every other window's tabs and
+        // groups are lost.
+        var covered = Set<String>()
+        func collectLeafNames(_ s: ScreenSessionManager.SessionState) {
+            if s.isGroup {
+                s.children?.forEach(collectLeafNames)
+            } else {
+                covered.insert(s.screenSessionName)
+            }
+        }
+        sessions.forEach(collectLeafNames)
+
+        var merged = sessions
+        if let existing = mgr.loadState() {
+            let alive = Set(mgr.listAliveSessions())
+            func prune(_ s: ScreenSessionManager.SessionState) -> ScreenSessionManager.SessionState? {
+                if s.isGroup {
+                    let kept = (s.children ?? []).compactMap(prune)
+                    guard !kept.isEmpty else { return nil }
+                    return ScreenSessionManager.SessionState(
+                        screenSessionName: s.screenSessionName,
+                        title: s.title,
+                        workingDirectory: s.workingDirectory,
+                        isGroup: true,
+                        groupName: s.groupName,
+                        children: kept,
+                        isFullMode: s.isFullMode,
+                        fullModeActiveChildIndex: s.fullModeActiveChildIndex
+                    )
+                }
+                // Remote sessions can't be liveness-checked locally; only the
+                // ones owned by an open window are kept, so closed remote tabs
+                // don't get resurrected forever.
+                if s.remoteTarget != nil { return nil }
+                guard alive.contains(s.screenSessionName), !covered.contains(s.screenSessionName) else { return nil }
+                covered.insert(s.screenSessionName)
+                return s
+            }
+            merged += existing.sessions.compactMap(prune)
+        }
+
         let selectedName = currentTab?.screenSessionName
-        mgr.saveState(ScreenSessionManager.SavedState(sessions: sessions, selectedScreenName: selectedName))
+        mgr.saveState(ScreenSessionManager.SavedState(sessions: merged, selectedScreenName: selectedName))
+    }
+
+    /// Save state covering all windows. Safer than iterating NSApp.windows
+    /// and reading `window.windowController` (a weak reference that can
+    /// already be nil at termination time).
+    static func saveAllScreenSessionState() {
+        allControllers.first?.saveScreenSessionState()
     }
 
     /// Attempt to restore a window from saved screen sessions.
