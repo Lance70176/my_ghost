@@ -519,12 +519,10 @@ class AppDelegate: NSObject,
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // Save screen session state from all sidebar controllers before quitting.
-        for window in NSApp.windows {
-            if let controller = window.windowController as? SidebarTerminalController {
-                controller.saveScreenSessionState()
-            }
-        }
+        // Save screen session state before quitting. Goes through
+        // allControllers because window.windowController is a weak reference
+        // that can already be nil during termination, silently skipping saves.
+        SidebarTerminalController.saveAllScreenSessionState()
 
         // We have no notifications we want to persist after death,
         // so remove them all now. In the future we may want to be
