@@ -1557,23 +1557,9 @@ class SidebarTerminalWindow: NSWindow {
             return true  // consumed
         }
 
-        // Cmd+V with an image (and no text) on the clipboard: forward Ctrl+V
-        // to the terminal so TUI apps that read the clipboard themselves
-        // (e.g. Claude Code image paste) receive their shortcut. Regular text
-        // paste is unaffected — with a string on the clipboard the default
-        // paste keybind runs as usual.
-        if flags == .command,
-           event.charactersIgnoringModifiers == "v",
-           let controller = sidebarController,
-           let surface = controller.focusedSurface {
-            let pasteboard = NSPasteboard.general
-            let hasText = pasteboard.string(forType: .string) != nil
-            let hasImage = pasteboard.types?.contains(where: { $0 == .tiff || $0 == .png }) ?? false
-            if hasImage && !hasText {
-                surface.surfaceModel?.sendText("\u{16}")
-                return true  // consumed
-            }
-        }
+        // Cmd+V image forwarding is handled by SurfaceView.paste(_:), which
+        // sends a real Ctrl+V key event. Intercepting here with sendText would
+        // deliver the control character as a bracketed paste and paste blank.
 
         return super.performKeyEquivalent(with: event)
     }
