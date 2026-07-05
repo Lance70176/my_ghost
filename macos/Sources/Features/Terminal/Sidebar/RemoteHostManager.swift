@@ -159,6 +159,11 @@ class RemoteHostManager {
         target="$1"
         session="$2"
         shift 2
+        # Ghostty sets TERM=xterm-ghostty, which most remote hosts don't have in
+        # their terminfo database — tmux then fails with "missing or unsuitable
+        # terminal". Send the universally available xterm-256color instead.
+        TERM=xterm-256color
+        export TERM
         attempt=0
         while :; do
           if [ "$attempt" -gt 0 ]; then
