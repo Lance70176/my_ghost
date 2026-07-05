@@ -42,6 +42,9 @@ struct SidebarView: View {
     /// Persistent file browser state across mode switches.
     @StateObject private var fileBrowserState = FileBrowserState()
 
+    /// Whether the "Add Remote Host" sheet is visible.
+    @State private var showAddRemoteHostSheet = false
+
     /// A mapping from tab/child ID to its Cmd+Number shortcut index (1-based), using the flat activatable list.
     private var shortcutIndexMap: [UUID: Int] {
         var map: [UUID: Int] = [:]
@@ -136,6 +139,8 @@ struct SidebarView: View {
                     .buttonStyle(.borderless)
                     .disabled(controller.tabs.isEmpty)
 
+                    remoteHostMenu
+
                     Spacer()
                 }
                 .padding(.horizontal, 16)
@@ -178,6 +183,68 @@ struct SidebarView: View {
                 sidebarMode = .terminal
             }
         }
+        .sheet(isPresented: $showAddRemoteHostSheet) {
+            AddRemoteHostSheet { host in
+                RemoteHostManager.shared.addManualHost(host)
+                controller.addRemoteTab(host: host)
+            }
+        }
+    }
+
+    /// Menu for connecting to a remote host: lists ~/.ssh/config aliases and
+    /// manually saved hosts, plus an entry to add a new host.
+    private var remoteHostMenu: some View {
+        Menu {
+            let configHosts = RemoteHostManager.shared.sshConfigHosts()
+            let manualHosts = RemoteHostManager.shared.manualHosts()
+
+            if configHosts.isEmpty && manualHosts.isEmpty {
+                Text("No saved hosts")
+            }
+
+            ForEach(configHosts) { host in
+                Button {
+                    controller.addRemoteTab(host: host)
+                } label: {
+                    Label(host.name, systemImage: "doc.text")
+                }
+            }
+
+            if !configHosts.isEmpty && !manualHosts.isEmpty {
+                Divider()
+            }
+
+            ForEach(manualHosts) { host in
+                Button {
+                    controller.addRemoteTab(host: host)
+                } label: {
+                    Label(host.name, systemImage: "network")
+                }
+            }
+
+            Divider()
+
+            Button("Add Remote Host…") {
+                showAddRemoteHostSheet = true
+            }
+
+            if !manualHosts.isEmpty {
+                Menu("Remove Saved Host") {
+                    ForEach(manualHosts) { host in
+                        Button(host.name) {
+                            RemoteHostManager.shared.removeManualHost(host)
+                        }
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "network")
+                .font(.system(size: 15))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Connect to a remote host (SSH + tmux)")
     }
 
     /// Create a Binding<Bool> that sets/clears dropTargetID for a specific tab.
@@ -340,6 +407,13 @@ private struct SidebarStandaloneTabRow: View {
 
     var body: some View {
         HStack(spacing: 4) {
+            if tab.isRemote {
+                Image(systemName: "antenna.radiowaves.left.and.right")
+                    .font(.caption2)
+                    .foregroundColor(.cyan)
+                    .help("Remote: \(tab.remoteTarget ?? "")")
+            }
+
             Text(tab.displayTitle)
                 .font(.body)
                 .lineLimit(1)
@@ -519,9 +593,9 @@ private struct SidebarGroupChildRow: View {
                 .fill(Color.secondary.opacity(0.3))
                 .frame(width: 8, height: 1)
 
-            Image(systemName: "terminal")
+            Image(systemName: child.isRemote ? "antenna.radiowaves.left.and.right" : "terminal")
                 .font(.caption2)
-                .foregroundColor(isActiveChild ? .accentColor : .secondary)
+                .foregroundColor(isActiveChild ? .accentColor : (child.isRemote ? .cyan : .secondary))
 
             Text(child.displayTitle)
                 .font(.callout)
@@ -585,5 +659,68 @@ private struct SidebarGroupChildRow: View {
                 controller.closeChildTab(child, from: group)
             }
         }
+    }
+}
+
+// MARK: - Add Remote Host Sheet
+
+/// Form for adding a remote SSH host manually (IP or hostname).
+/// The host is saved and a remote tab is opened immediately.
+private struct AddRemoteHostSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    /// Called with the new host when the user confirms.
+    let onConnect: (RemoteHost) -> Void
+
+    @State private var name = ""
+    @State private var host = ""
+    @State private var user = ""
+    @State private var port = ""
+    @State private var identityFile = ""
+
+    private var trimmedHost: String {
+        host.trimmingCharacters(in: .whitespaces)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Add Remote Host")
+                .font(.headline)
+
+            Form {
+                TextField("Host / IP:", text: $host, prompt: Text("192.168.1.10 or my-server"))
+                TextField("User:", text: $user, prompt: Text("optional"))
+                TextField("Port:", text: $port, prompt: Text("22"))
+                TextField("Identity file:", text: $identityFile, prompt: Text("~/.ssh/id_rsa (optional)"))
+                TextField("Display name:", text: $name, prompt: Text("optional"))
+            }
+
+            Text("The remote shell runs inside tmux on the host, so the session survives disconnects and reconnects automatically.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Save & Connect") {
+                    let trimmedName = name.trimmingCharacters(in: .whitespaces)
+                    let remoteHost = RemoteHost(
+                        name: trimmedName.isEmpty ? trimmedHost : trimmedName,
+                        host: trimmedHost,
+                        user: user.trimmingCharacters(in: .whitespaces),
+                        port: Int(port.trimmingCharacters(in: .whitespaces)),
+                        identityFile: identityFile.trimmingCharacters(in: .whitespaces)
+                    )
+                    onConnect(remoteHost)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(trimmedHost.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 380)
     }
 }

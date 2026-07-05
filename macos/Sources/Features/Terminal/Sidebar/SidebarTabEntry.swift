@@ -31,7 +31,21 @@ class SidebarTabEntry: ObservableObject, Identifiable {
 
     /// The screen session name associated with this tab (e.g. "myghost_<uuid>").
     /// When set, the tab's shell runs inside a GNU screen session for persistence.
+    /// For remote tabs, this is the tmux session name on the remote host.
     var screenSessionName: String?
+
+    /// SSH destination for remote tabs (ssh config alias or "user@host").
+    /// nil for local tabs.
+    var remoteTarget: String?
+
+    /// Extra ssh options (port, identity file) for remote tabs.
+    var remoteSSHOptions: [String] = []
+
+    /// Host display name shown as a badge on remote tabs.
+    var remoteDisplayName: String?
+
+    /// Whether this tab is connected to a remote host over SSH.
+    var isRemote: Bool { remoteTarget != nil }
 
     /// When non-nil, this entry is a named group container (Tab Area).
     /// The group header displays this name, which can be renamed via right-click.
