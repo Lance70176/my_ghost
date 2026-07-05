@@ -58,7 +58,13 @@ class SidebarTerminalController: BaseTerminalController {
         super.init(ghostty, baseConfig: config)
 
         // Wrap the initial surface tree (created by super) into the first tab entry.
-        let firstTab = SidebarTabEntry(surfaceTree: surfaceTree, focusedSurface: focusedSurface)
+        // focusedSurface is usually still nil this early (focus arrives async
+        // after the window shows), so fall back to the tree's surface — without
+        // it the first tab never subscribes to title updates and its sidebar
+        // label stays frozen at the restored/default value.
+        let firstTab = SidebarTabEntry(
+            surfaceTree: surfaceTree,
+            focusedSurface: focusedSurface ?? surfaceTree.root?.leftmostLeaf())
         firstTab.screenSessionName = initialScreenName
         tabs.append(firstTab)
         selectedTabID = firstTab.id
