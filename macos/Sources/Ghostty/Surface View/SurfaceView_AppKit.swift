@@ -1515,13 +1515,26 @@ extension Ghostty {
 
         /// paste_from_clipboard only handles text, so a clipboard that holds an
         /// image with no text representation (e.g. a copied screenshot) would
-        /// paste nothing. In that case forward a literal Ctrl+V (0x16) so
+        /// paste nothing. In that case forward a Ctrl+V key event so
         /// clipboard-aware programs like Claude Code read the image themselves.
+        /// This must be a key event, not sendText: text is delivered as a
+        /// (bracketed) paste which strips the control character.
         private func forwardImagePasteIfNeeded() -> Bool {
             let pb = NSPasteboard.general
             guard pb.getOpinionatedStringContents() == nil,
                   NSImage.canInit(with: pb) else { return false }
-            surfaceModel?.sendText("\u{16}")
+            guard let surfaceModel else { return false }
+            let unshiftedV = UInt32(UnicodeScalar("v").value)
+            surfaceModel.sendKeyEvent(.init(
+                key: .v,
+                action: .press,
+                mods: .ctrl,
+                unshiftedCodepoint: unshiftedV))
+            surfaceModel.sendKeyEvent(.init(
+                key: .v,
+                action: .release,
+                mods: .ctrl,
+                unshiftedCodepoint: unshiftedV))
             return true
         }
 
