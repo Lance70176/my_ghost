@@ -276,15 +276,19 @@ class SidebarTerminalController: BaseTerminalController {
     }
 
     /// Kill myghost_ tmux sessions that don't belong to any active tab.
+    /// Collects active sessions across ALL windows — cleaning up based on a
+    /// single window's tabs would kill the sessions of every other window.
     private func cleanupOrphanedTmuxSessions() {
         var activeNames = Set<String>()
-        for tab in tabs {
-            if let name = tab.screenSessionName {
-                activeNames.insert(name)
-            }
-            for child in tab.children {
-                if let name = child.screenSessionName {
+        for controller in Self.allControllers.union([self]) {
+            for tab in controller.tabs {
+                if let name = tab.screenSessionName {
                     activeNames.insert(name)
+                }
+                for child in tab.children {
+                    if let name = child.screenSessionName {
+                        activeNames.insert(name)
+                    }
                 }
             }
         }
@@ -409,7 +413,7 @@ class SidebarTerminalController: BaseTerminalController {
 
     /// Close a specific tab.
     func closeTab(_ tab: SidebarTabEntry) {
-        guard let index = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
+        guard tabs.contains(where: { $0.id == tab.id }) else { return }
 
         // Check if any surface in this tab needs confirmation
         let needsConfirm = tab.surfaceTree.root?.needsConfirmQuit ?? false
@@ -419,14 +423,19 @@ class SidebarTerminalController: BaseTerminalController {
                 messageText: "Close Tab?",
                 informativeText: "The tab still has a running process. If you close the tab the process will be killed."
             ) { [weak self] in
-                self?.closeTabImmediately(tab, at: index)
+                self?.closeTabImmediately(tab)
             }
         } else {
-            closeTabImmediately(tab, at: index)
+            closeTabImmediately(tab)
         }
     }
 
-    private func closeTabImmediately(_ tab: SidebarTabEntry, at index: Int, killRemote: Bool = true) {
+    private func closeTabImmediately(_ tab: SidebarTabEntry, killRemote: Bool = true) {
+        // Look up the index at execution time: the tabs array may have changed
+        // while a confirmation dialog was open, so a captured index could point
+        // at (and remove) a different tab.
+        guard let index = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
+
         // Kill screen sessions for this tab and its children
         killSession(for: tab, includeRemote: killRemote)
         for child in tab.children {
@@ -938,9 +947,7 @@ class SidebarTerminalController: BaseTerminalController {
                     // All children gone — close the group. Process-exit driven,
                     // so leave remote sessions alone (they may have been detached).
                     tab.screenSessionName = nil
-                    if let index = tabs.firstIndex(where: { $0.id == tab.id }) {
-                        closeTabImmediately(tab, at: index, killRemote: false)
-                    }
+                    closeTabImmediately(tab, killRemote: false)
                     return
                 }
 
@@ -1003,9 +1010,7 @@ class SidebarTerminalController: BaseTerminalController {
             // session is already dead; for remote tabs the user may have detached
             // tmux deliberately, so don't kill the remote session.
             tab.screenSessionName = nil
-            if let index = tabs.firstIndex(where: { $0.id == tab.id }) {
-                closeTabImmediately(tab, at: index, killRemote: false)
-            }
+            closeTabImmediately(tab, killRemote: false)
             return
         }
 
@@ -1015,10 +1020,17 @@ class SidebarTerminalController: BaseTerminalController {
         // For groups: detect which children's surfaces were removed from the tree
         // (e.g. via Cmd+W closing a split pane) and sync group.children accordingly.
         if tab.isGroup {
+            // A child only counts as removed if its surface was in the old tree and
+            // is gone from the new one. In full mode the visible tree contains just
+            // the active child, so comparing children against the new tree alone
+            // would treat every hidden child as removed and kill its session.
+            let oldSurfaces = from.root?.leaves() ?? []
             let remainingSurfaces = to.root?.leaves() ?? []
             let removedChildren = tab.children.filter { child in
-                guard let surface = child.originalSurface else { return true }
-                return !remainingSurfaces.contains(where: { $0 === surface })
+                guard let surface = child.originalSurface else { return false }
+                let wasPresent = oldSurfaces.contains(where: { $0 === surface })
+                let stillPresent = remainingSurfaces.contains(where: { $0 === surface })
+                return wasPresent && !stillPresent
             }
 
             if !removedChildren.isEmpty {
@@ -1037,10 +1049,8 @@ class SidebarTerminalController: BaseTerminalController {
 
                 // If no children left, close the group
                 if tab.children.isEmpty {
-                    if let index = tabs.firstIndex(where: { $0.id == tab.id }) {
-                        closeTabImmediately(tab, at: index, killRemote: false)
-                        return
-                    }
+                    closeTabImmediately(tab, killRemote: false)
+                    return
                 } else if tab.isFullMode, tab.children.count == 1 {
                     tab.isFullMode = false
                     tab.savedSplitTree = nil
@@ -1201,7 +1211,18 @@ class SidebarTerminalController: BaseTerminalController {
             }
         }
 
-        let sessions = tabs.compactMap { stateFor($0) }
+        // Persist tabs from ALL windows. The state file is shared, so saving only
+        // this window's tabs would wipe every other window's sessions from it
+        // (last writer wins) and they'd be treated as orphans on next launch.
+        var controllers = Array(Self.allControllers)
+        if let idx = controllers.firstIndex(of: self) {
+            controllers.remove(at: idx)
+        }
+        controllers.insert(self, at: 0)
+
+        let sessions = controllers.flatMap { controller in
+            controller.tabs.compactMap { stateFor($0) }
+        }
         let selectedName = currentTab?.screenSessionName
         mgr.saveState(ScreenSessionManager.SavedState(sessions: sessions, selectedScreenName: selectedName))
     }

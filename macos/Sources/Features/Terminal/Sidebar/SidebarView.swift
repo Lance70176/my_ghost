@@ -275,6 +275,22 @@ struct SidebarView: View {
             guard let data = data as? Data, let uuidString = String(data: data, encoding: .utf8),
                   let draggedID = UUID(uuidString: uuidString) else { return }
             DispatchQueue.main.async {
+                // Reorder within a group: both dragged and target are children
+                // of the same group. Cross-group moves are not supported here.
+                for group in controller.tabs where group.isGroup {
+                    guard let fromIndex = group.children.firstIndex(where: { $0.id == draggedID }) else { continue }
+                    guard let toIndex = group.children.firstIndex(where: { $0.id == targetTabID }),
+                          fromIndex != toIndex else { return }
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        let child = group.children.remove(at: fromIndex)
+                        group.children.insert(child, at: toIndex)
+                        // Force @Published tabs to fire so SwiftUI re-computes flatRows.
+                        let snapshot = controller.tabs
+                        controller.tabs = snapshot
+                        controller.saveScreenSessionState()
+                    }
+                    return
+                }
                 guard let fromIndex = controller.tabs.firstIndex(where: { $0.id == draggedID }),
                       let toIndex = controller.tabs.firstIndex(where: { $0.id == targetTabID }) else { return }
                 guard fromIndex != toIndex else { return }
@@ -334,6 +350,13 @@ struct SidebarView: View {
                         selection: $selection
                     )
                     .tag(child.id)
+                    .overlay(dropIndicator(for: child.id))
+                    .onDrag {
+                        NSItemProvider(object: child.id.uuidString as NSString)
+                    }
+                    .onDrop(of: [.plainText], isTargeted: dropTargetBinding(for: child.id)) { providers in
+                        handleDrop(of: providers, targetTabID: child.id)
+                    }
                 }
             }
         }
