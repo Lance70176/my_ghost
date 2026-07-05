@@ -164,6 +164,24 @@ class RemoteHostManager {
         # terminal". Send the universally available xterm-256color instead.
         TERM=xterm-256color
         export TERM
+        # Remote payload, run via `sh -c` so it behaves the same regardless of
+        # the remote user's login shell (bash/zsh/fish/...). Looks for tmux in
+        # PATH and in common install locations — non-interactive ssh commands
+        # often miss Homebrew paths — and falls back to a plain login shell
+        # when tmux is unavailable.
+        payload='TB=
+        for c in tmux /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux; do
+          if command -v "$c" >/dev/null 2>&1; then TB=$c; break; fi
+        done
+        if [ -n "$TB" ]; then
+          exec "$TB" new-session -A -s '"$session"'
+        else
+          echo ""
+          echo "[MyGhost] tmux not found on remote host - using a plain shell instead."
+          echo "[MyGhost] Auto-reconnect still works, but running programs will not survive a disconnect."
+          echo ""
+          exec "${SHELL:-/bin/sh}" -l
+        fi'
         attempt=0
         while :; do
           if [ "$attempt" -gt 0 ]; then
@@ -175,8 +193,7 @@ class RemoteHostManager {
             -o ServerAliveInterval=15 \\
             -o ServerAliveCountMax=4 \\
             -o ConnectTimeout=10 \\
-            "$@" "$target" -- \\
-            "tmux new-session -A -s '$session' || { echo '[MyGhost] Failed to start tmux on the remote host. Is tmux installed?'; sleep 5; exit 1; }"
+            "$@" "$target" -- "sh -c '$payload'"
           status=$?
           [ "$status" -ne 255 ] && exit "$status"
         done
