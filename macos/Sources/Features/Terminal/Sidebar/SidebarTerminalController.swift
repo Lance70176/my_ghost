@@ -226,6 +226,55 @@ class SidebarTerminalController: BaseTerminalController {
         cleanupOrphanedTmuxSessions()
     }
 
+    /// Add a new tab connected to a remote host over SSH. The shell runs inside
+    /// a tmux session on the remote host, so it survives connection drops and
+    /// app restarts; the bootstrap script reconnects automatically.
+    func addRemoteTab(host: RemoteHost) {
+        guard let ghostty_app = ghostty.app else { return }
+
+        let rmgr = RemoteHostManager.shared
+        let sessionName = rmgr.sessionName(for: UUID())
+
+        var config = Ghostty.SurfaceConfiguration()
+        config.command = rmgr.connectCommand(
+            target: host.target,
+            options: host.sshOptions,
+            sessionName: sessionName
+        )
+
+        let newSurface = Ghostty.SurfaceView(ghostty_app, baseConfig: config)
+        let newTree = SplitTree<Ghostty.SurfaceView>(view: newSurface)
+        let newTab = SidebarTabEntry(surfaceTree: newTree, focusedSurface: newSurface)
+        newTab.screenSessionName = sessionName
+        newTab.remoteTarget = host.target
+        newTab.remoteSSHOptions = host.sshOptions
+        newTab.remoteDisplayName = host.name
+        newTab.defaultTitle = host.name
+
+        tabs.append(newTab)
+        selectTab(newTab)
+        saveScreenSessionState()
+    }
+
+    /// Kill the tmux session backing a tab. Local sessions are always killed.
+    /// Remote sessions are only killed when `includeRemote` is true (explicit
+    /// user close) — process-exit driven closes skip the remote kill so that
+    /// detaching tmux on the remote side leaves the session running.
+    private func killSession(for tab: SidebarTabEntry, includeRemote: Bool) {
+        guard let name = tab.screenSessionName else { return }
+        if let target = tab.remoteTarget {
+            if includeRemote {
+                RemoteHostManager.shared.killRemoteSession(
+                    target: target,
+                    options: tab.remoteSSHOptions,
+                    sessionName: name
+                )
+            }
+        } else {
+            ScreenSessionManager.shared.killSession(name: name)
+        }
+    }
+
     /// Kill myghost_ tmux sessions that don't belong to any active tab.
     /// Collects active sessions across ALL windows — cleaning up based on a
     /// single window's tabs would kill the sessions of every other window.
@@ -249,14 +298,30 @@ class SidebarTerminalController: BaseTerminalController {
     }
 
     /// Add a restored tab that reattaches to an existing screen session.
-    func addRestoredTab(screenName: String, title: String, workingDirectory: String?) {
+    /// When `remoteTarget` is set, the tab reconnects to a remote tmux session
+    /// over SSH instead of a local one.
+    func addRestoredTab(
+        screenName: String,
+        title: String,
+        workingDirectory: String?,
+        remoteTarget: String? = nil,
+        remoteSSHOptions: [String] = [],
+        remoteDisplayName: String? = nil
+    ) {
         guard let ghostty_app = ghostty.app else { return }
 
-        let mgr = ScreenSessionManager.shared
         var config = Ghostty.SurfaceConfiguration()
-        config.command = mgr.reattachCommand(sessionName: screenName)
-        if let wd = workingDirectory {
-            config.workingDirectory = wd
+        if let remoteTarget {
+            config.command = RemoteHostManager.shared.connectCommand(
+                target: remoteTarget,
+                options: remoteSSHOptions,
+                sessionName: screenName
+            )
+        } else {
+            config.command = ScreenSessionManager.shared.reattachCommand(sessionName: screenName)
+            if let wd = workingDirectory {
+                config.workingDirectory = wd
+            }
         }
 
         let newSurface = Ghostty.SurfaceView(ghostty_app, baseConfig: config)
@@ -264,6 +329,9 @@ class SidebarTerminalController: BaseTerminalController {
         let newTab = SidebarTabEntry(surfaceTree: newTree, focusedSurface: newSurface)
         newTab.screenSessionName = screenName
         newTab.defaultTitle = title
+        newTab.remoteTarget = remoteTarget
+        newTab.remoteSSHOptions = remoteSSHOptions
+        newTab.remoteDisplayName = remoteDisplayName
 
         tabs.append(newTab)
         selectTab(newTab)
@@ -362,21 +430,16 @@ class SidebarTerminalController: BaseTerminalController {
         }
     }
 
-    private func closeTabImmediately(_ tab: SidebarTabEntry) {
+    private func closeTabImmediately(_ tab: SidebarTabEntry, killRemote: Bool = true) {
         // Look up the index at execution time: the tabs array may have changed
         // while a confirmation dialog was open, so a captured index could point
         // at (and remove) a different tab.
         guard let index = tabs.firstIndex(where: { $0.id == tab.id }) else { return }
 
         // Kill screen sessions for this tab and its children
-        let mgr = ScreenSessionManager.shared
-        if let name = tab.screenSessionName {
-            mgr.killSession(name: name)
-        }
+        killSession(for: tab, includeRemote: killRemote)
         for child in tab.children {
-            if let name = child.screenSessionName {
-                mgr.killSession(name: name)
-            }
+            killSession(for: child, includeRemote: killRemote)
         }
 
         let wasSelected = (tab.id == selectedTabID)
@@ -678,10 +741,8 @@ class SidebarTerminalController: BaseTerminalController {
         let snapshot = tabs
         tabs = snapshot
 
-        // Kill the child's screen session
-        if let name = child.screenSessionName {
-            ScreenSessionManager.shared.killSession(name: name)
-        }
+        // Kill the child's screen session (explicit user close — kill remote too)
+        killSession(for: child, includeRemote: true)
 
         // If no children left, close the group entirely
         if group.children.isEmpty {
@@ -883,9 +944,10 @@ class SidebarTerminalController: BaseTerminalController {
                 }
 
                 if tab.children.isEmpty {
-                    // All children gone — close the group
+                    // All children gone — close the group. Process-exit driven,
+                    // so leave remote sessions alone (they may have been detached).
                     tab.screenSessionName = nil
-                    closeTabImmediately(tab)
+                    closeTabImmediately(tab, killRemote: false)
                     return
                 }
 
@@ -944,9 +1006,11 @@ class SidebarTerminalController: BaseTerminalController {
                 return
             }
 
-            // Non-group tab: screen session is already dead, close the tab.
+            // Non-group tab: the process exited on its own. For local tabs the
+            // session is already dead; for remote tabs the user may have detached
+            // tmux deliberately, so don't kill the remote session.
             tab.screenSessionName = nil
-            closeTabImmediately(tab)
+            closeTabImmediately(tab, killRemote: false)
             return
         }
 
@@ -985,7 +1049,7 @@ class SidebarTerminalController: BaseTerminalController {
 
                 // If no children left, close the group
                 if tab.children.isEmpty {
-                    closeTabImmediately(tab)
+                    closeTabImmediately(tab, killRemote: false)
                     return
                 } else if tab.isFullMode, tab.children.count == 1 {
                     tab.isFullMode = false
@@ -1139,7 +1203,10 @@ class SidebarTerminalController: BaseTerminalController {
                     workingDirectory: nil,
                     isGroup: false,
                     groupName: nil,
-                    children: nil
+                    children: nil,
+                    remoteTarget: tab.remoteTarget,
+                    remoteSSHOptions: tab.isRemote ? tab.remoteSSHOptions : nil,
+                    remoteDisplayName: tab.remoteDisplayName
                 )
             }
         }
@@ -1170,11 +1237,14 @@ class SidebarTerminalController: BaseTerminalController {
 
         let aliveSessions = Set(mgr.listAliveSessions())
 
-        // Filter to sessions that are still alive
+        // Filter to sessions that are still alive. Remote sessions can't be
+        // checked locally; they're always restorable because the connect command
+        // uses `tmux new-session -A` (attaches if alive, recreates otherwise).
         func isAlive(_ s: ScreenSessionManager.SessionState) -> Bool {
             if s.isGroup {
                 return s.children?.contains(where: isAlive) ?? false
             }
+            if s.remoteTarget != nil { return true }
             return aliveSessions.contains(s.screenSessionName)
         }
 
@@ -1186,6 +1256,7 @@ class SidebarTerminalController: BaseTerminalController {
             if s.isGroup {
                 return s.children?.compactMap({ firstLeaf($0) }).first
             }
+            if s.remoteTarget != nil { return s }
             return aliveSessions.contains(s.screenSessionName) ? s : nil
         }
 
@@ -1193,10 +1264,29 @@ class SidebarTerminalController: BaseTerminalController {
             return nil
         }
 
+        /// Helper: the command that reattaches a session, local or remote.
+        func reconnectCommand(_ s: ScreenSessionManager.SessionState) -> String {
+            if let target = s.remoteTarget {
+                return RemoteHostManager.shared.connectCommand(
+                    target: target,
+                    options: s.remoteSSHOptions ?? [],
+                    sessionName: s.screenSessionName
+                )
+            }
+            return mgr.reattachCommand(sessionName: s.screenSessionName)
+        }
+
+        /// Helper: copy remote metadata from a saved session onto a tab entry.
+        func applyRemoteInfo(_ s: ScreenSessionManager.SessionState, to tab: SidebarTabEntry) {
+            tab.remoteTarget = s.remoteTarget
+            tab.remoteSSHOptions = s.remoteSSHOptions ?? []
+            tab.remoteDisplayName = s.remoteDisplayName
+        }
+
         // Create the controller with the first session as the base
         var baseConfig = Ghostty.SurfaceConfiguration()
-        baseConfig.command = mgr.reattachCommand(sessionName: firstSession.screenSessionName)
-        if let wd = firstSession.workingDirectory {
+        baseConfig.command = reconnectCommand(firstSession)
+        if firstSession.remoteTarget == nil, let wd = firstSession.workingDirectory {
             baseConfig.workingDirectory = wd
         }
 
@@ -1204,6 +1294,9 @@ class SidebarTerminalController: BaseTerminalController {
         // Set screen session name on the first tab
         controller.tabs.first?.screenSessionName = firstSession.screenSessionName
         controller.tabs.first?.defaultTitle = firstSession.title
+        if let firstTab = controller.tabs.first {
+            applyRemoteInfo(firstSession, to: firstTab)
+        }
 
         // Track whether the first leaf (used to bootstrap the controller) has been consumed
         var firstLeafUsed = true
@@ -1211,8 +1304,8 @@ class SidebarTerminalController: BaseTerminalController {
         /// Helper: create a SidebarTabEntry for a leaf session by reattaching to its tmux session.
         func makeChildTab(_ session: ScreenSessionManager.SessionState) -> SidebarTabEntry {
             var config = Ghostty.SurfaceConfiguration()
-            config.command = mgr.reattachCommand(sessionName: session.screenSessionName)
-            if let wd = session.workingDirectory {
+            config.command = reconnectCommand(session)
+            if session.remoteTarget == nil, let wd = session.workingDirectory {
                 config.workingDirectory = wd
             }
             let surface = Ghostty.SurfaceView(ghostty_app, baseConfig: config)
@@ -1220,6 +1313,7 @@ class SidebarTerminalController: BaseTerminalController {
             let tab = SidebarTabEntry(surfaceTree: tree, focusedSurface: surface)
             tab.screenSessionName = session.screenSessionName
             tab.defaultTitle = session.title
+            applyRemoteInfo(session, to: tab)
             return tab
         }
 
@@ -1257,7 +1351,7 @@ class SidebarTerminalController: BaseTerminalController {
         for session in restorableSessions {
             if session.isGroup {
                 guard let children = session.children else { continue }
-                let aliveChildren = children.filter { aliveSessions.contains($0.screenSessionName) }
+                let aliveChildren = children.filter { isAlive($0) }
                 guard !aliveChildren.isEmpty else { continue }
 
                 // Build child tab entries
@@ -1316,7 +1410,7 @@ class SidebarTerminalController: BaseTerminalController {
 
                     controller.tabs.append(group)
                 }
-            } else if aliveSessions.contains(session.screenSessionName) {
+            } else if isAlive(session) {
                 if firstLeafUsed, session.screenSessionName == firstSession.screenSessionName {
                     firstLeafUsed = false
                     continue
@@ -1324,7 +1418,10 @@ class SidebarTerminalController: BaseTerminalController {
                 controller.addRestoredTab(
                     screenName: session.screenSessionName,
                     title: session.title,
-                    workingDirectory: session.workingDirectory
+                    workingDirectory: session.workingDirectory,
+                    remoteTarget: session.remoteTarget,
+                    remoteSSHOptions: session.remoteSSHOptions ?? [],
+                    remoteDisplayName: session.remoteDisplayName
                 )
             }
         }
@@ -1458,6 +1555,24 @@ class SidebarTerminalWindow: NSWindow {
            let controller = sidebarController {
             controller.switchToFlatIndex(digit)
             return true  // consumed
+        }
+
+        // Cmd+V with an image (and no text) on the clipboard: forward Ctrl+V
+        // to the terminal so TUI apps that read the clipboard themselves
+        // (e.g. Claude Code image paste) receive their shortcut. Regular text
+        // paste is unaffected — with a string on the clipboard the default
+        // paste keybind runs as usual.
+        if flags == .command,
+           event.charactersIgnoringModifiers == "v",
+           let controller = sidebarController,
+           let surface = controller.focusedSurface {
+            let pasteboard = NSPasteboard.general
+            let hasText = pasteboard.string(forType: .string) != nil
+            let hasImage = pasteboard.types?.contains(where: { $0 == .tiff || $0 == .png }) ?? false
+            if hasImage && !hasText {
+                surface.surfaceModel?.sendText("\u{16}")
+                return true  // consumed
+            }
         }
 
         return super.performKeyEquivalent(with: event)
