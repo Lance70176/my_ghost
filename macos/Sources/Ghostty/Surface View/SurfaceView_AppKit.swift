@@ -1042,6 +1042,19 @@ extension Ghostty {
             // On any keyDown event we unset our bell state
             bell = false
 
+            // Shift+Return sends ESC+CR so line-editing TUIs (e.g. Claude
+            // Code) insert a newline instead of submitting the input. Skipped
+            // while an IME composition (preedit) is in progress.
+            if event.keyCode == 0x24, // kVK_Return
+               markedText.length == 0,
+               event.modifierFlags.intersection([.shift, .control, .option, .command]) == [.shift] {
+                let seq = "\u{1B}\r"
+                seq.withCString { ptr in
+                    ghostty_surface_text(surface, ptr, UInt(seq.utf8.count))
+                }
+                return
+            }
+
             // We need to translate the mods (maybe) to handle configs such as option-as-alt
             let translationModsGhostty = Ghostty.eventModifierFlags(
                 mods: ghostty_surface_key_translation_mods(
