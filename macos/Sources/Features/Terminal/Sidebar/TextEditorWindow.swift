@@ -1,107 +1,79 @@
 import AppKit
+import SwiftUI
 
 /// Sublime-inspired dark theme for the built-in text editor.
 enum EditorTheme {
     static let background = NSColor(srgbRed: 0x30/255, green: 0x38/255, blue: 0x41/255, alpha: 1)
     static let gutterBackground = NSColor(srgbRed: 0x2b/255, green: 0x33/255, blue: 0x3b/255, alpha: 1)
+    static let tabBarBackground = NSColor(srgbRed: 0x25/255, green: 0x2c/255, blue: 0x33/255, alpha: 1)
+    static let sidebarBackground = NSColor(srgbRed: 0x2b/255, green: 0x33/255, blue: 0x3b/255, alpha: 1)
     static let text = NSColor(srgbRed: 0xd8/255, green: 0xde/255, blue: 0xe9/255, alpha: 1)
     static let gutterText = NSColor(srgbRed: 0x6b/255, green: 0x78/255, blue: 0x86/255, alpha: 1)
     static let selection = NSColor(srgbRed: 0x3f/255, green: 0x4b/255, blue: 0x57/255, alpha: 1)
     static let insertionPoint = NSColor(srgbRed: 0xf9/255, green: 0xae/255, blue: 0x58/255, alpha: 1)
     static let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
     static let gutterFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+
+    static let accent = Color(nsColor: insertionPoint)
+    static let dimText = Color(nsColor: gutterText)
+    static let brightText = Color(nsColor: text)
 }
 
-/// Manages editor windows opened from the file browser, one per file.
-/// Windows share a tabbing identifier so multiple files group as native tabs.
+/// Manages the shared editor panel window opened from the file browser.
 class TextEditorManager {
     static let shared = TextEditorManager()
 
-    private var controllers: [URL: TextEditorWindowController] = [:]
+    private var panel: EditorPanelWindowController?
 
     /// Maximum file size we attempt to edit in-app (5 MB).
     private static let maxEditableSize = 5 * 1024 * 1024
 
     func open(url: URL) {
-        let key = url.standardizedFileURL
-
-        if let existing = controllers[key] {
-            existing.showWindow(nil)
-            existing.window?.makeKeyAndOrderFront(nil)
-            return
-        }
+        let fileURL = url.standardizedFileURL
 
         // Only edit reasonably sized UTF-8 text files; anything else goes
         // to the system default application.
-        guard let data = try? Data(contentsOf: url),
+        guard let data = try? Data(contentsOf: fileURL),
               data.count <= Self.maxEditableSize,
               let text = String(data: data, encoding: .utf8) else {
             NSWorkspace.shared.open(url)
             return
         }
 
-        let controller = TextEditorWindowController(url: url, text: text)
-        controller.onClose = { [weak self] in
-            self?.controllers.removeValue(forKey: key)
+        let controller: EditorPanelWindowController
+        if let panel = panel {
+            controller = panel
+        } else {
+            controller = EditorPanelWindowController()
+            controller.onAllClosed = { [weak self] in self?.panel = nil }
+            panel = controller
         }
-        controllers[key] = controller
-
-        // Group with an existing editor window as a tab, Sublime-style.
-        if let host = controllers.values.first(where: { $0 !== controller })?.window,
-           let newWindow = controller.window {
-            host.addTabbedWindow(newWindow, ordered: .above)
-        }
-        controller.showWindow(nil)
-        controller.window?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        controller.open(url: fileURL, text: text)
     }
 }
 
-/// A window controller hosting a plain-text editor with a line number gutter.
-class TextEditorWindowController: NSWindowController, NSWindowDelegate, NSTextViewDelegate {
-    let fileURL: URL
-    var onClose: (() -> Void)?
+/// One open file inside the editor panel. Owns its own text view so undo
+/// history, scroll position, and dirty state survive tab switches.
+class EditorDocument: NSObject, ObservableObject, Identifiable, NSTextViewDelegate {
+    let id = UUID()
+    let url: URL
+    let scrollView = NSScrollView()
+    let textView: EditorTextView
 
-    private var textView: EditorTextView!
-    private var isDirty = false {
-        didSet { window?.isDocumentEdited = isDirty }
-    }
+    @Published var isDirty = false
+
+    var name: String { url.lastPathComponent }
 
     init(url: URL, text: String) {
-        self.fileURL = url
+        self.url = url
+        self.textView = EditorTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 0))
+        super.init()
 
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 920, height: 640),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = url.lastPathComponent
-        window.representedURL = url
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.backgroundColor = EditorTheme.background
-        window.tabbingMode = .preferred
-        window.tabbingIdentifier = "MyGhostTextEditor"
-        window.center()
-        window.setFrameAutosaveName("MyGhostTextEditor")
-
-        super.init(window: window)
-        window.delegate = self
-        setupContent(text: text)
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) is not supported")
-    }
-
-    private func setupContent(text: String) {
-        let scrollView = NSScrollView()
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.drawsBackground = true
         scrollView.backgroundColor = EditorTheme.background
 
-        let textView = EditorTextView(frame: NSRect(x: 0, y: 0, width: 920, height: 0))
         textView.autoresizingMask = [.width]
         textView.minSize = NSSize(width: 0, height: 0)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
@@ -133,7 +105,6 @@ class TextEditorWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         textView.string = text
         textView.delegate = self
         textView.onSave = { [weak self] in self?.save() }
-        self.textView = textView
 
         scrollView.documentView = textView
 
@@ -141,15 +112,11 @@ class TextEditorWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         scrollView.verticalRulerView = ruler
         scrollView.hasVerticalRuler = true
         scrollView.rulersVisible = true
-
-        window?.contentView = scrollView
-        window?.makeFirstResponder(textView)
     }
 
     func save() {
-        guard let textView = textView else { return }
         do {
-            try textView.string.write(to: fileURL, atomically: true, encoding: .utf8)
+            try textView.string.write(to: url, atomically: true, encoding: .utf8)
             isDirty = false
         } catch {
             let alert = NSAlert(error: error)
@@ -162,13 +129,96 @@ class TextEditorWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     func textDidChange(_ notification: Notification) {
         isDirty = true
     }
+}
 
-    // MARK: NSWindowDelegate
+/// Observable list of open documents shared with the SwiftUI chrome.
+class EditorPanelState: ObservableObject {
+    @Published var documents: [EditorDocument] = []
+    @Published var activeID: UUID?
 
-    func windowShouldClose(_ sender: NSWindow) -> Bool {
-        guard isDirty else { return true }
+    var activeDocument: EditorDocument? {
+        documents.first { $0.id == activeID }
+    }
+}
+
+/// Single editor window: file list sidebar on the left, tab bar and file
+/// path on top, text editor below — layout modeled after Sublime Text.
+class EditorPanelWindowController: NSWindowController, NSWindowDelegate {
+    let state = EditorPanelState()
+    var onAllClosed: (() -> Void)?
+
+    init() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1100, height: 700),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "MyGhost Editor"
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.backgroundColor = EditorTheme.tabBarBackground
+        window.center()
+        window.setFrameAutosaveName("MyGhostTextEditorPanel")
+
+        super.init(window: window)
+        window.delegate = self
+
+        let root = EditorPanelView(
+            state: state,
+            onSelect: { [weak self] doc in self?.activate(doc) },
+            onClose: { [weak self] doc in self?.closeDocument(doc) }
+        )
+        window.contentView = NSHostingView(rootView: root)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    func open(url: URL, text: String) {
+        if let existing = state.documents.first(where: { $0.url == url }) {
+            activate(existing)
+        } else {
+            let doc = EditorDocument(url: url, text: text)
+            doc.textView.onCloseTab = { [weak self, weak doc] in
+                guard let doc = doc else { return }
+                self?.closeDocument(doc)
+            }
+            state.documents.append(doc)
+            activate(doc)
+        }
+        showWindow(nil)
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func activate(_ doc: EditorDocument) {
+        state.activeID = doc.id
+        window?.title = doc.name
+        window?.representedURL = doc.url
+        DispatchQueue.main.async { [weak self] in
+            self?.window?.makeFirstResponder(doc.textView)
+        }
+    }
+
+    func closeDocument(_ doc: EditorDocument) {
+        guard confirmCloseIfDirty(doc) else { return }
+        state.documents.removeAll { $0.id == doc.id }
+        if state.activeID == doc.id {
+            if let next = state.documents.last {
+                activate(next)
+            } else {
+                state.activeID = nil
+                window?.close()
+            }
+        }
+    }
+
+    /// Prompts to save a dirty document. Returns false if the user cancels.
+    private func confirmCloseIfDirty(_ doc: EditorDocument) -> Bool {
+        guard doc.isDirty else { return true }
         let alert = NSAlert()
-        alert.messageText = "Save changes to \"\(fileURL.lastPathComponent)\"?"
+        alert.messageText = "Save changes to \"\(doc.name)\"?"
         alert.informativeText = "Your changes will be lost if you don't save them."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Save")
@@ -176,8 +226,8 @@ class TextEditorWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         alert.addButton(withTitle: "Cancel")
         switch alert.runModal() {
         case .alertFirstButtonReturn:
-            save()
-            return !isDirty
+            doc.save()
+            return !doc.isDirty
         case .alertSecondButtonReturn:
             return true
         default:
@@ -185,20 +235,260 @@ class TextEditorWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         }
     }
 
+    // MARK: NSWindowDelegate
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        for doc in state.documents where doc.isDirty {
+            activate(doc)
+            guard confirmCloseIfDirty(doc) else { return false }
+        }
+        return true
+    }
+
     func windowWillClose(_ notification: Notification) {
-        onClose?()
+        state.documents.removeAll()
+        state.activeID = nil
+        onAllClosed?()
     }
 }
 
-/// NSTextView that handles Cmd+S to save.
+// MARK: - SwiftUI chrome
+
+private struct EditorPanelView: View {
+    @ObservedObject var state: EditorPanelState
+    let onSelect: (EditorDocument) -> Void
+    let onClose: (EditorDocument) -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            EditorSidebar(state: state, onSelect: onSelect, onClose: onClose)
+
+            Divider().overlay(Color.black.opacity(0.4))
+
+            VStack(spacing: 0) {
+                EditorTabBar(state: state, onSelect: onSelect, onClose: onClose)
+                EditorPathBar(state: state)
+                Divider().overlay(Color.black.opacity(0.4))
+                EditorAreaView(state: state)
+            }
+        }
+        .background(Color(nsColor: EditorTheme.background))
+        .ignoresSafeArea()
+    }
+}
+
+/// Left sidebar listing every open file by name.
+private struct EditorSidebar: View {
+    @ObservedObject var state: EditorPanelState
+    let onSelect: (EditorDocument) -> Void
+    let onClose: (EditorDocument) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("OPEN FILES")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(EditorTheme.dimText)
+                .padding(.horizontal, 14)
+                .padding(.top, 12)
+                .padding(.bottom, 6)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(state.documents) { doc in
+                        EditorSidebarRow(
+                            doc: doc,
+                            isActive: doc.id == state.activeID,
+                            onSelect: { onSelect(doc) },
+                            onClose: { onClose(doc) }
+                        )
+                    }
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .frame(width: 190)
+        .background(Color(nsColor: EditorTheme.sidebarBackground))
+    }
+}
+
+private struct EditorSidebarRow: View {
+    @ObservedObject var doc: EditorDocument
+    let isActive: Bool
+    let onSelect: () -> Void
+    let onClose: () -> Void
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "doc.text")
+                .font(.system(size: 11))
+                .foregroundColor(isActive ? EditorTheme.accent : EditorTheme.dimText)
+            Text(doc.name)
+                .font(.system(size: 12))
+                .foregroundColor(isActive ? EditorTheme.brightText : EditorTheme.dimText)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 0)
+            if doc.isDirty {
+                Circle()
+                    .fill(EditorTheme.accent)
+                    .frame(width: 6, height: 6)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 5)
+        .background(isActive ? Color(nsColor: EditorTheme.background) : Color.clear)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onSelect)
+        .contextMenu {
+            Button("Close") { onClose() }
+            Button("Reveal in Finder") {
+                NSWorkspace.shared.activateFileViewerSelecting([doc.url])
+            }
+        }
+    }
+}
+
+/// Top tab bar, one tab per open file.
+private struct EditorTabBar: View {
+    @ObservedObject var state: EditorPanelState
+    let onSelect: (EditorDocument) -> Void
+    let onClose: (EditorDocument) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 1) {
+                ForEach(state.documents) { doc in
+                    EditorTabItem(
+                        doc: doc,
+                        isActive: doc.id == state.activeID,
+                        onSelect: { onSelect(doc) },
+                        onClose: { onClose(doc) }
+                    )
+                }
+            }
+        }
+        .frame(height: 34)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: EditorTheme.tabBarBackground))
+    }
+}
+
+private struct EditorTabItem: View {
+    @ObservedObject var doc: EditorDocument
+    let isActive: Bool
+    let onSelect: () -> Void
+    let onClose: () -> Void
+
+    @State private var isHoveringClose = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "doc.text")
+                .font(.system(size: 11))
+                .foregroundColor(isActive ? EditorTheme.accent : EditorTheme.dimText)
+
+            Text(doc.name)
+                .font(.system(size: 12))
+                .foregroundColor(isActive ? EditorTheme.brightText : EditorTheme.dimText)
+                .lineLimit(1)
+
+            Button(action: onClose) {
+                if doc.isDirty && !isHoveringClose {
+                    Circle()
+                        .fill(EditorTheme.accent)
+                        .frame(width: 7, height: 7)
+                } else {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(EditorTheme.dimText)
+                }
+            }
+            .buttonStyle(.plain)
+            .frame(width: 14, height: 14)
+            .onHover { isHoveringClose = $0 }
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 34)
+        .background(
+            isActive
+                ? Color(nsColor: EditorTheme.background)
+                : Color(nsColor: EditorTheme.tabBarBackground)
+        )
+        .overlay(alignment: .top) {
+            if isActive {
+                Rectangle()
+                    .fill(EditorTheme.accent)
+                    .frame(height: 2)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onSelect)
+    }
+}
+
+/// Shows the full path of the active file under the tab bar.
+private struct EditorPathBar: View {
+    @ObservedObject var state: EditorPanelState
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Text(state.activeDocument?.url.path ?? "")
+                .font(.system(size: 11))
+                .foregroundColor(EditorTheme.dimText)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 22)
+        .background(Color(nsColor: EditorTheme.background))
+    }
+}
+
+/// Hosts the active document's AppKit scroll view inside SwiftUI.
+private struct EditorAreaView: NSViewRepresentable {
+    @ObservedObject var state: EditorPanelState
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        return view
+    }
+
+    func updateNSView(_ view: NSView, context: Context) {
+        let active = state.activeDocument
+        let current = view.subviews.first as? NSScrollView
+        guard current !== active?.scrollView else { return }
+
+        view.subviews.forEach { $0.removeFromSuperview() }
+        if let doc = active {
+            doc.scrollView.frame = view.bounds
+            doc.scrollView.autoresizingMask = [.width, .height]
+            view.addSubview(doc.scrollView)
+        }
+    }
+}
+
+/// NSTextView that handles Cmd+S (save) and Cmd+W (close tab).
 class EditorTextView: NSTextView {
     var onSave: (() -> Void)?
+    var onCloseTab: (() -> Void)?
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if flags == .command, event.charactersIgnoringModifiers?.lowercased() == "s" {
-            onSave?()
-            return true
+        if flags == .command {
+            switch event.charactersIgnoringModifiers?.lowercased() {
+            case "s":
+                onSave?()
+                return true
+            case "w":
+                if let onCloseTab = onCloseTab {
+                    onCloseTab()
+                    return true
+                }
+            default:
+                break
+            }
         }
         return super.performKeyEquivalent(with: event)
     }
