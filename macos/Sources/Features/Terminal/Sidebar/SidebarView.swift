@@ -545,9 +545,10 @@ private struct SidebarStandaloneTabRow: View {
 
             Divider()
 
-            // Join into another tab or group (max 4 panes)
+            // Join into another tab or group. Targets that already have 4
+            // panes are allowed; joinTab asks for confirmation in that case.
             let joinableTargets = controller.tabs.filter {
-                $0.id != tab.id && ($0.surfaceTree.root?.leaves().count ?? 0) < 4
+                $0.id != tab.id
             }
             if !joinableTargets.isEmpty {
                 Menu("Join to…") {

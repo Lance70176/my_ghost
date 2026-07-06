@@ -241,6 +241,26 @@ class BaseTerminalController: NSWindowController,
         // We can only create new splits for surfaces in our tree.
         guard surfaceTree.root?.node(view: oldView) != nil else { return nil }
 
+        // Adding a 5th (or more) window to a tab requires confirmation.
+        let paneCount = surfaceTree.root?.leaves().count ?? 0
+        if paneCount >= 4 {
+            confirmAddPane(paneCount: paneCount) { [weak self] in
+                self?.performNewSplit(at: oldView, direction: direction, baseConfig: config)
+            }
+            return nil
+        }
+
+        return performNewSplit(at: oldView, direction: direction, baseConfig: config)
+    }
+
+    @discardableResult
+    private func performNewSplit(
+        at oldView: Ghostty.SurfaceView,
+        direction: SplitTree<Ghostty.SurfaceView>.NewDirection,
+        baseConfig config: Ghostty.SurfaceConfiguration? = nil
+    ) -> Ghostty.SurfaceView? {
+        guard surfaceTree.root?.node(view: oldView) != nil else { return nil }
+
         // Create a new surface view
         guard let ghostty_app = ghostty.app else { return nil }
         let newView = Ghostty.SurfaceView(ghostty_app, baseConfig: config)
@@ -346,6 +366,39 @@ class BaseTerminalController: NSWindowController,
             if response == .alertFirstButtonReturn {
                 // This is important so that we avoid losing focus when Stage
                 // Manager is used (#8336)
+                alertWindow.orderOut(nil)
+                completion()
+            }
+        }
+
+        // Store our alert so we only ever show one.
+        self.alert = alert
+    }
+
+    /// Ask the user to confirm adding another window to a tab that already
+    /// has the maximum recommended number of panes (4). Calls completion
+    /// only if the user confirms.
+    func confirmAddPane(paneCount: Int, completion: @escaping () -> Void) {
+        // If we already have an alert, we need to wait for that one.
+        guard alert == nil else { return }
+
+        // If there is no window to attach the modal then we assume success
+        // since we'll never be able to show the modal.
+        guard let window else {
+            completion()
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "This tab already has \(paneCount) windows"
+        alert.informativeText = "Are you sure you want to add another window to this tab?"
+        alert.addButton(withTitle: "Add")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .warning
+        alert.beginSheetModal(for: window) { response in
+            let alertWindow = alert.window
+            self.alert = nil
+            if response == .alertFirstButtonReturn {
                 alertWindow.orderOut(nil)
                 completion()
             }

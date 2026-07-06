@@ -475,15 +475,35 @@ class SidebarTerminalController: BaseTerminalController {
     /// - 1→2 panes: left-right split
     /// - 2→3 panes: top row (2) + bottom row (1)
     /// - 3→4 panes: 2x2 grid
-    /// - 4+ panes: not allowed
+    /// - 4+ panes: requires user confirmation, stacks below the rightmost pane
     ///
     /// If target is already a group, source is added to it.
     /// If target is a standalone tab, a new group ("New Tab Area") is created
     /// containing both target and source as split pane children.
-    func joinTab(_ source: SidebarTabEntry, into target: SidebarTabEntry) {
+    func joinTab(_ source: SidebarTabEntry, into target: SidebarTabEntry, confirmed: Bool = false) {
         guard source.id != target.id else { return }
         guard let sourceIndex = tabs.firstIndex(where: { $0.id == source.id }) else { return }
         guard let targetIndex = tabs.firstIndex(where: { $0.id == target.id }) else { return }
+
+        // Joining a 5th (or more) pane requires confirmation. Count the
+        // target's panes the same way the insertion logic below does.
+        if !confirmed {
+            let targetTree: SplitTree<Ghostty.SurfaceView>
+            if target.isGroup, target.isFullMode, let saved = target.savedSplitTree {
+                targetTree = saved
+            } else if target.id == selectedTabID {
+                targetTree = surfaceTree
+            } else {
+                targetTree = target.surfaceTree
+            }
+            let targetPaneCount = targetTree.root?.leaves().count ?? 0
+            if targetPaneCount >= 4 {
+                confirmAddPane(paneCount: targetPaneCount) { [weak self] in
+                    self?.joinTab(source, into: target, confirmed: true)
+                }
+                return
+            }
+        }
 
         // Prevent surfaceTreeDidChange from interpreting the tree change as a tab removal
         isModifyingChildren = true
@@ -522,9 +542,7 @@ class SidebarTerminalController: BaseTerminalController {
             currentTree = group.surfaceTree
         }
         let leafCount = currentTree.root?.leaves().count ?? 0
-
-        // Max 4 panes per tab area
-        guard leafCount < 4 else { return }
+        guard leafCount >= 1 else { return }
 
         // Determine insertion point and direction based on current leaf count
         let insertionSurface: Ghostty.SurfaceView
@@ -547,7 +565,11 @@ class SidebarTerminalController: BaseTerminalController {
             direction = .down
 
         default:
-            return
+            // 5th+ pane (already confirmed by the user): stack below the
+            // rightmost pane.
+            guard let root = currentTree.root else { return }
+            insertionSurface = root.rightmostLeaf()
+            direction = .down
         }
 
         // Perform the insertion into the group's tree
