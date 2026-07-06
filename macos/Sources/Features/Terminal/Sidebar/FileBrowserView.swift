@@ -72,6 +72,8 @@ class FileBrowserState: ObservableObject {
     var onOpenInNewTab: ((String) -> Void)?
     /// Callback to refocus the terminal after interacting with the file browser.
     var onRefocusTerminal: (() -> Void)?
+    /// Callback to open a file in the built-in editor mode.
+    var onEditFile: ((URL) -> Void)?
 
     var pathComponents: [(name: String, url: URL)] {
         var components: [(name: String, url: URL)] = []
@@ -354,7 +356,7 @@ private struct TreeRowContent: View {
                     NSWorkspace.shared.open(node.url)
                 }
                 Button("Edit") {
-                    TextEditorManager.shared.open(url: node.url)
+                    state.onEditFile?(node.url)
                 }
                 Divider()
             }

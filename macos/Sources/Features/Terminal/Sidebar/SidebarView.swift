@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 enum SidebarMode {
     case terminal
     case fileBrowser
+    case editor
 }
 
 /// A flattened row item for stable List identity.
@@ -93,6 +94,15 @@ struct SidebarView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.borderless)
+
+                Button(action: { sidebarMode = .editor }) {
+                    Image(systemName: "square.and.pencil")
+                        .font(.system(size: 15))
+                        .frame(maxWidth: .infinity, minHeight: 28)
+                        .background(sidebarMode == .editor ? Color.accentColor.opacity(0.25) : Color.clear)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
             }
             .background(Color(nsColor: .controlBackgroundColor))
             .padding(.top, 2)
@@ -172,8 +182,15 @@ struct SidebarView: View {
                                 Ghostty.moveFocus(to: surface)
                             }
                         }
+                        fileBrowserState.onEditFile = { url in
+                            if TextEditorManager.shared.openDocument(url: url) {
+                                sidebarMode = .editor
+                            }
+                        }
                     }
 
+            case .editor:
+                EditorSidebarList(state: TextEditorManager.shared.state)
             }
         }
         .frame(minWidth: 150, idealWidth: 200)

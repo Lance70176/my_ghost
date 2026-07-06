@@ -1566,16 +1566,46 @@ class SidebarUIState: ObservableObject {
 private struct SidebarRootView: View {
     let controller: SidebarTerminalController
     @ObservedObject var uiState: SidebarUIState
+    @ObservedObject var editorState = TextEditorManager.shared.state
 
     var body: some View {
         HSplitView {
             SidebarView(controller: controller, sidebarMode: $uiState.sidebarMode)
                 .frame(minWidth: 150, maxWidth: 300)
 
-            TerminalView(ghostty: controller.ghostty, viewModel: controller, delegate: controller)
-                .splitPaneTitleBar(true)
-                .padding(.leading, 4)
-                .frame(minWidth: 400)
+            // The terminal stays mounted underneath the editor so surfaces
+            // are never torn down when switching to editor mode.
+            ZStack {
+                TerminalView(ghostty: controller.ghostty, viewModel: controller, delegate: controller)
+                    .splitPaneTitleBar(true)
+                    .padding(.leading, 4)
+                    .opacity(uiState.sidebarMode == .editor ? 0 : 1)
+
+                if uiState.sidebarMode == .editor {
+                    EditorMainPane(state: editorState)
+                        .padding(.leading, 4)
+                }
+            }
+            .frame(minWidth: 400)
+        }
+        .onChange(of: editorState.documents.count) { count in
+            // Closing the last editor tab returns to the terminal.
+            if count == 0 && uiState.sidebarMode == .editor {
+                uiState.sidebarMode = .terminal
+            }
+        }
+        .onChange(of: uiState.sidebarMode) { mode in
+            if mode == .editor {
+                if let doc = editorState.activeDocument {
+                    DispatchQueue.main.async {
+                        doc.textView.window?.makeFirstResponder(doc.textView)
+                    }
+                }
+            } else if let surface = controller.focusedSurface {
+                DispatchQueue.main.async {
+                    Ghostty.moveFocus(to: surface)
+                }
+            }
         }
     }
 }
