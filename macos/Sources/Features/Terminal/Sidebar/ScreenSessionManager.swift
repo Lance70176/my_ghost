@@ -68,6 +68,12 @@ class ScreenSessionManager {
             "set -g visual-bell off",
             // Allow passthrough of escape sequences (OSC, etc.)
             "set -g allow-passthrough on",
+            // With `mouse on`, tmux (not Ghostty) owns drag selections, so
+            // selected text only lands in tmux's internal buffer and Cmd+C
+            // has nothing to copy. OSC 52 forwards tmux selections to the
+            // macOS clipboard the moment the mouse is released.
+            "set -s set-clipboard on",
+            "set -ga terminal-overrides ',xterm-256color:Ms=\\E]52;%p1%s;%p2%s\\007'",
             // Forward terminal title from shell to Ghostty
             "set -g set-titles on",
             "set -g set-titles-string '#T'",
@@ -82,6 +88,41 @@ class ScreenSessionManager {
             "set -g remain-on-exit off",
         ].joined(separator: "\n")
         try? conf.data(using: .utf8)?.write(to: tmuxConfPath)
+
+        // The conf file is only read when the tmux server starts, and the
+        // server outlives the app, so also apply clipboard options live.
+        DispatchQueue.global(qos: .utility).async { [self] in
+            applyClipboardOptionsToRunningServer()
+        }
+    }
+
+    /// Run a tmux command and return its stdout, or nil on failure.
+    @discardableResult
+    private func runTmux(_ args: [String]) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: tmuxPath)
+        process.arguments = args
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return nil }
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+        return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
+    }
+
+    /// Apply OSC 52 clipboard forwarding to an already-running tmux server
+    /// so existing sessions get working copy without a server restart.
+    private func applyClipboardOptionsToRunningServer() {
+        guard runTmux(["has-session"]) != nil else { return }
+        runTmux(["set", "-s", "set-clipboard", "on"])
+        let overrides = runTmux(["show-options", "-s", "terminal-overrides"])
+            ?? runTmux(["show-options", "-g", "terminal-overrides"])
+            ?? ""
+        if !overrides.contains("Ms=") {
+            runTmux(["set", "-ga", "terminal-overrides",
+                     ",xterm-256color:Ms=\\E]52;%p1%s;%p2%s\\007"])
+        }
     }
 
     // MARK: - Session Naming
