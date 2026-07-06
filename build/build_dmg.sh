@@ -49,7 +49,14 @@ echo "==> Cleaning extended attributes..."
 xattr -cr "$DMG_DIR/MyGhost.app"
 
 echo "==> Re-signing app..."
-codesign --deep --force --sign - "$DMG_DIR/MyGhost.app"
+# 用固定的開發憑證簽章，讓 TCC 權限（輔助使用/麥克風等）在重新打包後仍有效；
+# ad-hoc 簽章 (-) 每次 build 的簽章都不同，會導致每次安裝後要重新授權
+SIGN_IDENTITY="${SIGN_IDENTITY:-Apple Development}"
+if [ "$SIGN_IDENTITY" != "-" ] && ! security find-identity -v -p codesigning | grep -q "$SIGN_IDENTITY"; then
+    echo "  (signing identity '$SIGN_IDENTITY' not found, falling back to ad-hoc)"
+    SIGN_IDENTITY="-"
+fi
+codesign --deep --force --preserve-metadata=entitlements --sign "$SIGN_IDENTITY" "$DMG_DIR/MyGhost.app"
 
 # Set custom icon on the app bundle directly (Finder uses this)
 # Must be AFTER codesign and xattr -cr since those clear custom icon metadata
