@@ -10,7 +10,16 @@ enum EditorTheme {
     static let gutterText = NSColor(srgbRed: 0x6b/255, green: 0x78/255, blue: 0x86/255, alpha: 1)
     static let selection = NSColor(srgbRed: 0x3f/255, green: 0x4b/255, blue: 0x57/255, alpha: 1)
     static let insertionPoint = NSColor(srgbRed: 0xf9/255, green: 0xae/255, blue: 0x58/255, alpha: 1)
-    static let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+    static let defaultFontSize: CGFloat = 13
+    static let fontSizeDefaultsKey = "MyGhostEditorFontSize"
+
+    /// Current editor font size, persisted across launches.
+    static var fontSize: CGFloat = {
+        let saved = UserDefaults.standard.double(forKey: fontSizeDefaultsKey)
+        return saved > 0 ? CGFloat(saved) : defaultFontSize
+    }()
+
+    static var font: NSFont { NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular) }
     static let gutterFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
 
     static let accent = Color(nsColor: insertionPoint)
@@ -71,6 +80,32 @@ class TextEditorManager {
         state.documents.removeAll { $0.id == doc.id }
         if state.activeID == doc.id {
             state.activeID = state.documents.last?.id
+        }
+    }
+
+    // MARK: Font size (Cmd+= / Cmd+- / Cmd+0)
+
+    func adjustFontSize(by delta: CGFloat) {
+        setFontSize(EditorTheme.fontSize + delta)
+    }
+
+    func resetFontSize() {
+        setFontSize(EditorTheme.defaultFontSize)
+    }
+
+    private func setFontSize(_ size: CGFloat) {
+        let clamped = min(max(size, 8), 36)
+        guard clamped != EditorTheme.fontSize else { return }
+        EditorTheme.fontSize = clamped
+        UserDefaults.standard.set(Double(clamped), forKey: EditorTheme.fontSizeDefaultsKey)
+
+        let font = EditorTheme.font
+        for doc in state.documents {
+            // Setting `font` on a plain-text NSTextView restyles all text.
+            doc.textView.font = font
+            var attrs = doc.textView.typingAttributes
+            attrs[.font] = font
+            doc.textView.typingAttributes = attrs
         }
     }
 
@@ -448,8 +483,9 @@ class EditorTextView: NSTextView {
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let chars = event.charactersIgnoringModifiers?.lowercased()
         if flags == .command {
-            switch event.charactersIgnoringModifiers?.lowercased() {
+            switch chars {
             case "s":
                 onSave?()
                 return true
@@ -458,6 +494,27 @@ class EditorTextView: NSTextView {
                     onCloseTab()
                     return true
                 }
+            case "=", "+":
+                TextEditorManager.shared.adjustFontSize(by: 1)
+                return true
+            case "-":
+                TextEditorManager.shared.adjustFontSize(by: -1)
+                return true
+            case "0":
+                TextEditorManager.shared.resetFontSize()
+                return true
+            default:
+                break
+            }
+        } else if flags == [.command, .shift] {
+            // Cmd+Shift+= is "+" on US layouts; treat like zoom in.
+            switch chars {
+            case "=", "+":
+                TextEditorManager.shared.adjustFontSize(by: 1)
+                return true
+            case "-", "_":
+                TextEditorManager.shared.adjustFontSize(by: -1)
+                return true
             default:
                 break
             }

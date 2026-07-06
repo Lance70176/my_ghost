@@ -312,7 +312,8 @@ class SidebarTerminalController: BaseTerminalController {
         workingDirectory: String?,
         remoteTarget: String? = nil,
         remoteSSHOptions: [String] = [],
-        remoteDisplayName: String? = nil
+        remoteDisplayName: String? = nil,
+        customTitle: String? = nil
     ) {
         guard let ghostty_app = ghostty.app else { return }
 
@@ -335,6 +336,7 @@ class SidebarTerminalController: BaseTerminalController {
         let newTab = SidebarTabEntry(surfaceTree: newTree, focusedSurface: newSurface)
         newTab.screenSessionName = screenName
         newTab.defaultTitle = title
+        newTab.customTitle = customTitle
         newTab.remoteTarget = remoteTarget
         newTab.remoteSSHOptions = remoteSSHOptions
         newTab.remoteDisplayName = remoteDisplayName
@@ -366,6 +368,7 @@ class SidebarTerminalController: BaseTerminalController {
             let tab = SidebarTabEntry(surfaceTree: tree, focusedSurface: surface)
             tab.screenSessionName = child.screenSessionName
             tab.defaultTitle = child.title
+            tab.customTitle = child.customTitle
             childTabs.append(tab)
         }
 
@@ -1212,7 +1215,8 @@ class SidebarTerminalController: BaseTerminalController {
                     children: nil,
                     remoteTarget: tab.remoteTarget,
                     remoteSSHOptions: tab.isRemote ? tab.remoteSSHOptions : nil,
-                    remoteDisplayName: tab.remoteDisplayName
+                    remoteDisplayName: tab.remoteDisplayName,
+                    customTitle: tab.customTitle
                 )
             }
         }
@@ -1353,6 +1357,7 @@ class SidebarTerminalController: BaseTerminalController {
         // Set screen session name on the first tab
         controller.tabs.first?.screenSessionName = firstSession.screenSessionName
         controller.tabs.first?.defaultTitle = firstSession.title
+        controller.tabs.first?.customTitle = firstSession.customTitle
         if let firstTab = controller.tabs.first {
             applyRemoteInfo(firstSession, to: firstTab)
         }
@@ -1372,6 +1377,7 @@ class SidebarTerminalController: BaseTerminalController {
             let tab = SidebarTabEntry(surfaceTree: tree, focusedSurface: surface)
             tab.screenSessionName = session.screenSessionName
             tab.defaultTitle = session.title
+            tab.customTitle = session.customTitle
             applyRemoteInfo(session, to: tab)
             return tab
         }
@@ -1480,7 +1486,8 @@ class SidebarTerminalController: BaseTerminalController {
                     workingDirectory: session.workingDirectory,
                     remoteTarget: session.remoteTarget,
                     remoteSSHOptions: session.remoteSSHOptions ?? [],
-                    remoteDisplayName: session.remoteDisplayName
+                    remoteDisplayName: session.remoteDisplayName,
+                    customTitle: session.customTitle
                 )
             }
         }
