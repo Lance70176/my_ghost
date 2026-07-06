@@ -23,6 +23,11 @@ class SidebarTabEntry: ObservableObject, Identifiable {
     /// Title derived from the terminal (e.g. shell process title).
     @Published var defaultTitle: String = "Terminal"
 
+    /// User-set custom title (via right-click Rename). When set, it takes
+    /// precedence over the terminal-derived title and is never overwritten
+    /// by shell title updates.
+    @Published var customTitle: String?
+
     /// Whether any surface in this tab currently has the bell active.
     @Published var bell: Bool = false
 
@@ -66,6 +71,7 @@ class SidebarTabEntry: ObservableObject, Identifiable {
     /// The title to display in the sidebar.
     var displayTitle: String {
         if let groupName { return groupName }
+        if let customTitle { return customTitle }
         return defaultTitle
     }
 

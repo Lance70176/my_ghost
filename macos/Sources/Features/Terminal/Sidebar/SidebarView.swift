@@ -435,6 +435,46 @@ struct SidebarView: View {
 
 }
 
+// MARK: - Tab rename helper
+
+private enum TabRenameHelper {
+    /// Prompt for a custom tab name. The custom name overrides the
+    /// terminal-derived title until reset.
+    static func rename(_ tab: SidebarTabEntry, controller: SidebarTerminalController) {
+        let alert = NSAlert()
+        alert.messageText = "Rename Tab"
+        alert.informativeText = "Enter a new name:"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.stringValue = tab.displayTitle
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            let newName = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !newName.isEmpty else { return }
+            tab.customTitle = newName
+            afterChange(tab, controller: controller)
+        }
+    }
+
+    /// Remove the custom name so the tab tracks the terminal title again.
+    static func resetName(_ tab: SidebarTabEntry, controller: SidebarTerminalController) {
+        tab.customTitle = nil
+        afterChange(tab, controller: controller)
+    }
+
+    private static func afterChange(_ tab: SidebarTabEntry, controller: SidebarTerminalController) {
+        if controller.selectedTabID == tab.id {
+            controller.window?.title = tab.displayTitle
+        }
+        controller.saveScreenSessionState()
+    }
+}
+
 // MARK: - Standalone tab row (not in a group)
 
 private struct SidebarStandaloneTabRow: View {
@@ -494,6 +534,17 @@ private struct SidebarStandaloneTabRow: View {
         }
         .onHover { isHovering = $0 }
         .contextMenu {
+            Button("Rename Tab…") {
+                TabRenameHelper.rename(tab, controller: controller)
+            }
+            if tab.customTitle != nil {
+                Button("Reset Name") {
+                    TabRenameHelper.resetName(tab, controller: controller)
+                }
+            }
+
+            Divider()
+
             // Join into another tab or group (max 4 panes)
             let joinableTargets = controller.tabs.filter {
                 $0.id != tab.id && ($0.surfaceTree.root?.leaves().count ?? 0) < 4
@@ -689,6 +740,17 @@ private struct SidebarGroupChildRow: View {
         }
         .onHover { isHovering = $0 }
         .contextMenu {
+            Button("Rename Tab…") {
+                TabRenameHelper.rename(child, controller: controller)
+            }
+            if child.customTitle != nil {
+                Button("Reset Name") {
+                    TabRenameHelper.resetName(child, controller: controller)
+                }
+            }
+
+            Divider()
+
             Button("Unjoin") {
                 controller.unjoinTab(child, from: group)
             }

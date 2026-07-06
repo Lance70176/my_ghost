@@ -200,18 +200,20 @@ struct FileBrowserView: View {
                 .buttonStyle(.borderless)
             }
             .padding(.horizontal, 16)
-            .padding(.bottom, 6)
+            .padding(.top, 4)
+            .padding(.bottom, 8)
 
             Divider()
 
             // Tree list
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
+                LazyVStack(alignment: .leading, spacing: 1) {
                     ForEach(state.rootNodes) { node in
                         TreeNodeView(node: node, state: state, selectedNodeID: $selectedNodeID)
                     }
                 }
-                .padding(.vertical, 4)
+                .padding(.vertical, 6)
+                .padding(.horizontal, 4)
             }
         }
         .onAppear {
@@ -284,43 +286,48 @@ private struct TreeRowContent: View {
     var isSelected: Bool { selectedNodeID == node.id }
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 6) {
             // Indent based on depth
             if node.depth > 0 {
                 Spacer()
-                    .frame(width: CGFloat(node.depth) * 16)
+                    .frame(width: CGFloat(node.depth) * 18)
             }
 
             // Disclosure triangle for directories
             if node.isDirectory {
                 Image(systemName: node.isExpanded ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 9, weight: .bold))
+                    .font(.system(size: 10, weight: .bold))
                     .foregroundColor(.secondary)
-                    .frame(width: 12, height: 16)
+                    .frame(width: 14, height: 20)
                     .contentShape(Rectangle())
                     .onTapGesture { node.toggle() }
             } else {
-                Spacer().frame(width: 12)
+                Spacer().frame(width: 14)
             }
 
-            // Icon (directories only)
+            // Icon
             if node.isDirectory {
                 Image(systemName: "folder.fill")
-                    .font(.system(size: 13))
+                    .font(.system(size: 14))
                     .foregroundColor(.accentColor)
-                    .frame(width: 18, height: 16)
+                    .frame(width: 20, height: 18)
+            } else {
+                Image(systemName: "doc.text")
+                    .font(.system(size: 13))
+                    .foregroundColor(.secondary)
+                    .frame(width: 20, height: 18)
             }
 
             // Name
             Text(node.name)
-                .font(.system(size: NSFont.smallSystemFontSize))
+                .font(.system(size: 13))
                 .lineLimit(1)
                 .truncationMode(.middle)
 
             Spacer(minLength: 0)
         }
-        .padding(.vertical, 3)
-        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .padding(.horizontal, 10)
         .background(isSelected ? Color.accentColor.opacity(0.2) : Color.clear)
         .cornerRadius(4)
         .contentShape(Rectangle())

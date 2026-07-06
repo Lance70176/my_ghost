@@ -294,6 +294,8 @@ class ScreenSessionManager {
         var remoteSSHOptions: [String]?
         /// Host display name shown as a badge on remote tabs.
         var remoteDisplayName: String?
+        /// User-set custom tab title (right-click Rename). nil = auto title.
+        var customTitle: String?
     }
 
     struct SavedState: Codable {

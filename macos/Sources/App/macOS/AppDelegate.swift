@@ -405,7 +405,8 @@ class AppDelegate: NSObject,
                                                     controller.addRestoredTab(
                                                         screenName: child.screenSessionName,
                                                         title: child.title,
-                                                        workingDirectory: ScreenSessionManager.shared.getSessionWorkingDirectory(sessionName: child.screenSessionName)
+                                                        workingDirectory: ScreenSessionManager.shared.getSessionWorkingDirectory(sessionName: child.screenSessionName),
+                                                        customTitle: child.customTitle
                                                     )
                                                 } else {
                                                     controller.addRestoredGroup(
@@ -420,7 +421,8 @@ class AppDelegate: NSObject,
                                                 controller.addRestoredTab(
                                                     screenName: session.screenSessionName,
                                                     title: session.title,
-                                                    workingDirectory: ScreenSessionManager.shared.getSessionWorkingDirectory(sessionName: session.screenSessionName)
+                                                    workingDirectory: ScreenSessionManager.shared.getSessionWorkingDirectory(sessionName: session.screenSessionName),
+                                                    customTitle: session.customTitle
                                                 )
                                             }
                                         }
