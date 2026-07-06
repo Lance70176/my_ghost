@@ -74,6 +74,11 @@ class ScreenSessionManager {
             // macOS clipboard the moment the mouse is released.
             "set -s set-clipboard on",
             "set -ga terminal-overrides ',xterm-256color:Ms=\\E]52;%p1%s;%p2%s\\007'",
+            // TUI apps like Claude Code enable mouse reporting, which would
+            // normally swallow drag selections entirely. Force left-drag to
+            // always start a tmux copy-mode selection (wheel scroll and
+            // clicks still pass through to the app).
+            "bind -n MouseDrag1Pane copy-mode -M",
             // Forward terminal title from shell to Ghostty
             "set -g set-titles on",
             "set -g set-titles-string '#T'",
@@ -123,6 +128,7 @@ class ScreenSessionManager {
             runTmux(["set", "-ga", "terminal-overrides",
                      ",xterm-256color:Ms=\\E]52;%p1%s;%p2%s\\007"])
         }
+        runTmux(["bind", "-n", "MouseDrag1Pane", "copy-mode", "-M"])
     }
 
     // MARK: - Session Naming
