@@ -198,10 +198,11 @@ class AppDelegate: NSObject,
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Set the app icon to MG icon from the asset catalog
-        if let mgIcon = NSImage(named: "AppIconImage") {
-            NSApp.applicationIconImage = mgIcon
-        }
+        // The Dock icon comes from the app bundle's icon (Ghostty.appiconset).
+        // Do NOT override NSApp.applicationIconImage with the AppIconImage
+        // imageset here: its 1x representation is only 256pt, so contexts that
+        // resolve at 1x (e.g. window miniaturization) rendered the icon at a
+        // quarter size anchored to the corner of the Dock tile.
 
         // System settings overrides
         UserDefaults.standard.register(defaults: [

@@ -58,15 +58,9 @@ if [ "$SIGN_IDENTITY" != "-" ] && ! security find-identity -v -p codesigning | g
 fi
 codesign --deep --force --preserve-metadata=entitlements --sign "$SIGN_IDENTITY" "$DMG_DIR/MyGhost.app"
 
-# Set custom icon on the app bundle directly (Finder uses this)
-# Must be AFTER codesign and xattr -cr since those clear custom icon metadata
-echo "==> Setting Finder custom icon..."
-swift -e "
-import AppKit
-let icon = NSImage(contentsOfFile: \"$PROJECT_DIR/macos/mg_icon_1024.png\")!
-NSWorkspace.shared.setIcon(icon, forFile: \"$DMG_DIR/MyGhost.app\", options: [])
-print(\"Custom icon set on app bundle\")
-"
+# NOTE: no Finder custom icon (NSWorkspace.setIcon) here — the bundle's own
+# icns already shows the MyGhost icon, and writing the Icon\r resource after
+# codesign breaks the bundle seal (fails codesign --verify --strict).
 
 echo "==> Creating styled DMG..."
 rm -f "$DMG_PATH"
