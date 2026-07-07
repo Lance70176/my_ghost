@@ -86,49 +86,46 @@ class FileBrowserState: ObservableObject {
         return components
     }
 
-    /// Collect all expanded folder paths from a node tree.
-    private func expandedPaths(in nodes: [FileNode]) -> Set<URL> {
-        var paths = Set<URL>()
-        for node in nodes where node.isDirectory && node.isExpanded {
-            paths.insert(node.url)
-            if let children = node.children {
-                paths.formUnion(expandedPaths(in: children))
-            }
-        }
-        return paths
-    }
+    /// List a directory, reusing existing FileNode objects for unchanged paths.
+    /// Reuse keeps each node's identity (and thus SwiftUI row identity, scroll
+    /// position, selection, and expansion state) stable across the periodic
+    /// refresh; only added/removed files produce new nodes.
+    private static func listNodes(at url: URL, depth: Int, reusing existing: [FileNode]) -> [FileNode] {
+        let fm = FileManager.default
+        guard let urls = try? fm.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
 
-    /// Restore expansion state for nodes whose paths are in the given set.
-    private func restoreExpanded(_ paths: Set<URL>, in nodes: [FileNode]) {
-        for node in nodes where node.isDirectory && paths.contains(node.url) {
-            node.loadChildren()
-            node.isExpanded = true
-            if let children = node.children {
-                restoreExpanded(paths, in: children)
+        var existingByPath: [String: FileNode] = [:]
+        for node in existing { existingByPath[node.url.path] = node }
+
+        let nodes = urls.compactMap { childURL -> FileNode? in
+            let isDir = (try? childURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            if let reused = existingByPath[childURL.path], reused.isDirectory == isDir {
+                return reused
+            }
+            return FileNode(url: childURL, isDirectory: isDir, depth: depth)
+        }
+        .sorted { lhs, rhs in
+            if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
+            return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+        }
+
+        for node in nodes where node.isExpanded {
+            let refreshed = listNodes(at: node.url, depth: depth + 1, reusing: node.children ?? [])
+            if !(node.children?.elementsEqual(refreshed, by: ===) ?? false) {
+                node.children = refreshed
             }
         }
+        return nodes
     }
 
     func loadEntries() {
-        let previouslyExpanded = expandedPaths(in: rootNodes)
-        let fm = FileManager.default
-        do {
-            let urls = try fm.contentsOfDirectory(
-                at: currentPath,
-                includingPropertiesForKeys: [.isDirectoryKey],
-                options: [.skipsHiddenFiles]
-            )
-            rootNodes = urls.compactMap { url in
-                let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-                return FileNode(url: url, isDirectory: isDir, depth: 0)
-            }
-            .sorted { lhs, rhs in
-                if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
-                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
-            }
-            restoreExpanded(previouslyExpanded, in: rootNodes)
-        } catch {
-            rootNodes = []
+        let refreshed = Self.listNodes(at: currentPath, depth: 0, reusing: rootNodes)
+        if !refreshed.elementsEqual(rootNodes, by: ===) {
+            rootNodes = refreshed
         }
     }
 
