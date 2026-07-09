@@ -501,7 +501,10 @@ class SidebarTerminalController: BaseTerminalController {
     ///   alert is shown). This is used by the drag-and-drop path. When false,
     ///   the 5th pane instead triggers a soft confirmation (`confirmAddPane`),
     ///   which is the behaviour of keyboard splits and the "Join to…" menu.
-    func joinTab(_ source: SidebarTabEntry, into target: SidebarTabEntry, confirmed: Bool = false, hardLimit: Bool = false) {
+    /// - Parameter insertIndex: Where to place `source` in the group's child
+    ///   list (sidebar order). Nil appends at the end. Used by drag-and-drop so
+    ///   the release position decides the order.
+    func joinTab(_ source: SidebarTabEntry, into target: SidebarTabEntry, confirmed: Bool = false, hardLimit: Bool = false, at insertIndex: Int? = nil) {
         guard source.id != target.id else { return }
         guard let sourceIndex = tabs.firstIndex(where: { $0.id == source.id }) else { return }
         guard let targetIndex = tabs.firstIndex(where: { $0.id == target.id }) else { return }
@@ -517,7 +520,7 @@ class SidebarTerminalController: BaseTerminalController {
                     return
                 }
                 confirmAddPane(paneCount: targetPaneCount) { [weak self] in
-                    self?.joinTab(source, into: target, confirmed: true)
+                    self?.joinTab(source, into: target, confirmed: true, at: insertIndex)
                 }
                 return
             }
@@ -631,8 +634,13 @@ class SidebarTerminalController: BaseTerminalController {
             }
         }
 
-        // Add source as a child of the group
-        group.children.append(source)
+        // Add source as a child of the group, at the requested sidebar position
+        // (drag release point) or at the end.
+        if let insertIndex {
+            group.children.insert(source, at: min(max(insertIndex, 0), group.children.count))
+        } else {
+            group.children.append(source)
+        }
 
         // Remove source from top-level tabs
         // Re-fetch source index since it may have shifted
