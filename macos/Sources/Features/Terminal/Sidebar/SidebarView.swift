@@ -34,15 +34,6 @@ private enum DropZone {
     case reorder
 }
 
-/// Collects each row's measured height into a `[rowID: height]` map so the
-/// drop handler can tell the middle of a row from its edges.
-private struct RowHeightKey: PreferenceKey {
-    static var defaultValue: [UUID: CGFloat] = [:]
-    static func reduce(value: inout [UUID: CGFloat], nextValue: () -> [UUID: CGFloat]) {
-        value.merge(nextValue()) { _, new in new }
-    }
-}
-
 /// A drop delegate for a tab row. Uses `DropInfo.location` (reliably in the
 /// row's own coordinate space) together with the row's measured height to
 /// classify the drop as a join (middle) or a reorder (edge).
@@ -85,16 +76,28 @@ private struct TabDropDelegate: DropDelegate {
 }
 
 /// Attaches drag source, drop delegate, and height measurement to a tab row.
+///
+/// The row height is tracked as local @State fed by a GeometryReader in the
+/// row's own background: preferences don't reliably propagate out of List rows
+/// on macOS (NSTableView-backed), which previously left the height at 0 and
+/// made every drop classify as a join — breaking drag-to-reorder.
 private struct TabDragDropModifier: ViewModifier {
     let id: UUID
-    let rowHeight: CGFloat
     @Binding var dropTargetID: UUID?
     let onDrop: (_ providers: [NSItemProvider], _ zone: DropZone) -> Bool
 
+    @State private var rowHeight: CGFloat = 0
+
     func body(content: Content) -> some View {
         content
+            // Open up the vertical gap between tabs (~1.3x the default row
+            // height); the padding also enlarges each drop zone, making the
+            // edge (reorder) and middle (join) bands easier to hit.
+            .padding(.vertical, 3)
             .background(GeometryReader { geo in
-                Color.clear.preference(key: RowHeightKey.self, value: [id: geo.size.height])
+                Color.clear
+                    .onAppear { rowHeight = geo.size.height }
+                    .onChange(of: geo.size.height) { rowHeight = $0 }
             })
             .onDrag { NSItemProvider(object: id.uuidString as NSString) }
             .onDrop(of: [.plainText], delegate: TabDropDelegate(
@@ -116,10 +119,6 @@ struct SidebarView: View {
 
     /// The tab ID currently being hovered during a drag operation.
     @State private var dropTargetID: UUID?
-
-    /// Measured height of each row, keyed by row ID. Used to decide whether a
-    /// drop landed on the middle of a row (join) or its top/bottom edge (reorder).
-    @State private var rowHeights: [UUID: CGFloat] = [:]
 
     /// Current sidebar mode — bound to the controller so the right-side view can switch.
     @Binding var sidebarMode: SidebarMode
@@ -449,7 +448,6 @@ struct SidebarView: View {
                     .overlay(dropIndicator(for: tab.id))
                     .modifier(TabDragDropModifier(
                         id: tab.id,
-                        rowHeight: rowHeights[tab.id] ?? 0,
                         dropTargetID: $dropTargetID,
                         onDrop: { providers, zone in handleDrop(of: providers, targetTabID: tab.id, zone: zone) }
                     ))
@@ -464,7 +462,6 @@ struct SidebarView: View {
                     .overlay(dropIndicator(for: group.id))
                     .modifier(TabDragDropModifier(
                         id: group.id,
-                        rowHeight: rowHeights[group.id] ?? 0,
                         dropTargetID: $dropTargetID,
                         onDrop: { providers, zone in handleDrop(of: providers, targetTabID: group.id, zone: zone) }
                     ))
@@ -481,7 +478,6 @@ struct SidebarView: View {
                     .overlay(dropIndicator(for: child.id))
                     .modifier(TabDragDropModifier(
                         id: child.id,
-                        rowHeight: rowHeights[child.id] ?? 0,
                         dropTargetID: $dropTargetID,
                         onDrop: { providers, zone in handleDrop(of: providers, targetTabID: child.id, zone: zone) }
                     ))
@@ -489,9 +485,6 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
-        .onPreferenceChange(RowHeightKey.self) { heights in
-            rowHeights = heights
-        }
         .onAppear {
             selection = controller.highlightedItemID ?? controller.selectedTabID
         }
