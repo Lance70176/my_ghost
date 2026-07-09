@@ -26,56 +26,70 @@ private enum SidebarRowItem: Identifiable {
     }
 }
 
-/// Where within a target row a dragged tab was released.
-private enum DropZone {
-    /// Middle of the row — merge the dragged tab into the target (join).
+/// The hint shown at the tail of the hovered row during a drag. Recent pointer
+/// movement shows a direction arrow (reorder intent); lingering for 0.5s flips
+/// to a Join badge, which also classifies the release as a join.
+private enum DragHint: Equatable {
+    case up
+    case down
     case join
-    /// Top/bottom edge of the row — reorder relative to the target.
-    case reorder
 }
 
-/// A drop delegate for a tab row. Uses `DropInfo.location` (reliably in the
-/// row's own coordinate space) together with the row's measured height to
-/// classify the drop as a join (middle) or a reorder (edge).
+/// Mutable drag-session state shared by all row drop delegates. A class so the
+/// per-row delegate structs (recreated on every render) mutate the same values.
+private final class DragHintTracker {
+    /// Pointer y in the hovered row's coordinate space at the last update.
+    var lastY: CGFloat?
+    /// The row the pointer most recently entered. Unlike `dropTargetID` it is
+    /// not cleared by exit callbacks, so entering the next row can compute the
+    /// travel direction even when exit/enter arrive out of order.
+    var lastRowID: UUID?
+    /// Pending work that flips the hint to .join after the linger delay.
+    var joinWork: DispatchWorkItem?
+}
+
+/// A drop delegate for a tab row. Reports enter/move/exit to the sidebar (which
+/// drives the tail hint) and, on release, reports the drop position as a
+/// fraction of the row height so the sidebar can place the tab accordingly.
 private struct TabDropDelegate: DropDelegate {
     let targetTabID: UUID
     let rowHeight: CGFloat
-    @Binding var dropTargetID: UUID?
-    let perform: (_ providers: [NSItemProvider], _ zone: DropZone) -> Bool
+    let tracker: DragHintTracker
+    let onEntered: (_ rowID: UUID) -> Void
+    let onMoved: (_ dy: CGFloat) -> Void
+    let onExited: (_ rowID: UUID) -> Void
+    let perform: (_ providers: [NSItemProvider], _ fraction: CGFloat) -> Bool
 
     func validateDrop(info: DropInfo) -> Bool {
         info.hasItemsConforming(to: [.plainText])
     }
 
     func dropEntered(info: DropInfo) {
-        dropTargetID = targetTabID
+        tracker.lastY = info.location.y
+        onEntered(targetTabID)
     }
 
     func dropExited(info: DropInfo) {
-        if dropTargetID == targetTabID { dropTargetID = nil }
+        onExited(targetTabID)
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: .move)
+        let y = info.location.y
+        if let last = tracker.lastY {
+            onMoved(y - last)
+        }
+        tracker.lastY = y
+        return DropProposal(operation: .move)
     }
 
     func performDrop(info: DropInfo) -> Bool {
-        dropTargetID = nil
-        let providers = info.itemProviders(for: [.plainText])
-        // Middle 50% of the row = join; top/bottom 25% = reorder. If the height
-        // isn't measured yet, default to join (dropping squarely on a row).
-        let zone: DropZone
-        if rowHeight > 0 {
-            let y = info.location.y
-            zone = (y > rowHeight * 0.25 && y < rowHeight * 0.75) ? .join : .reorder
-        } else {
-            zone = .join
-        }
-        return perform(providers, zone)
+        let fraction = rowHeight > 0 ? min(max(info.location.y / rowHeight, 0), 1) : 0.5
+        return perform(info.itemProviders(for: [.plainText]), fraction)
     }
 }
 
-/// Attaches drag source, drop delegate, and height measurement to a tab row.
+/// Attaches drag source, drop delegate, height measurement, and the drag hint
+/// badge to a tab row.
 ///
 /// The row height is tracked as local @State fed by a GeometryReader in the
 /// row's own background: preferences don't reliably propagate out of List rows
@@ -83,29 +97,64 @@ private struct TabDropDelegate: DropDelegate {
 /// made every drop classify as a join — breaking drag-to-reorder.
 private struct TabDragDropModifier: ViewModifier {
     let id: UUID
-    @Binding var dropTargetID: UUID?
-    let onDrop: (_ providers: [NSItemProvider], _ zone: DropZone) -> Bool
+    /// The hint to show at this row's tail (nil unless this row is the current
+    /// drop target).
+    let hint: DragHint?
+    let tracker: DragHintTracker
+    let onEntered: (_ rowID: UUID) -> Void
+    let onMoved: (_ dy: CGFloat) -> Void
+    let onExited: (_ rowID: UUID) -> Void
+    let onDrop: (_ providers: [NSItemProvider], _ fraction: CGFloat) -> Bool
 
     @State private var rowHeight: CGFloat = 0
 
     func body(content: Content) -> some View {
         content
             // Open up the vertical gap between tabs (~1.3x the default row
-            // height); the padding also enlarges each drop zone, making the
-            // edge (reorder) and middle (join) bands easier to hit.
+            // height); the padding also enlarges each drop target.
             .padding(.vertical, 3)
             .background(GeometryReader { geo in
                 Color.clear
                     .onAppear { rowHeight = geo.size.height }
                     .onChange(of: geo.size.height) { rowHeight = $0 }
             })
+            .overlay(hintBadge, alignment: .trailing)
             .onDrag { NSItemProvider(object: id.uuidString as NSString) }
             .onDrop(of: [.plainText], delegate: TabDropDelegate(
                 targetTabID: id,
                 rowHeight: rowHeight,
-                dropTargetID: $dropTargetID,
+                tracker: tracker,
+                onEntered: onEntered,
+                onMoved: onMoved,
+                onExited: onExited,
                 perform: onDrop
             ))
+    }
+
+    /// Small badge at the row's tail: ↑/↓ while the drag is moving (reorder),
+    /// or "Join" once the pointer has lingered.
+    @ViewBuilder
+    private var hintBadge: some View {
+        if let hint {
+            HStack(spacing: 3) {
+                switch hint {
+                case .up:
+                    Image(systemName: "arrow.up")
+                case .down:
+                    Image(systemName: "arrow.down")
+                case .join:
+                    Image(systemName: "arrow.triangle.merge")
+                    Text("Join")
+                }
+            }
+            .font(.caption2.weight(.bold))
+            .foregroundColor(.accentColor)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(RoundedRectangle(cornerRadius: 4).fill(Color.accentColor.opacity(0.15)))
+            .padding(.trailing, 4)
+            .allowsHitTesting(false)
+        }
     }
 }
 
@@ -119,6 +168,12 @@ struct SidebarView: View {
 
     /// The tab ID currently being hovered during a drag operation.
     @State private var dropTargetID: UUID?
+
+    /// The hint currently shown at the drop target row's tail.
+    @State private var dragHint: DragHint?
+
+    /// Shared mutable drag-session state (pointer position, linger timer).
+    @State private var dragTracker = DragHintTracker()
 
     /// Current sidebar mode — bound to the controller so the right-side view can switch.
     @Binding var sidebarMode: SidebarMode
@@ -366,23 +421,68 @@ struct SidebarView: View {
         return nil
     }
 
-    /// Handle a drop of a dragged tab UUID onto a target row. `zone` classifies
-    /// where in the target row the drop landed (join = middle, reorder = edge).
-    private func handleDrop(of providers: [NSItemProvider], targetTabID: UUID, zone: DropZone) -> Bool {
+    // MARK: Drag hint tracking
+
+    /// The pointer entered a row. Derive the travel direction from the row
+    /// order in the flattened list, and restart the linger timer.
+    private func dragEntered(row id: UUID) {
+        if let prev = dragTracker.lastRowID, prev != id,
+           let prevIndex = flatRows.firstIndex(where: { $0.id == prev }),
+           let newIndex = flatRows.firstIndex(where: { $0.id == id }) {
+            dragHint = newIndex > prevIndex ? .down : .up
+        }
+        dragTracker.lastRowID = id
+        dropTargetID = id
+        scheduleJoinHint()
+    }
+
+    /// The pointer moved within the current row.
+    private func dragMoved(dy: CGFloat) {
+        // Ignore sub-pixel jitter so a lingering pointer still reaches the
+        // join hint.
+        guard abs(dy) > 2 else { return }
+        dragHint = dy > 0 ? .down : .up
+        scheduleJoinHint()
+    }
+
+    /// The pointer left a row (and didn't enter another).
+    private func dragExited(row id: UUID) {
+        guard dropTargetID == id else { return }
         dropTargetID = nil
+        dragHint = nil
+        dragTracker.joinWork?.cancel()
+    }
+
+    /// After 0.5s without movement, flip the hint to Join.
+    private func scheduleJoinHint() {
+        dragTracker.joinWork?.cancel()
+        let work = DispatchWorkItem { dragHint = .join }
+        dragTracker.joinWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+
+    /// Handle a drop of a dragged tab UUID onto a target row. `fraction` is the
+    /// release position within the row (0 = top, 1 = bottom); the current drag
+    /// hint decides join vs reorder for standalone targets.
+    private func handleDrop(of providers: [NSItemProvider], targetTabID: UUID, fraction: CGFloat) -> Bool {
+        let joinIntent = dragHint == .join
+        dropTargetID = nil
+        dragHint = nil
+        dragTracker.joinWork?.cancel()
+        dragTracker.lastRowID = nil
         guard let provider = providers.first else { return false }
         provider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { data, _ in
             guard let data = data as? Data, let uuidString = String(data: data, encoding: .utf8),
                   let draggedID = UUID(uuidString: uuidString) else { return }
             DispatchQueue.main.async {
-                performDrop(draggedID: draggedID, targetTabID: targetTabID, zone: zone)
+                performDrop(draggedID: draggedID, targetTabID: targetTabID, fraction: fraction, joinIntent: joinIntent)
             }
         }
         return true
     }
 
     /// Apply a resolved drop on the main thread.
-    private func performDrop(draggedID: UUID, targetTabID: UUID, zone: DropZone) {
+    private func performDrop(draggedID: UUID, targetTabID: UUID, fraction: CGFloat, joinIntent: Bool) {
         guard draggedID != targetTabID else { return }
 
         // 1) Reorder within a group: both dragged and target are children of the
@@ -406,20 +506,27 @@ struct SidebarView: View {
         guard let dragged = controller.tabs.first(where: { $0.id == draggedID }), !dragged.isGroup else { return }
 
         // 2) Dropped onto a group (its header or one of its children) → join the
-        //    dragged tab into that group. joinTab hard-blocks (with a "full"
-        //    alert) if the group already holds 4 panes.
+        //    dragged tab into that group at the release position: above/below
+        //    the child under the pointer, or at the top for the header row.
+        //    joinTab hard-blocks (with a "full" alert) at 4 panes.
         if let targetGroup = groupContaining(targetTabID) {
-            controller.joinTab(dragged, into: targetGroup, hardLimit: true)
+            let insertIndex: Int?
+            if let childIndex = targetGroup.children.firstIndex(where: { $0.id == targetTabID }) {
+                insertIndex = childIndex + (fraction > 0.5 ? 1 : 0)
+            } else {
+                // Released on the group header — insert at the top.
+                insertIndex = 0
+            }
+            controller.joinTab(dragged, into: targetGroup, hardLimit: true, at: insertIndex)
             return
         }
 
-        // 3) Dropped onto another standalone top-level tab.
+        // 3) Dropped onto another standalone top-level tab: a lingering drop
+        //    (Join badge showing) asks to merge; a moving drop reorders.
         guard let target = controller.tabs.first(where: { $0.id == targetTabID }), !target.isGroup else { return }
-        switch zone {
-        case .join:
-            // Ask before merging two standalone tabs into a new group.
+        if joinIntent {
             controller.confirmJoinTabs(dragged, into: target)
-        case .reorder:
+        } else {
             guard let fromIndex = controller.tabs.firstIndex(where: { $0.id == draggedID }),
                   let toIndex = controller.tabs.firstIndex(where: { $0.id == targetTabID }),
                   fromIndex != toIndex else { return }
@@ -448,8 +555,12 @@ struct SidebarView: View {
                     .overlay(dropIndicator(for: tab.id))
                     .modifier(TabDragDropModifier(
                         id: tab.id,
-                        dropTargetID: $dropTargetID,
-                        onDrop: { providers, zone in handleDrop(of: providers, targetTabID: tab.id, zone: zone) }
+                        hint: dropTargetID == tab.id ? dragHint : nil,
+                        tracker: dragTracker,
+                        onEntered: dragEntered(row:),
+                        onMoved: dragMoved(dy:),
+                        onExited: dragExited(row:),
+                        onDrop: { providers, fraction in handleDrop(of: providers, targetTabID: tab.id, fraction: fraction) }
                     ))
 
                 case .group(let group, _):
@@ -462,8 +573,12 @@ struct SidebarView: View {
                     .overlay(dropIndicator(for: group.id))
                     .modifier(TabDragDropModifier(
                         id: group.id,
-                        dropTargetID: $dropTargetID,
-                        onDrop: { providers, zone in handleDrop(of: providers, targetTabID: group.id, zone: zone) }
+                        hint: dropTargetID == group.id ? dragHint : nil,
+                        tracker: dragTracker,
+                        onEntered: dragEntered(row:),
+                        onMoved: dragMoved(dy:),
+                        onExited: dragExited(row:),
+                        onDrop: { providers, fraction in handleDrop(of: providers, targetTabID: group.id, fraction: fraction) }
                     ))
 
                 case .groupChild(let child, let group):
@@ -478,8 +593,12 @@ struct SidebarView: View {
                     .overlay(dropIndicator(for: child.id))
                     .modifier(TabDragDropModifier(
                         id: child.id,
-                        dropTargetID: $dropTargetID,
-                        onDrop: { providers, zone in handleDrop(of: providers, targetTabID: child.id, zone: zone) }
+                        hint: dropTargetID == child.id ? dragHint : nil,
+                        tracker: dragTracker,
+                        onEntered: dragEntered(row:),
+                        onMoved: dragMoved(dy:),
+                        onExited: dragExited(row:),
+                        onDrop: { providers, fraction in handleDrop(of: providers, targetTabID: child.id, fraction: fraction) }
                     ))
                 }
             }
