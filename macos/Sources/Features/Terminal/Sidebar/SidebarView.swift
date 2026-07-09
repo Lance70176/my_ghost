@@ -27,8 +27,8 @@ private enum SidebarRowItem: Identifiable {
 }
 
 /// The hint shown at the tail of the hovered row during a drag. Recent pointer
-/// movement shows a direction arrow (reorder intent); lingering for 0.5s flips
-/// to a Join badge, which also classifies the release as a join.
+/// movement shows a direction arrow (reorder); lingering for 0.5s over a tab
+/// area shows a Join badge (releasing a standalone tab there joins the group).
 private enum DragHint: Equatable {
     case up
     case down
@@ -46,6 +46,10 @@ private final class DragHintTracker {
     var lastRowID: UUID?
     /// Pending work that flips the hint to .join after the linger delay.
     var joinWork: DispatchWorkItem?
+    /// The ID of the row where the current drag session started (set by the
+    /// drag source), letting hover logic know what is being dragged — the drop
+    /// payload itself is only readable at release time.
+    var draggedID: UUID?
 }
 
 /// A drop delegate for a tab row. Reports enter/move/exit to the sidebar (which
@@ -119,7 +123,12 @@ private struct TabDragDropModifier: ViewModifier {
                     .onChange(of: geo.size.height) { rowHeight = $0 }
             })
             .overlay(hintBadge, alignment: .trailing)
-            .onDrag { NSItemProvider(object: id.uuidString as NSString) }
+            .onDrag {
+                // Record what is being dragged so hover logic can tell whether
+                // a join is possible before the payload is readable.
+                tracker.draggedID = id
+                return NSItemProvider(object: id.uuidString as NSString)
+            }
             .onDrop(of: [.plainText], delegate: TabDropDelegate(
                 targetTabID: id,
                 rowHeight: rowHeight,
@@ -453,36 +462,50 @@ struct SidebarView: View {
         dragTracker.joinWork?.cancel()
     }
 
-    /// After 0.5s without movement, flip the hint to Join.
+    /// After 0.5s without movement, show the Join badge — but only where a
+    /// release would actually join (a standalone tab hovering over a tab area).
+    /// Elsewhere the linger just clears the movement arrow.
     private func scheduleJoinHint() {
         dragTracker.joinWork?.cancel()
-        let work = DispatchWorkItem { dragHint = .join }
+        let work = DispatchWorkItem { dragHint = joinHintApplies ? .join : nil }
         dragTracker.joinWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
+    /// Whether releasing at the current drop target would join: the dragged
+    /// item is a standalone top-level tab and the hovered row belongs to a
+    /// group. Group reorders and tab reorders never join.
+    private var joinHintApplies: Bool {
+        guard let targetID = dropTargetID,
+              let draggedID = dragTracker.draggedID,
+              let dragged = controller.tabs.first(where: { $0.id == draggedID }),
+              !dragged.isGroup
+        else { return false }
+        return groupContaining(targetID) != nil
+    }
+
     /// Handle a drop of a dragged tab UUID onto a target row. `fraction` is the
-    /// release position within the row (0 = top, 1 = bottom); the current drag
-    /// hint decides join vs reorder for standalone targets.
+    /// release position within the row (0 = top, 1 = bottom), used to pick the
+    /// insertion point when joining into a group.
     private func handleDrop(of providers: [NSItemProvider], targetTabID: UUID, fraction: CGFloat) -> Bool {
-        let joinIntent = dragHint == .join
         dropTargetID = nil
         dragHint = nil
         dragTracker.joinWork?.cancel()
         dragTracker.lastRowID = nil
+        dragTracker.draggedID = nil
         guard let provider = providers.first else { return false }
         provider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { data, _ in
             guard let data = data as? Data, let uuidString = String(data: data, encoding: .utf8),
                   let draggedID = UUID(uuidString: uuidString) else { return }
             DispatchQueue.main.async {
-                performDrop(draggedID: draggedID, targetTabID: targetTabID, fraction: fraction, joinIntent: joinIntent)
+                performDrop(draggedID: draggedID, targetTabID: targetTabID, fraction: fraction)
             }
         }
         return true
     }
 
     /// Apply a resolved drop on the main thread.
-    private func performDrop(draggedID: UUID, targetTabID: UUID, fraction: CGFloat, joinIntent: Bool) {
+    private func performDrop(draggedID: UUID, targetTabID: UUID, fraction: CGFloat) {
         guard draggedID != targetTabID else { return }
 
         // 1) Reorder within a group: both dragged and target are children of the
@@ -502,14 +525,14 @@ struct SidebarView: View {
             return
         }
 
-        // From here on the dragged item must be a standalone top-level tab.
-        guard let dragged = controller.tabs.first(where: { $0.id == draggedID }), !dragged.isGroup else { return }
+        // From here on the dragged item is a top-level entry (tab or group).
+        guard let dragged = controller.tabs.first(where: { $0.id == draggedID }) else { return }
 
-        // 2) Dropped onto a group (its header or one of its children) → join the
-        //    dragged tab into that group at the release position: above/below
-        //    the child under the pointer, or at the top for the header row.
-        //    joinTab hard-blocks (with a "full" alert) at 4 panes.
-        if let targetGroup = groupContaining(targetTabID) {
+        // 2) A standalone tab dropped onto a group (its header or one of its
+        //    children) → join it into that group at the release position:
+        //    above/below the child under the pointer, or at the top for the
+        //    header row. joinTab hard-blocks (with a "full" alert) at 4 panes.
+        if !dragged.isGroup, let targetGroup = groupContaining(targetTabID) {
             let insertIndex: Int?
             if let childIndex = targetGroup.children.firstIndex(where: { $0.id == targetTabID }) {
                 insertIndex = childIndex + (fraction > 0.5 ? 1 : 0)
@@ -521,20 +544,23 @@ struct SidebarView: View {
             return
         }
 
-        // 3) Dropped onto another standalone top-level tab: a lingering drop
-        //    (Join badge showing) asks to merge; a moving drop reorders.
-        guard let target = controller.tabs.first(where: { $0.id == targetTabID }), !target.isGroup else { return }
-        if joinIntent {
-            controller.confirmJoinTabs(dragged, into: target)
+        // 3) Reorder top-level entries — standalone tabs and groups alike. When
+        //    the target row belongs to a group (e.g. dragging a group over
+        //    another group's rows), reorder relative to that group.
+        let resolvedTargetID: UUID?
+        if controller.tabs.contains(where: { $0.id == targetTabID }) {
+            resolvedTargetID = targetTabID
         } else {
-            guard let fromIndex = controller.tabs.firstIndex(where: { $0.id == draggedID }),
-                  let toIndex = controller.tabs.firstIndex(where: { $0.id == targetTabID }),
-                  fromIndex != toIndex else { return }
-            withAnimation(.easeInOut(duration: 0.2)) {
-                let tab = controller.tabs.remove(at: fromIndex)
-                controller.tabs.insert(tab, at: toIndex)
-                controller.saveScreenSessionState()
-            }
+            resolvedTargetID = groupContaining(targetTabID)?.id
+        }
+        guard let targetID = resolvedTargetID,
+              let fromIndex = controller.tabs.firstIndex(where: { $0.id == draggedID }),
+              let toIndex = controller.tabs.firstIndex(where: { $0.id == targetID }),
+              fromIndex != toIndex else { return }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            let tab = controller.tabs.remove(at: fromIndex)
+            controller.tabs.insert(tab, at: toIndex)
+            controller.saveScreenSessionState()
         }
     }
 
