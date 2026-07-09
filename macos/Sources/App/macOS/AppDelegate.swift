@@ -318,6 +318,12 @@ class AppDelegate: NSObject,
         // Setup signal handlers
         setupSignals()
 
+        // On launch, remind the user if recommended CLI tools (e.g. tmux) are
+        // missing. Deferred so the initial windows appear before the modal.
+        DispatchQueue.main.async {
+            DependencyChecker.checkAndPromptIfNeeded()
+        }
+
         switch Ghostty.launchSource {
         case .app:
             // Don't have to do anything.
