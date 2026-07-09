@@ -11,6 +11,8 @@ class FileNode: Identifiable, ObservableObject {
 
     @Published var isExpanded: Bool = false
     @Published var children: [FileNode]?
+    /// True while a background directory read for this node is in flight.
+    @Published var isLoading: Bool = false
 
     init(url: URL, isDirectory: Bool, depth: Int) {
         self.name = url.lastPathComponent
@@ -19,25 +21,21 @@ class FileNode: Identifiable, ObservableObject {
         self.depth = depth
     }
 
+    /// Load this directory's children off the main thread so expanding a folder
+    /// with many entries never blocks/freezes the UI.
     func loadChildren() {
-        guard isDirectory, children == nil else { return }
-        let fm = FileManager.default
-        do {
-            let urls = try fm.contentsOfDirectory(
-                at: url,
-                includingPropertiesForKeys: [.isDirectoryKey],
-                options: [.skipsHiddenFiles]
-            )
-            children = urls.compactMap { childURL in
-                let isDir = (try? childURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-                return FileNode(url: childURL, isDirectory: isDir, depth: depth + 1)
+        guard isDirectory, children == nil, !isLoading else { return }
+        isLoading = true
+        let dirURL = url
+        let childDepth = depth + 1
+        FileBrowserState.ioQueue.async {
+            let loaded = FileBrowserState.readDirectory(at: dirURL).map {
+                FileNode(url: $0.url, isDirectory: $0.isDirectory, depth: childDepth)
             }
-            .sorted { lhs, rhs in
-                if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
-                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            DispatchQueue.main.async {
+                self.children = loaded
+                self.isLoading = false
             }
-        } catch {
-            children = []
         }
     }
 
@@ -45,8 +43,8 @@ class FileNode: Identifiable, ObservableObject {
         if isExpanded {
             isExpanded = false
         } else {
-            loadChildren()
             isExpanded = true
+            loadChildren()
         }
     }
 
@@ -86,11 +84,19 @@ class FileBrowserState: ObservableObject {
         return components
     }
 
-    /// List a directory, reusing existing FileNode objects for unchanged paths.
-    /// Reuse keeps each node's identity (and thus SwiftUI row identity, scroll
-    /// position, selection, and expansion state) stable across the periodic
-    /// refresh; only added/removed files produce new nodes.
-    private static func listNodes(at url: URL, depth: Int, reusing existing: [FileNode]) -> [FileNode] {
+    /// Serial-ish background queue for all file-system reads, so directory
+    /// scans (which can be slow for folders with many entries) never run on the
+    /// main thread and freeze the UI.
+    static let ioQueue = DispatchQueue(label: "com.myghost.filebrowser.io", qos: .userInitiated)
+
+    /// True while a background refresh scan is in flight, used to avoid piling
+    /// up overlapping scans when the 2s timer fires faster than a large tree can
+    /// be read.
+    private var isScanning = false
+
+    /// Read a single directory level (the expensive syscalls + sort). Safe to
+    /// call off the main thread.
+    static func readDirectory(at url: URL) -> [(url: URL, isDirectory: Bool)] {
         let fm = FileManager.default
         guard let urls = try? fm.contentsOfDirectory(
             at: url,
@@ -98,40 +104,105 @@ class FileBrowserState: ObservableObject {
             options: [.skipsHiddenFiles]
         ) else { return [] }
 
-        var existingByPath: [String: FileNode] = [:]
-        for node in existing { existingByPath[node.url.path] = node }
-
-        let nodes = urls.compactMap { childURL -> FileNode? in
+        return urls.map { childURL -> (url: URL, isDirectory: Bool) in
             let isDir = (try? childURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
-            if let reused = existingByPath[childURL.path], reused.isDirectory == isDir {
-                return reused
-            }
-            return FileNode(url: childURL, isDirectory: isDir, depth: depth)
+            return (url: childURL, isDirectory: isDir)
         }
         .sorted { lhs, rhs in
             if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
-            return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            return lhs.url.lastPathComponent.localizedStandardCompare(rhs.url.lastPathComponent) == .orderedAscending
         }
-
-        for node in nodes where node.isExpanded {
-            let refreshed = listNodes(at: node.url, depth: depth + 1, reusing: node.children ?? [])
-            if !(node.children?.elementsEqual(refreshed, by: ===) ?? false) {
-                node.children = refreshed
-            }
-        }
-        return nodes
     }
 
-    func loadEntries() {
-        let refreshed = Self.listNodes(at: currentPath, depth: 0, reusing: rootNodes)
-        if !refreshed.elementsEqual(rootNodes, by: ===) {
-            rootNodes = refreshed
+    /// Lightweight, thread-safe snapshot of a scanned directory tree. Produced
+    /// entirely on the background queue, then reconciled into the live FileNode
+    /// tree on the main thread.
+    private struct ScanEntry {
+        let url: URL
+        let isDirectory: Bool
+        let depth: Int
+        let children: [ScanEntry]?
+    }
+
+    /// Collect the paths of every currently-expanded directory so the background
+    /// scan knows how deep to recurse. Must be called on the main thread.
+    private static func expandedPaths(in nodes: [FileNode], into set: inout Set<String>) {
+        for node in nodes where node.isExpanded {
+            set.insert(node.url.path)
+            if let children = node.children {
+                expandedPaths(in: children, into: &set)
+            }
+        }
+    }
+
+    /// Recursively scan `url`, descending only into directories whose path is in
+    /// `expanded`. Runs on the background queue — touches no FileNode state.
+    private static func scan(url: URL, depth: Int, expanded: Set<String>) -> [ScanEntry] {
+        return readDirectory(at: url).map { entry -> ScanEntry in
+            var children: [ScanEntry]? = nil
+            if entry.isDirectory && expanded.contains(entry.url.path) {
+                children = scan(url: entry.url, depth: depth + 1, expanded: expanded)
+            }
+            return ScanEntry(url: entry.url, isDirectory: entry.isDirectory, depth: depth, children: children)
+        }
+    }
+
+    /// Reconcile a background scan snapshot into the live FileNode tree, reusing
+    /// existing FileNode objects for unchanged paths. Reuse keeps each node's
+    /// identity (and thus SwiftUI row identity, scroll position, selection, and
+    /// expansion state) stable across the periodic refresh; only added/removed
+    /// files produce new nodes. Must be called on the main thread.
+    private static func reconcile(_ entries: [ScanEntry], reusing existing: [FileNode]) -> [FileNode] {
+        var existingByPath: [String: FileNode] = [:]
+        for node in existing { existingByPath[node.url.path] = node }
+
+        return entries.map { entry -> FileNode in
+            let node: FileNode
+            if let reused = existingByPath[entry.url.path], reused.isDirectory == entry.isDirectory {
+                node = reused
+            } else {
+                node = FileNode(url: entry.url, isDirectory: entry.isDirectory, depth: entry.depth)
+            }
+            if let childEntries = entry.children {
+                let refreshed = reconcile(childEntries, reusing: node.children ?? [])
+                if !(node.children?.elementsEqual(refreshed, by: ===) ?? false) {
+                    node.children = refreshed
+                }
+            }
+            return node
+        }
+    }
+
+    func loadEntries(force: Bool = false) {
+        // Skip overlapping periodic refreshes, but never drop a user-initiated
+        // load (navigation, manual refresh) even if a scan is already running.
+        guard force || !isScanning else { return }
+        isScanning = true
+
+        var expanded = Set<String>()
+        Self.expandedPaths(in: rootNodes, into: &expanded)
+        let path = currentPath
+
+        Self.ioQueue.async {
+            let entries = Self.scan(url: path, depth: 0, expanded: expanded)
+            DispatchQueue.main.async {
+                self.isScanning = false
+                // The user may have navigated away while the scan was running.
+                guard self.currentPath == path else { return }
+                let refreshed = Self.reconcile(entries, reusing: self.rootNodes)
+                if !refreshed.elementsEqual(self.rootNodes, by: ===) {
+                    self.rootNodes = refreshed
+                }
+            }
         }
     }
 
     func navigate(to url: URL) {
         currentPath = url
-        loadEntries()
+        // Clear the old directory's rows immediately for responsiveness; the new
+        // contents arrive from the background scan.
+        rootNodes = []
+        loadEntries(force: true)
     }
 
     /// Flatten the visible tree for keyboard shortcut support
@@ -190,7 +261,7 @@ struct FileBrowserView: View {
                     }
                 }
 
-                Button(action: { state.loadEntries() }) {
+                Button(action: { state.loadEntries(force: true) }) {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 17))
                 }
@@ -544,7 +615,7 @@ enum FileBrowserActions {
             }
             let success = FileManager.default.createFile(atPath: newURL.path, contents: nil)
             if success {
-                state.loadEntries()
+                state.loadEntries(force: true)
             } else {
                 let errAlert = NSAlert()
                 errAlert.messageText = "Failed to create file \"\(name)\"."
@@ -573,7 +644,7 @@ enum FileBrowserActions {
             let newURL = entry.url.deletingLastPathComponent().appendingPathComponent(newName)
             do {
                 try FileManager.default.moveItem(at: entry.url, to: newURL)
-                state.loadEntries()
+                state.loadEntries(force: true)
             } catch {
                 let errAlert = NSAlert(error: error)
                 errAlert.runModal()
@@ -593,7 +664,7 @@ enum FileBrowserActions {
         if response == .alertFirstButtonReturn {
             do {
                 try FileManager.default.trashItem(at: entry.url, resultingItemURL: nil)
-                state.loadEntries()
+                state.loadEntries(force: true)
             } catch {
                 let errAlert = NSAlert(error: error)
                 errAlert.runModal()
