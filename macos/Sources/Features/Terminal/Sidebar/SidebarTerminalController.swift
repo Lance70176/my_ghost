@@ -691,34 +691,6 @@ class SidebarTerminalController: BaseTerminalController {
         self.alert = alert
     }
 
-    /// Ask the user whether to merge two standalone tabs into a new group.
-    /// Used by the drag-and-drop path when a tab is dropped onto another tab.
-    /// Calls `joinTab` only if the user confirms.
-    func confirmJoinTabs(_ source: SidebarTabEntry, into target: SidebarTabEntry) {
-        guard alert == nil else { return }
-        guard let window else {
-            // No window to attach the sheet to — just join.
-            joinTab(source, into: target, hardLimit: true)
-            return
-        }
-
-        let alert = NSAlert()
-        alert.messageText = "Join these tabs into one area?"
-        alert.informativeText = "\"\(source.displayTitle)\" will be added to \"\(target.displayTitle)\" as a split pane."
-        alert.addButton(withTitle: "Join")
-        alert.addButton(withTitle: "Cancel")
-        alert.alertStyle = .informational
-        alert.beginSheetModal(for: window) { response in
-            let alertWindow = alert.window
-            self.alert = nil
-            if response == .alertFirstButtonReturn {
-                alertWindow.orderOut(nil)
-                self.joinTab(source, into: target, hardLimit: true)
-            }
-        }
-        self.alert = alert
-    }
-
     /// Unjoin a child tab from its group, restoring it as an independent top-level tab.
     /// If the group is left with only one child, the group dissolves and that child
     /// becomes a standalone top-level tab.
