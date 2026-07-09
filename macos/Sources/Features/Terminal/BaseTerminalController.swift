@@ -60,7 +60,9 @@ class BaseTerminalController: NSWindowController,
     }
 
     /// Non-nil when an alert is active so we don't overlap multiple.
-    private var alert: NSAlert?
+    /// The currently-shown modal alert, if any. Internal (not private) so
+    /// subclasses can present their own single-at-a-time sheet alerts.
+    var alert: NSAlert?
 
     /// The clipboard confirmation window, if shown.
     private var clipboardConfirmation: ClipboardConfirmationController?

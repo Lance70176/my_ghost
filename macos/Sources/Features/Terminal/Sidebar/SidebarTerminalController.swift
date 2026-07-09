@@ -480,24 +480,42 @@ class SidebarTerminalController: BaseTerminalController {
     /// If target is already a group, source is added to it.
     /// If target is a standalone tab, a new group ("New Tab Area") is created
     /// containing both target and source as split pane children.
-    func joinTab(_ source: SidebarTabEntry, into target: SidebarTabEntry, confirmed: Bool = false) {
+    /// The number of terminal panes currently laid out in `target` (a tab or a
+    /// group). Counts the panes the same way `joinTab`'s insertion logic does.
+    func paneCount(of target: SidebarTabEntry) -> Int {
+        let targetTree: SplitTree<Ghostty.SurfaceView>
+        if target.isGroup, target.isFullMode, let saved = target.savedSplitTree {
+            targetTree = saved
+        } else if target.id == selectedTabID {
+            targetTree = surfaceTree
+        } else {
+            targetTree = target.surfaceTree
+        }
+        return targetTree.root?.leaves().count ?? 0
+    }
+
+    /// Join `source` into `target`.
+    ///
+    /// - Parameter hardLimit: When true, joining into a target that already
+    ///   holds the maximum of 4 panes is refused outright (a "tab area is full"
+    ///   alert is shown). This is used by the drag-and-drop path. When false,
+    ///   the 5th pane instead triggers a soft confirmation (`confirmAddPane`),
+    ///   which is the behaviour of keyboard splits and the "Join to…" menu.
+    func joinTab(_ source: SidebarTabEntry, into target: SidebarTabEntry, confirmed: Bool = false, hardLimit: Bool = false) {
         guard source.id != target.id else { return }
         guard let sourceIndex = tabs.firstIndex(where: { $0.id == source.id }) else { return }
         guard let targetIndex = tabs.firstIndex(where: { $0.id == target.id }) else { return }
 
-        // Joining a 5th (or more) pane requires confirmation. Count the
-        // target's panes the same way the insertion logic below does.
+        // Joining a 5th (or more) pane is gated. Count the target's panes the
+        // same way the insertion logic below does.
         if !confirmed {
-            let targetTree: SplitTree<Ghostty.SurfaceView>
-            if target.isGroup, target.isFullMode, let saved = target.savedSplitTree {
-                targetTree = saved
-            } else if target.id == selectedTabID {
-                targetTree = surfaceTree
-            } else {
-                targetTree = target.surfaceTree
-            }
-            let targetPaneCount = targetTree.root?.leaves().count ?? 0
+            let targetPaneCount = paneCount(of: target)
             if targetPaneCount >= 4 {
+                if hardLimit {
+                    // Drag path: refuse and tell the user the area is full.
+                    showGroupFullAlert(paneCount: targetPaneCount)
+                    return
+                }
                 confirmAddPane(paneCount: targetPaneCount) { [weak self] in
                     self?.joinTab(source, into: target, confirmed: true)
                 }
@@ -644,6 +662,53 @@ class SidebarTerminalController: BaseTerminalController {
         }
 
         saveScreenSessionState()
+    }
+
+    /// Hard-stop alert shown when the user drags a tab into a group that is
+    /// already at the 4-pane limit. Unlike `confirmAddPane` (a soft confirm),
+    /// this simply informs the user and refuses the operation.
+    func showGroupFullAlert(paneCount: Int) {
+        // Only ever show one alert at a time.
+        guard alert == nil else { return }
+        guard let window else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "This tab area is full"
+        alert.informativeText = "A tab area can hold at most \(paneCount) windows. Remove one before adding another."
+        alert.addButton(withTitle: "OK")
+        alert.alertStyle = .warning
+        alert.beginSheetModal(for: window) { _ in
+            self.alert = nil
+        }
+        self.alert = alert
+    }
+
+    /// Ask the user whether to merge two standalone tabs into a new group.
+    /// Used by the drag-and-drop path when a tab is dropped onto another tab.
+    /// Calls `joinTab` only if the user confirms.
+    func confirmJoinTabs(_ source: SidebarTabEntry, into target: SidebarTabEntry) {
+        guard alert == nil else { return }
+        guard let window else {
+            // No window to attach the sheet to — just join.
+            joinTab(source, into: target, hardLimit: true)
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "Join these tabs into one area?"
+        alert.informativeText = "\"\(source.displayTitle)\" will be added to \"\(target.displayTitle)\" as a split pane."
+        alert.addButton(withTitle: "Join")
+        alert.addButton(withTitle: "Cancel")
+        alert.alertStyle = .informational
+        alert.beginSheetModal(for: window) { response in
+            let alertWindow = alert.window
+            self.alert = nil
+            if response == .alertFirstButtonReturn {
+                alertWindow.orderOut(nil)
+                self.joinTab(source, into: target, hardLimit: true)
+            }
+        }
+        self.alert = alert
     }
 
     /// Unjoin a child tab from its group, restoring it as an independent top-level tab.

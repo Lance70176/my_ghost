@@ -26,8 +26,88 @@ private enum SidebarRowItem: Identifiable {
     }
 }
 
+/// Where within a target row a dragged tab was released.
+private enum DropZone {
+    /// Middle of the row — merge the dragged tab into the target (join).
+    case join
+    /// Top/bottom edge of the row — reorder relative to the target.
+    case reorder
+}
+
+/// Collects each row's measured height into a `[rowID: height]` map so the
+/// drop handler can tell the middle of a row from its edges.
+private struct RowHeightKey: PreferenceKey {
+    static var defaultValue: [UUID: CGFloat] = [:]
+    static func reduce(value: inout [UUID: CGFloat], nextValue: () -> [UUID: CGFloat]) {
+        value.merge(nextValue()) { _, new in new }
+    }
+}
+
+/// A drop delegate for a tab row. Uses `DropInfo.location` (reliably in the
+/// row's own coordinate space) together with the row's measured height to
+/// classify the drop as a join (middle) or a reorder (edge).
+private struct TabDropDelegate: DropDelegate {
+    let targetTabID: UUID
+    let rowHeight: CGFloat
+    @Binding var dropTargetID: UUID?
+    let perform: (_ providers: [NSItemProvider], _ zone: DropZone) -> Bool
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [.plainText])
+    }
+
+    func dropEntered(info: DropInfo) {
+        dropTargetID = targetTabID
+    }
+
+    func dropExited(info: DropInfo) {
+        if dropTargetID == targetTabID { dropTargetID = nil }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        dropTargetID = nil
+        let providers = info.itemProviders(for: [.plainText])
+        // Middle 50% of the row = join; top/bottom 25% = reorder. If the height
+        // isn't measured yet, default to join (dropping squarely on a row).
+        let zone: DropZone
+        if rowHeight > 0 {
+            let y = info.location.y
+            zone = (y > rowHeight * 0.25 && y < rowHeight * 0.75) ? .join : .reorder
+        } else {
+            zone = .join
+        }
+        return perform(providers, zone)
+    }
+}
+
+/// Attaches drag source, drop delegate, and height measurement to a tab row.
+private struct TabDragDropModifier: ViewModifier {
+    let id: UUID
+    let rowHeight: CGFloat
+    @Binding var dropTargetID: UUID?
+    let onDrop: (_ providers: [NSItemProvider], _ zone: DropZone) -> Bool
+
+    func body(content: Content) -> some View {
+        content
+            .background(GeometryReader { geo in
+                Color.clear.preference(key: RowHeightKey.self, value: [id: geo.size.height])
+            })
+            .onDrag { NSItemProvider(object: id.uuidString as NSString) }
+            .onDrop(of: [.plainText], delegate: TabDropDelegate(
+                targetTabID: id,
+                rowHeight: rowHeight,
+                dropTargetID: $dropTargetID,
+                perform: onDrop
+            ))
+    }
+}
+
 /// The sidebar view showing a list of tabs. Supports selection, right-click
-/// context menu (close / join), drag-to-reorder, and +/- buttons.
+/// context menu (close / join), drag-to-reorder / drag-to-join, and +/- buttons.
 struct SidebarView: View {
     @ObservedObject var controller: SidebarTerminalController
 
@@ -36,6 +116,10 @@ struct SidebarView: View {
 
     /// The tab ID currently being hovered during a drag operation.
     @State private var dropTargetID: UUID?
+
+    /// Measured height of each row, keyed by row ID. Used to decide whether a
+    /// drop landed on the middle of a row (join) or its top/bottom edge (reorder).
+    @State private var rowHeights: [UUID: CGFloat] = [:]
 
     /// Current sidebar mode — bound to the controller so the right-side view can switch.
     @Binding var sidebarMode: SidebarMode
@@ -264,16 +348,6 @@ struct SidebarView: View {
         .help("Connect to a remote host (SSH + tmux)")
     }
 
-    /// Create a Binding<Bool> that sets/clears dropTargetID for a specific tab.
-    private func dropTargetBinding(for tabID: UUID) -> Binding<Bool> {
-        Binding(
-            get: { dropTargetID == tabID },
-            set: { isTargeted in
-                dropTargetID = isTargeted ? tabID : (dropTargetID == tabID ? nil : dropTargetID)
-            }
-        )
-    }
-
     /// Visual indicator shown on the drop target row.
     @ViewBuilder
     private func dropIndicator(for tabID: UUID) -> some View {
@@ -284,41 +358,78 @@ struct SidebarView: View {
         }
     }
 
-    /// Handle a drop of a dragged tab UUID onto a target tab index.
-    private func handleDrop(of providers: [NSItemProvider], targetTabID: UUID) -> Bool {
+    /// If `id` is a group header, or one of a group's children, return that group.
+    private func groupContaining(_ id: UUID) -> SidebarTabEntry? {
+        for tab in controller.tabs where tab.isGroup {
+            if tab.id == id { return tab }
+            if tab.children.contains(where: { $0.id == id }) { return tab }
+        }
+        return nil
+    }
+
+    /// Handle a drop of a dragged tab UUID onto a target row. `zone` classifies
+    /// where in the target row the drop landed (join = middle, reorder = edge).
+    private func handleDrop(of providers: [NSItemProvider], targetTabID: UUID, zone: DropZone) -> Bool {
         dropTargetID = nil
         guard let provider = providers.first else { return false }
         provider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { data, _ in
             guard let data = data as? Data, let uuidString = String(data: data, encoding: .utf8),
                   let draggedID = UUID(uuidString: uuidString) else { return }
             DispatchQueue.main.async {
-                // Reorder within a group: both dragged and target are children
-                // of the same group. Cross-group moves are not supported here.
-                for group in controller.tabs where group.isGroup {
-                    guard let fromIndex = group.children.firstIndex(where: { $0.id == draggedID }) else { continue }
-                    guard let toIndex = group.children.firstIndex(where: { $0.id == targetTabID }),
-                          fromIndex != toIndex else { return }
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        let child = group.children.remove(at: fromIndex)
-                        group.children.insert(child, at: toIndex)
-                        // Force @Published tabs to fire so SwiftUI re-computes flatRows.
-                        let snapshot = controller.tabs
-                        controller.tabs = snapshot
-                        controller.saveScreenSessionState()
-                    }
-                    return
-                }
-                guard let fromIndex = controller.tabs.firstIndex(where: { $0.id == draggedID }),
-                      let toIndex = controller.tabs.firstIndex(where: { $0.id == targetTabID }) else { return }
-                guard fromIndex != toIndex else { return }
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    let tab = controller.tabs.remove(at: fromIndex)
-                    controller.tabs.insert(tab, at: toIndex)
-                    controller.saveScreenSessionState()
-                }
+                performDrop(draggedID: draggedID, targetTabID: targetTabID, zone: zone)
             }
         }
         return true
+    }
+
+    /// Apply a resolved drop on the main thread.
+    private func performDrop(draggedID: UUID, targetTabID: UUID, zone: DropZone) {
+        guard draggedID != targetTabID else { return }
+
+        // 1) Reorder within a group: both dragged and target are children of the
+        //    same group. Cross-group child moves are not supported here.
+        for group in controller.tabs where group.isGroup {
+            guard let fromIndex = group.children.firstIndex(where: { $0.id == draggedID }) else { continue }
+            guard let toIndex = group.children.firstIndex(where: { $0.id == targetTabID }),
+                  fromIndex != toIndex else { return }
+            withAnimation(.easeInOut(duration: 0.2)) {
+                let child = group.children.remove(at: fromIndex)
+                group.children.insert(child, at: toIndex)
+                // Force @Published tabs to fire so SwiftUI re-computes flatRows.
+                let snapshot = controller.tabs
+                controller.tabs = snapshot
+                controller.saveScreenSessionState()
+            }
+            return
+        }
+
+        // From here on the dragged item must be a standalone top-level tab.
+        guard let dragged = controller.tabs.first(where: { $0.id == draggedID }), !dragged.isGroup else { return }
+
+        // 2) Dropped onto a group (its header or one of its children) → join the
+        //    dragged tab into that group. joinTab hard-blocks (with a "full"
+        //    alert) if the group already holds 4 panes.
+        if let targetGroup = groupContaining(targetTabID) {
+            controller.joinTab(dragged, into: targetGroup, hardLimit: true)
+            return
+        }
+
+        // 3) Dropped onto another standalone top-level tab.
+        guard let target = controller.tabs.first(where: { $0.id == targetTabID }), !target.isGroup else { return }
+        switch zone {
+        case .join:
+            // Ask before merging two standalone tabs into a new group.
+            controller.confirmJoinTabs(dragged, into: target)
+        case .reorder:
+            guard let fromIndex = controller.tabs.firstIndex(where: { $0.id == draggedID }),
+                  let toIndex = controller.tabs.firstIndex(where: { $0.id == targetTabID }),
+                  fromIndex != toIndex else { return }
+            withAnimation(.easeInOut(duration: 0.2)) {
+                let tab = controller.tabs.remove(at: fromIndex)
+                controller.tabs.insert(tab, at: toIndex)
+                controller.saveScreenSessionState()
+            }
+        }
     }
 
     /// The terminal tab list view.
@@ -336,12 +447,12 @@ struct SidebarView: View {
                     )
                     .tag(tab.id)
                     .overlay(dropIndicator(for: tab.id))
-                    .onDrag {
-                        NSItemProvider(object: tab.id.uuidString as NSString)
-                    }
-                    .onDrop(of: [.plainText], isTargeted: dropTargetBinding(for: tab.id)) { providers in
-                        handleDrop(of: providers, targetTabID: tab.id)
-                    }
+                    .modifier(TabDragDropModifier(
+                        id: tab.id,
+                        rowHeight: rowHeights[tab.id] ?? 0,
+                        dropTargetID: $dropTargetID,
+                        onDrop: { providers, zone in handleDrop(of: providers, targetTabID: tab.id, zone: zone) }
+                    ))
 
                 case .group(let group, _):
                     SidebarGroupHeaderRow(
@@ -351,12 +462,12 @@ struct SidebarView: View {
                     )
                     .tag(group.id)
                     .overlay(dropIndicator(for: group.id))
-                    .onDrag {
-                        NSItemProvider(object: group.id.uuidString as NSString)
-                    }
-                    .onDrop(of: [.plainText], isTargeted: dropTargetBinding(for: group.id)) { providers in
-                        handleDrop(of: providers, targetTabID: group.id)
-                    }
+                    .modifier(TabDragDropModifier(
+                        id: group.id,
+                        rowHeight: rowHeights[group.id] ?? 0,
+                        dropTargetID: $dropTargetID,
+                        onDrop: { providers, zone in handleDrop(of: providers, targetTabID: group.id, zone: zone) }
+                    ))
 
                 case .groupChild(let child, let group):
                     SidebarGroupChildRow(
@@ -368,16 +479,19 @@ struct SidebarView: View {
                     )
                     .tag(child.id)
                     .overlay(dropIndicator(for: child.id))
-                    .onDrag {
-                        NSItemProvider(object: child.id.uuidString as NSString)
-                    }
-                    .onDrop(of: [.plainText], isTargeted: dropTargetBinding(for: child.id)) { providers in
-                        handleDrop(of: providers, targetTabID: child.id)
-                    }
+                    .modifier(TabDragDropModifier(
+                        id: child.id,
+                        rowHeight: rowHeights[child.id] ?? 0,
+                        dropTargetID: $dropTargetID,
+                        onDrop: { providers, zone in handleDrop(of: providers, targetTabID: child.id, zone: zone) }
+                    ))
                 }
             }
         }
         .listStyle(.sidebar)
+        .onPreferenceChange(RowHeightKey.self) { heights in
+            rowHeights = heights
+        }
         .onAppear {
             selection = controller.highlightedItemID ?? controller.selectedTabID
         }
