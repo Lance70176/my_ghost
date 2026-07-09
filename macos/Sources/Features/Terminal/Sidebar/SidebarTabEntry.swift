@@ -59,6 +59,11 @@ class SidebarTabEntry: ObservableObject, Identifiable {
     /// Whether this group is in "full mode" (showing one child at a time instead of split panes).
     @Published var isFullMode: Bool = false
 
+    /// Whether the group's children are hidden in the sidebar list (display
+    /// state only — the panes themselves are unaffected). Toggled by the
+    /// disclosure chevron at the front of the group header row.
+    @Published var isCollapsed: Bool = false
+
     /// The split tree saved before entering full mode, so it can be restored on exit.
     var savedSplitTree: SplitTree<Ghostty.SurfaceView>?
 

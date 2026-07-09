@@ -765,6 +765,25 @@ class SidebarTerminalController: BaseTerminalController {
         saveScreenSessionState()
     }
 
+    /// Move a child pane from one tab area to another (drag-and-drop), unless
+    /// the destination is already at the 4-pane limit — then a "full" alert is
+    /// shown and nothing changes. Composed from unjoin + join so all split-tree,
+    /// full-mode, and selection bookkeeping goes through the existing paths.
+    func moveChildTab(_ child: SidebarTabEntry, from source: SidebarTabEntry, to destination: SidebarTabEntry, at insertIndex: Int? = nil) {
+        guard source.id != destination.id else { return }
+
+        // Check the destination before unjoining so a refused move leaves the
+        // child in its original group.
+        let destPaneCount = paneCount(of: destination)
+        if destPaneCount >= 4 {
+            showGroupFullAlert(paneCount: destPaneCount)
+            return
+        }
+
+        unjoinTab(child, from: source)
+        joinTab(child, into: destination, hardLimit: true, at: insertIndex)
+    }
+
     /// Close a single child tab within a group, removing its surface from the
     /// group's split tree and killing its screen session. If the group is left
     /// with only one child, the group dissolves into a standalone tab.

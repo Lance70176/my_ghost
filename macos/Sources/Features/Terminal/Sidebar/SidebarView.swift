@@ -204,14 +204,17 @@ struct SidebarView: View {
         return map
     }
 
-    /// Build a flat list of row items — children are always shown.
+    /// Build a flat list of row items — children are shown unless their group
+    /// is collapsed via the header's disclosure chevron.
     private var flatRows: [SidebarRowItem] {
         var rows: [SidebarRowItem] = []
         for (index, tab) in controller.tabs.enumerated() {
             if tab.isGroup {
                 rows.append(.group(group: tab, index: index))
-                for child in tab.children {
-                    rows.append(.groupChild(child: child, group: tab))
+                if !tab.isCollapsed {
+                    for child in tab.children {
+                        rows.append(.groupChild(child: child, group: tab))
+                    }
                 }
             } else {
                 rows.append(.tab(tab: tab, index: index))
@@ -473,15 +476,21 @@ struct SidebarView: View {
     }
 
     /// Whether releasing at the current drop target would join: the dragged
-    /// item is a standalone top-level tab and the hovered row belongs to a
-    /// group. Group reorders and tab reorders never join.
+    /// item is a standalone top-level tab hovering over a tab area, or a group
+    /// child hovering over a *different* tab area. Group drags and tab-onto-tab
+    /// drops never join.
     private var joinHintApplies: Bool {
         guard let targetID = dropTargetID,
               let draggedID = dragTracker.draggedID,
-              let dragged = controller.tabs.first(where: { $0.id == draggedID }),
-              !dragged.isGroup
+              let targetGroup = groupContaining(targetID)
         else { return false }
-        return groupContaining(targetID) != nil
+        if let dragged = controller.tabs.first(where: { $0.id == draggedID }) {
+            return !dragged.isGroup
+        }
+        if let sourceGroup = groupContaining(draggedID) {
+            return sourceGroup.id != targetGroup.id
+        }
+        return false
     }
 
     /// Handle a drop of a dragged tab UUID onto a target row. `fraction` is the
@@ -508,20 +517,43 @@ struct SidebarView: View {
     private func performDrop(draggedID: UUID, targetTabID: UUID, fraction: CGFloat) {
         guard draggedID != targetTabID else { return }
 
-        // 1) Reorder within a group: both dragged and target are children of the
-        //    same group. Cross-group child moves are not supported here.
-        for group in controller.tabs where group.isGroup {
-            guard let fromIndex = group.children.firstIndex(where: { $0.id == draggedID }) else { continue }
-            guard let toIndex = group.children.firstIndex(where: { $0.id == targetTabID }),
-                  fromIndex != toIndex else { return }
-            withAnimation(.easeInOut(duration: 0.2)) {
-                let child = group.children.remove(at: fromIndex)
-                group.children.insert(child, at: toIndex)
-                // Force @Published tabs to fire so SwiftUI re-computes flatRows.
-                let snapshot = controller.tabs
-                controller.tabs = snapshot
-                controller.saveScreenSessionState()
+        // 1) The dragged item is a child pane of some group.
+        if let sourceGroup = controller.tabs.first(where: { tab in
+            tab.isGroup && tab.children.contains { $0.id == draggedID }
+        }) {
+            guard let fromIndex = sourceGroup.children.firstIndex(where: { $0.id == draggedID }) else { return }
+
+            // Dropped onto a sibling → reorder within the group.
+            if let toIndex = sourceGroup.children.firstIndex(where: { $0.id == targetTabID }) {
+                guard fromIndex != toIndex else { return }
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    let child = sourceGroup.children.remove(at: fromIndex)
+                    sourceGroup.children.insert(child, at: toIndex)
+                    // Force @Published tabs to fire so SwiftUI re-computes flatRows.
+                    let snapshot = controller.tabs
+                    controller.tabs = snapshot
+                    controller.saveScreenSessionState()
+                }
+                return
             }
+
+            // Dropped onto another tab area (its header or a child) → move the
+            // pane across at the release position; refused with a "full" alert
+            // if the destination already holds 4 panes.
+            if let destGroup = groupContaining(targetTabID), destGroup.id != sourceGroup.id {
+                let insertIndex: Int?
+                if let childIndex = destGroup.children.firstIndex(where: { $0.id == targetTabID }) {
+                    insertIndex = childIndex + (fraction > 0.5 ? 1 : 0)
+                } else {
+                    // Released on the destination's header — insert at the top.
+                    insertIndex = 0
+                }
+                let child = sourceGroup.children[fromIndex]
+                controller.moveChildTab(child, from: sourceGroup, to: destGroup, at: insertIndex)
+                return
+            }
+
+            // Child dropped anywhere else (own header, standalone rows): no-op.
             return
         }
 
@@ -831,6 +863,23 @@ private struct SidebarGroupHeaderRow: View {
 
     var body: some View {
         HStack(spacing: 4) {
+            // Disclosure chevron: collapses/expands the group's child rows in
+            // the sidebar (display only — panes are unaffected).
+            Image(systemName: group.isCollapsed ? "chevron.right" : "chevron.down")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundColor(.secondary)
+                .frame(width: 14, height: 20)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        group.isCollapsed.toggle()
+                        // Force @Published tabs to fire so SwiftUI re-computes
+                        // flatRows (child property changes don't).
+                        let snapshot = controller.tabs
+                        controller.tabs = snapshot
+                    }
+                }
+
             Image(systemName: group.isFullMode ? "rectangle.stack" : "rectangle.split.2x1")
                 .font(.caption)
                 .foregroundColor(.secondary)
