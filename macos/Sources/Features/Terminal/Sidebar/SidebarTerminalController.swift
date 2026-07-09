@@ -145,6 +145,15 @@ class SidebarTerminalController: BaseTerminalController {
         }
 
         if let group = item.group {
+            // Auto-expand a collapsed group so the switched-to child is
+            // visible (and highlightable) in the sidebar list.
+            if group.isCollapsed {
+                group.isCollapsed = false
+                // Force @Published tabs to fire so SwiftUI re-computes the
+                // sidebar's flattened row list.
+                let snapshot = tabs
+                tabs = snapshot
+            }
             if group.id != selectedTabID {
                 selectTab(group)
             }
