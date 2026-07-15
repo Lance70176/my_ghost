@@ -272,6 +272,8 @@ struct SidebarView: View {
             .padding(.top, 2)
             .padding(.bottom, 2)
 
+            Divider()
+
             // Row 2: Action buttons (sub-menu style)
             if sidebarMode == .terminal {
                 HStack(spacing: 14) {
@@ -327,7 +329,8 @@ struct SidebarView: View {
                     Spacer()
                 }
                 .padding(.horizontal, 16)
-                .padding(.bottom, 6)
+                .padding(.top, 8)
+                .padding(.bottom, 8)
             }
 
             Divider()

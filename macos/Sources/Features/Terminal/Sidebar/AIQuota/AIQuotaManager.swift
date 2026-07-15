@@ -42,8 +42,24 @@ class AIQuotaManager: ObservableObject {
 
     private var loading = false
 
+    /// Auto-refresh interval for visible accounts.
+    private static let refreshInterval: TimeInterval = 3 * 60
+
+    private var refreshTimer: Timer?
+
     private init() {
         load()
+        // Refresh the sidebar stats every 3 minutes so the bars track usage
+        // without manual clicks. Manual refresh (row click / ⟳) still works.
+        let timer = Timer(timeInterval: Self.refreshInterval, repeats: true) { _ in
+            Task { @MainActor in
+                let manager = AIQuotaManager.shared
+                guard manager.showInSidebar else { return }
+                manager.refreshAllVisible()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        refreshTimer = timer
     }
 
     // MARK: - Refresh

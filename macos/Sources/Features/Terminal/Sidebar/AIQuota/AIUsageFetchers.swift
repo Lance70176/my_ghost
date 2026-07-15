@@ -94,7 +94,7 @@ enum ClaudeUsageFetcher {
         // The response maps window names (five_hour, seven_day, seven_day_opus,
         // …) to {utilization, resets_at}. Parse tolerantly so new windows the
         // server adds still show up.
-        let order = ["five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"]
+        let order = ["five_hour", "seven_day", "seven_day_fable", "seven_day_opus", "seven_day_sonnet"]
         var windows: [AIUsageWindow] = []
         let sortedKeys = dict.keys.sorted { a, b in
             let ia = order.firstIndex(of: a) ?? order.count
@@ -120,9 +120,14 @@ enum ClaudeUsageFetcher {
         switch key {
         case "five_hour": return "5h"
         case "seven_day": return "Week"
-        case "seven_day_opus": return "Opus"
-        case "seven_day_sonnet": return "Sonnet"
-        default: return key.replacingOccurrences(of: "_", with: " ")
+        default:
+            // Per-model weekly windows (seven_day_fable, seven_day_opus, …)
+            // label as the capitalized model name; windows the API stops
+            // sending simply don't appear, so nothing else to special-case.
+            if key.hasPrefix("seven_day_") {
+                return String(key.dropFirst("seven_day_".count)).capitalized
+            }
+            return key.replacingOccurrences(of: "_", with: " ")
         }
     }
 
