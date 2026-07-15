@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// A remote host that can be connected to via SSH with a persistent remote tmux session.
@@ -174,6 +175,21 @@ class RemoteHostManager {
           if command -v "$c" >/dev/null 2>&1; then TB=$c; break; fi
         done
         if [ -n "$TB" ]; then
+          # Mirror the clipboard setup MyGhost applies to the local tmux server
+          # (ScreenSessionManager.ensureTmuxConf): without it, drag selections
+          # inside the remote tmux never reach the macOS clipboard, and TUI apps
+          # with mouse reporting (e.g. Claude Code) swallow drags entirely.
+          # The Ms append is guarded so reconnects do not stack duplicates.
+          if "$TB" has-session 2>/dev/null; then
+            "$TB" show-options -s terminal-overrides 2>/dev/null | grep -q Ms= || "$TB" set -ga terminal-overrides ",xterm-256color:Ms=\\\\E]52;%p1%s;%p2%s\\\\007"
+          else
+            "$TB" new-session -d -s '"$session"'
+            "$TB" set -ga terminal-overrides ",xterm-256color:Ms=\\\\E]52;%p1%s;%p2%s\\\\007"
+          fi
+          "$TB" set -s set-clipboard on
+          "$TB" set -g mouse on
+          "$TB" set -g allow-passthrough on
+          "$TB" bind -n MouseDrag1Pane copy-mode -M
           exec "$TB" new-session -A -s '"$session"'
         else
           echo ""
@@ -218,6 +234,69 @@ class RemoteHostManager {
         var parts = ["/bin/sh", escapeForShell(scriptPath.path), escapeForShell(target), sessionName]
         parts += options.map { escapeForShell($0) }
         return parts.joined(separator: " ")
+    }
+
+    // MARK: - Clipboard image upload
+
+    /// Copy the clipboard image to the remote host so its path can be pasted
+    /// into the terminal. Terminal paste is text-only, and remote programs
+    /// (e.g. Claude Code) read the *remote* clipboard on Ctrl+V, so the only
+    /// way an image reaches a remote CLI is as a file on that host.
+    ///
+    /// The upload streams the PNG through ssh (`cat > path`) rather than scp,
+    /// so it reuses the exact ssh options the tab connected with. Calls
+    /// `completion` on the main queue with the remote path, or nil on failure.
+    func uploadClipboardImage(
+        target: String,
+        options: [String],
+        completion: @escaping (String?) -> Void
+    ) {
+        guard let png = clipboardPNGData() else {
+            DispatchQueue.main.async { completion(nil) }
+            return
+        }
+        let fileName = "myghost-paste-\(UUID().uuidString.prefix(8)).png"
+        let remotePath = "/tmp/\(fileName)"
+        let localURL = fileManager.temporaryDirectory.appendingPathComponent(fileName)
+        do {
+            try png.write(to: localURL)
+        } catch {
+            DispatchQueue.main.async { completion(nil) }
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async { [fileManager] in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            process.arguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
+                + options
+                + [target, "--", "cat > \(remotePath)"]
+            process.standardInput = FileHandle(forReadingAtPath: localURL.path)
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            var success = false
+            do {
+                try process.run()
+                process.waitUntilExit()
+                success = process.terminationStatus == 0
+            } catch {
+                success = false
+            }
+            try? fileManager.removeItem(at: localURL)
+            DispatchQueue.main.async { completion(success ? remotePath : nil) }
+        }
+    }
+
+    /// The clipboard image as PNG data: raw PNG if present, otherwise any
+    /// image representation (TIFF, copied file, …) converted via NSImage.
+    private func clipboardPNGData() -> Data? {
+        let pb = NSPasteboard.general
+        if let data = pb.data(forType: .png) { return data }
+        guard let image = NSImage(pasteboard: pb),
+              let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff)
+        else { return nil }
+        return rep.representation(using: .png, properties: [:])
     }
 
     /// Kill a remote tmux session (best-effort, in the background). Used when
