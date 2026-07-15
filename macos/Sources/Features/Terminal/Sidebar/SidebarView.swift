@@ -193,6 +193,12 @@ struct SidebarView: View {
     /// Whether the "Add Remote Host" sheet is visible.
     @State private var showAddRemoteHostSheet = false
 
+    /// AI quota accounts and their latest usage, shown above the menu.
+    @ObservedObject private var quotaManager = AIQuotaManager.shared
+
+    /// Whether the AI usage settings sheet is visible.
+    @State private var showAIQuotaSettings = false
+
     /// A mapping from tab/child ID to its Cmd+Number shortcut index (1-based), using the flat activatable list.
     private var shortcutIndexMap: [UUID: Int] {
         var map: [UUID: Int] = [:]
@@ -225,6 +231,14 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // Row 0: AI usage/quota stats above the menu (toggled in settings)
+            if quotaManager.showInSidebar && !quotaManager.visibleAccounts.isEmpty {
+                AIQuotaSectionView(manager: quotaManager) {
+                    showAIQuotaSettings = true
+                }
+                Divider()
+            }
+
             // Row 1: Mode switcher — two buttons each 50% width
             HStack(spacing: 0) {
                 Button(action: { sidebarMode = .terminal }) {
@@ -301,6 +315,15 @@ struct SidebarView: View {
 
                     remoteHostMenu
 
+                    // Entry point to AI usage settings, still reachable when
+                    // the stats section itself is hidden.
+                    Button(action: { showAIQuotaSettings = true }) {
+                        Image(systemName: "gauge")
+                            .font(.system(size: 15))
+                    }
+                    .buttonStyle(.borderless)
+                    .help("AI usage accounts & display settings")
+
                     Spacer()
                 }
                 .padding(.horizontal, 16)
@@ -355,6 +378,9 @@ struct SidebarView: View {
                 RemoteHostManager.shared.addManualHost(host)
                 controller.addRemoteTab(host: host)
             }
+        }
+        .sheet(isPresented: $showAIQuotaSettings) {
+            AIQuotaSettingsView(manager: quotaManager)
         }
     }
 
