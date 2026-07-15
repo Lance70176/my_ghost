@@ -271,6 +271,43 @@ class SidebarTerminalController: BaseTerminalController {
         saveScreenSessionState()
     }
 
+    /// If `surfaceView` is the ssh surface of a remote tab, upload the
+    /// clipboard image to that host and paste the remote file path, so remote
+    /// CLIs (e.g. Claude Code) can read the image from disk. Returns true when
+    /// the paste was handled here. Only the tab's original surface runs ssh —
+    /// splits opened inside a remote tab are local shells and return false.
+    func pasteClipboardImageToRemote(from surfaceView: Ghostty.SurfaceView) -> Bool {
+        var entry: SidebarTabEntry?
+        outer: for tab in tabs {
+            for candidate in [tab] + tab.children {
+                if candidate.originalSurface === surfaceView {
+                    entry = candidate
+                    break outer
+                }
+            }
+        }
+        guard let entry, let target = entry.remoteTarget else { return false }
+
+        RemoteHostManager.shared.uploadClipboardImage(
+            target: target,
+            options: entry.remoteSSHOptions
+        ) { [weak surfaceView, weak self] remotePath in
+            guard let remotePath else {
+                NSSound.beep()
+                guard let window = self?.window else { return }
+                let alert = NSAlert()
+                alert.messageText = "Image paste failed"
+                alert.informativeText =
+                    "Could not upload the clipboard image to \(target)."
+                alert.alertStyle = .warning
+                alert.beginSheetModal(for: window)
+                return
+            }
+            surfaceView?.surfaceModel?.sendText(remotePath + " ")
+        }
+        return true
+    }
+
     /// Kill the tmux session backing a tab. Local sessions are always killed.
     /// Remote sessions are only killed when `includeRemote` is true (explicit
     /// user close) — process-exit driven closes skip the remote kill so that
