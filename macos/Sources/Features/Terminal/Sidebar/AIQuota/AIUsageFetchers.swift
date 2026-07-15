@@ -235,12 +235,18 @@ enum ChatGPTUsageFetcher {
     private static func collectWindows(from json: Any, into windows: inout [AIUsageWindow]) {
         if let dict = json as? [String: Any] {
             if let used = dict["used_percent"] as? NSNumber {
-                let minutes = (dict["window_minutes"] as? NSNumber)?.intValue
+                // Window length and reset fields vary by schema version:
+                // window_minutes / resets_in_seconds / resets_at (older) vs
+                // limit_window_seconds / reset_after_seconds / reset_at.
+                var minutes = (dict["window_minutes"] as? NSNumber)?.intValue
+                if minutes == nil, let seconds = (dict["limit_window_seconds"] as? NSNumber)?.intValue {
+                    minutes = seconds / 60
+                }
                 var resetsAt: Date?
-                if let seconds = (dict["resets_in_seconds"] as? NSNumber)?.doubleValue {
+                if let seconds = ((dict["resets_in_seconds"] ?? dict["reset_after_seconds"]) as? NSNumber)?.doubleValue {
                     resetsAt = Date().addingTimeInterval(seconds)
-                } else if let resets = dict["resets_at"] as? NSNumber {
-                    resetsAt = Date(timeIntervalSince1970: resets.doubleValue)
+                } else if let resets = ((dict["resets_at"] ?? dict["reset_at"]) as? NSNumber)?.doubleValue {
+                    resetsAt = Date(timeIntervalSince1970: resets)
                 }
                 windows.append(AIUsageWindow(
                     label: label(forMinutes: minutes, index: windows.count),
