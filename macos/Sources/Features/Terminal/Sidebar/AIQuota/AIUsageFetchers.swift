@@ -102,6 +102,12 @@ enum ClaudeUsageFetcher {
             return ia == ib ? a < b : ia < ib
         }
         for key in sortedKeys {
+            // extra_usage carries a monthly credit budget, not a rate-limit
+            // window — only worth a row when the user has it enabled.
+            if key == "extra_usage" {
+                guard let value = dict[key] as? [String: Any],
+                      value["is_enabled"] as? Bool == true else { continue }
+            }
             guard let value = dict[key] as? [String: Any],
                   let utilization = value["utilization"] as? NSNumber
             else { continue }
@@ -110,6 +116,26 @@ enum ClaudeUsageFetcher {
                 usedPercent: min(max(utilization.doubleValue, 0), 100),
                 resetsAt: AIUsageFetcher.parseISODate(value["resets_at"])))
         }
+
+        // Per-model caps (e.g. the Fable weekly limit shown on claude.ai's
+        // usage page) arrive as a `limits` array of scoped entries rather
+        // than top-level windows: {group: "weekly", percent, resets_at,
+        // scope: {model: {display_name: "Fable"}}}. Entries the API stops
+        // sending simply disappear.
+        if let limits = dict["limits"] as? [[String: Any]] {
+            for limit in limits {
+                guard let percent = limit["percent"] as? NSNumber,
+                      let scope = limit["scope"] as? [String: Any],
+                      let model = scope["model"] as? [String: Any],
+                      let name = model["display_name"] as? String, !name.isEmpty
+                else { continue }
+                windows.append(AIUsageWindow(
+                    label: name,
+                    usedPercent: min(max(percent.doubleValue, 0), 100),
+                    resetsAt: AIUsageFetcher.parseISODate(limit["resets_at"])))
+            }
+        }
+
         guard !windows.isEmpty else {
             throw AIUsageFetchError.badResponse("No usage windows in response")
         }
@@ -120,6 +146,7 @@ enum ClaudeUsageFetcher {
         switch key {
         case "five_hour": return "5h"
         case "seven_day": return "Week"
+        case "extra_usage": return "Extra"
         default:
             // Per-model weekly windows (seven_day_fable, seven_day_opus, …)
             // label as the capitalized model name; windows the API stops
