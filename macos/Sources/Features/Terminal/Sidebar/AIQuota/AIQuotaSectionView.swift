@@ -84,6 +84,7 @@ private struct AIQuotaAccountRow: View {
                         .foregroundColor(.secondary)
                 }
             }
+            .help(rowHelp)
 
             if let snapshot, !snapshot.isError {
                 ForEach(Array(snapshot.windows.enumerated()), id: \.offset) { _, window in
@@ -109,6 +110,7 @@ private struct AIQuotaAccountRow: View {
                             .foregroundColor(.secondary)
                             .frame(width: 30, alignment: .trailing)
                     }
+                    .contentShape(Rectangle())
                     .help(resetHelp(for: window))
                 }
             } else if let error = snapshot?.errorMessage {
@@ -126,27 +128,56 @@ private struct AIQuotaAccountRow: View {
         .contentShape(Rectangle())
         .onHover { isHovering = $0 }
         .onTapGesture { onTap() }
-        .help(rowHelp)
     }
 
     private var rowHelp: String {
         var lines = ["\(account.provider.displayName) — click to check quota"]
         if let fetchedAt = snapshot?.fetchedAt {
-            let formatter = DateFormatter()
-            formatter.dateStyle = .none
-            formatter.timeStyle = .short
-            lines.append("Updated \(formatter.string(from: fetchedAt))")
+            lines.append("Updated \(Self.timeFormatter.string(from: fetchedAt))")
         }
         return lines.joined(separator: "\n")
     }
 
+    /// Tooltip for one window row: absolute reset time, remaining countdown,
+    /// and when the numbers were last fetched.
     private func resetHelp(for window: AIUsageWindow) -> String {
-        guard let resetsAt = window.resetsAt else { return window.label }
+        var lines: [String] = []
+        if let resetsAt = window.resetsAt {
+            lines.append("\(window.label): resets \(Self.dateTimeFormatter.string(from: resetsAt)) (\(remaining(until: resetsAt)))")
+        } else {
+            lines.append(window.label)
+        }
+        if let fetchedAt = snapshot?.fetchedAt {
+            lines.append("Updated \(Self.timeFormatter.string(from: fetchedAt))")
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Human-readable time remaining, e.g. "in 2d 14h" / "in 1h 05m".
+    private func remaining(until date: Date) -> String {
+        let seconds = Int(date.timeIntervalSinceNow)
+        guard seconds > 0 else { return "resetting now" }
+        let days = seconds / 86400
+        let hours = (seconds % 86400) / 3600
+        let minutes = (seconds % 3600) / 60
+        if days > 0 { return "in \(days)d \(hours)h" }
+        if hours > 0 { return String(format: "in %dh %02dm", hours, minutes) }
+        return "in \(minutes)m"
+    }
+
+    private static let dateTimeFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .short
         formatter.timeStyle = .short
-        return "\(window.label): resets \(formatter.string(from: resetsAt))"
-    }
+        return formatter
+    }()
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        return formatter
+    }()
 
     private func barColor(for percent: Double) -> Color {
         switch percent {
