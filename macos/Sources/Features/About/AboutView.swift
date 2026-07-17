@@ -4,7 +4,6 @@ struct AboutView: View {
     @Environment(\.openURL) var openURL
 
     private let githubURL = URL(string: "https://github.com/Lance70176/my_ghost")
-    private let docsURL = URL(string: "https://github.com/Lance70176/my_ghost")
 
     /// Read the commit from the bundle.
     private var build: String? { Bundle.main.infoDictionary?["CFBundleVersion"] as? String }
@@ -74,16 +73,15 @@ struct AboutView: View {
                 .frame(maxWidth: .infinity)
 
                 HStack(spacing: 8) {
-                    if let url = docsURL {
-                        Button("Docs") {
-                            openURL(url)
-                        }
-                    }
                     if let url = githubURL {
                         Button("GitHub") {
                             openURL(url)
                         }
                     }
+                    Button("Close") {
+                        AboutController.shared.hide()
+                    }
+                    .keyboardShortcut(.defaultAction)
                 }
 
                 if let copy = self.copyright {
