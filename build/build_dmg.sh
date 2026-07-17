@@ -45,6 +45,19 @@ rm -rf "$DMG_DIR"
 mkdir -p "$DMG_DIR"
 cp -R "$APP_SRC" "$DMG_DIR/MyGhost.app"
 
+echo "==> Stamping version into Info.plist..."
+# About window reads CFBundleShortVersionString/CFBundleVersion; the Xcode
+# project never bumps them, so stamp the release version at package time.
+# Override with VERSION=x.y.z (release flow tags after packaging, so the
+# latest tag is one behind); defaults to the latest git tag.
+VERSION="${VERSION:-$(git -C "$PROJECT_DIR" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')}"
+BUILD_NUM=$(git -C "$PROJECT_DIR" rev-list --count HEAD 2>/dev/null || echo 1)
+if [ -n "$VERSION" ]; then
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$DMG_DIR/MyGhost.app/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUM" "$DMG_DIR/MyGhost.app/Contents/Info.plist"
+    echo "    version $VERSION (build $BUILD_NUM)"
+fi
+
 echo "==> Cleaning extended attributes..."
 xattr -cr "$DMG_DIR/MyGhost.app"
 

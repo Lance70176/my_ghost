@@ -167,6 +167,25 @@ private struct TabDragDropModifier: ViewModifier {
     }
 }
 
+/// An action-row icon styled to match the mode switcher above it: same icon
+/// size/color, with a hover highlight for interaction feedback.
+private struct SidebarActionIcon: View {
+    let systemName: String
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Image(systemName: systemName)
+            .font(.system(size: 15))
+            .frame(width: 28, height: 24)
+            .background(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(isHovering ? Color.accentColor.opacity(0.25) : Color.clear))
+            .contentShape(Rectangle())
+            .onHover { isHovering = $0 }
+    }
+}
+
 /// The sidebar view showing a list of tabs. Supports selection, right-click
 /// context menu (close / join), drag-to-reorder / drag-to-join, and +/- buttons.
 struct SidebarView: View {
@@ -276,10 +295,9 @@ struct SidebarView: View {
 
             // Row 2: Action buttons (sub-menu style)
             if sidebarMode == .terminal {
-                HStack(spacing: 14) {
+                HStack(spacing: 10) {
                     Button(action: { controller.addNewTab() }) {
-                        Image(systemName: "plus")
-                            .font(.system(size: 17))
+                        SidebarActionIcon(systemName: "plus")
                     }
                     .buttonStyle(.borderless)
 
@@ -309,8 +327,7 @@ struct SidebarView: View {
                             }
                         }
                     }) {
-                        Image(systemName: "minus")
-                            .font(.system(size: 17))
+                        SidebarActionIcon(systemName: "minus")
                     }
                     .buttonStyle(.borderless)
                     .disabled(controller.tabs.isEmpty)
@@ -320,8 +337,7 @@ struct SidebarView: View {
                     // Entry point to AI usage settings, still reachable when
                     // the stats section itself is hidden.
                     Button(action: { showAIQuotaSettings = true }) {
-                        Image(systemName: "gauge")
-                            .font(.system(size: 15))
+                        SidebarActionIcon(systemName: "gauge")
                     }
                     .buttonStyle(.borderless)
                     .help("AI usage accounts & display settings")
@@ -434,8 +450,7 @@ struct SidebarView: View {
                 }
             }
         } label: {
-            Image(systemName: "network")
-                .font(.system(size: 15))
+            SidebarActionIcon(systemName: "network")
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
