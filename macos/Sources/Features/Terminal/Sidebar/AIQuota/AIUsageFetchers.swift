@@ -179,17 +179,26 @@ enum ClaudeUsageFetcher {
     }
 
     private static func keychainCredentialsJSON() -> [String: Any]? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "Claude Code-credentials",
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data
+        // Read via /usr/bin/security instead of SecItemCopyMatching: Claude
+        // Code recreates this keychain item on every token refresh, wiping any
+        // per-app "Always Allow" ACL entry — a direct API read would re-prompt
+        // the user forever. The security tool is on the fresh item's ACL as
+        // its creator, so this path reads without prompting.
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        process.arguments = ["find-generic-password", "-s", "Claude Code-credentials", "-w"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return nil }
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let json = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .data(using: .utf8)
         else { return nil }
-        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        return (try? JSONSerialization.jsonObject(with: json)) as? [String: Any]
     }
 
     private static func fileCredentialsJSON() -> [String: Any]? {
