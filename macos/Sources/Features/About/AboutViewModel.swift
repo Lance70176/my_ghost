@@ -1,22 +1,16 @@
 import Combine
 
 class AboutViewModel: ObservableObject {
-    @Published var currentIcon: Ghostty.MacOSIcon?
+    /// Index into `hueSteps`. The About icon shows the MyGhost icon tinted by
+    /// the current step, cycling like the upstream Ghostty icon variants did.
+    @Published var hueIndex: Int = 0
     @Published var isHovering: Bool = false
 
-    private var timerCancellable: AnyCancellable?
+    /// Hue rotations (degrees) applied to the MyGhost icon — five color
+    /// variants including the original.
+    let hueSteps: [Double] = [0, 72, 144, 216, 288]
 
-    private let icons: [Ghostty.MacOSIcon] = [
-        .official,
-        .blueprint,
-        .chalkboard,
-        .microchip,
-        .glass,
-        .holographic,
-        .paper,
-        .retro,
-        .xray,
-    ]
+    private var timerCancellable: AnyCancellable?
 
     func startCyclingIcons() {
         timerCancellable = Timer.publish(every: 3, on: .main, in: .common)
@@ -29,12 +23,10 @@ class AboutViewModel: ObservableObject {
 
     func stopCyclingIcons() {
         timerCancellable = nil
-        currentIcon = nil
+        hueIndex = 0
     }
 
     func advanceToNextIcon() {
-        let currentIndex = currentIcon.flatMap(icons.firstIndex(of:)) ?? 0
-        let nextIndex = icons.indexWrapping(after: currentIndex)
-        currentIcon = icons[nextIndex]
+        hueIndex = (hueIndex + 1) % hueSteps.count
     }
 }
