@@ -1,44 +1,25 @@
 import SwiftUI
-import GhosttyKit
-import Combine
 
-/// A view that cycles through Ghostty's official icon variants.
+/// Cycles the MyGhost icon through color variants (hue rotations), mirroring
+/// the upstream About window's icon rotation. Hovering pauses the cycle;
+/// clicking advances to the next color.
 struct CyclingIconView: View {
     @EnvironmentObject var viewModel: AboutViewModel
 
     var body: some View {
-        ZStack {
-            iconView(for: viewModel.currentIcon)
-                .id(viewModel.currentIcon)
-        }
-        .animation(.easeInOut(duration: 0.5), value: viewModel.currentIcon)
-        .frame(height: 128)
-        .onHover { hovering in
-            viewModel.isHovering = hovering
-        }
-        .onTapGesture {
-            viewModel.advanceToNextIcon()
-        }
-        .contextMenu {
-            if let currentIcon = viewModel.currentIcon {
-                Button("Copy Icon Config") {
-                    NSPasteboard.general.setString("macos-icon = \(currentIcon.rawValue)", forType: .string)
-                }
-            }
-        }
-        .accessibilityLabel("Ghostty Application Icon")
-        .accessibilityHint("Click to cycle through icon variants")
-    }
-
-    @ViewBuilder
-    private func iconView(for icon: Ghostty.MacOSIcon?) -> some View {
-        let iconImage: Image = switch icon?.assetName {
-        case let assetName?: Image(assetName)
-        case nil: ghosttyIconImage()
-        }
-
-        iconImage
+        Image("MyGhostIcon")
             .resizable()
             .aspectRatio(contentMode: .fit)
+            .hueRotation(.degrees(viewModel.hueSteps[viewModel.hueIndex]))
+            .animation(.easeInOut(duration: 0.8), value: viewModel.hueIndex)
+            .frame(height: 128)
+            .onHover { hovering in
+                viewModel.isHovering = hovering
+            }
+            .onTapGesture {
+                viewModel.advanceToNextIcon()
+            }
+            .accessibilityLabel("MyGhost Application Icon")
+            .accessibilityHint("Click to cycle through icon colors")
     }
 }
