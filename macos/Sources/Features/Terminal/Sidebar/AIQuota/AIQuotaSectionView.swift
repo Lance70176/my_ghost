@@ -78,6 +78,7 @@ private struct AIQuotaAccountRow: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.caption2)
                         .foregroundColor(.yellow)
+                        .help(snapshot?.errorMessage ?? "")
                 } else if snapshot == nil {
                     Text("Tap to check")
                         .font(.system(size: 9))
@@ -86,7 +87,7 @@ private struct AIQuotaAccountRow: View {
             }
             .help(rowHelp)
 
-            if let snapshot, !snapshot.isError {
+            if let snapshot, !snapshot.windows.isEmpty {
                 ForEach(Array(snapshot.windows.enumerated()), id: \.offset) { _, window in
                     HStack(spacing: 4) {
                         Text(window.label)

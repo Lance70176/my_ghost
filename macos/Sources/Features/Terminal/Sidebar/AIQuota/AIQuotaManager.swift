@@ -70,7 +70,18 @@ class AIQuotaManager: ObservableObject {
         refreshing.insert(account.id)
         Task {
             let snapshot = await AIUsageFetcher.fetch(for: account)
-            self.snapshots[account.id] = snapshot
+            if snapshot.isError,
+               let previous = self.snapshots[account.id], !previous.windows.isEmpty {
+                // Transient failures (e.g. the endpoint's own 429) shouldn't
+                // wipe the bars — keep the last good numbers and surface the
+                // error via the row's warning icon.
+                self.snapshots[account.id] = AIUsageSnapshot(
+                    windows: previous.windows,
+                    fetchedAt: previous.fetchedAt,
+                    errorMessage: snapshot.errorMessage)
+            } else {
+                self.snapshots[account.id] = snapshot
+            }
             self.refreshing.remove(account.id)
         }
     }
