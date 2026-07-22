@@ -1624,28 +1624,26 @@ class SidebarTerminalController: BaseTerminalController {
             }
         }
 
-        // Select the first tab/group and set up the surface tree
-        if let first = controller.tabs.first {
-            controller.selectedTabID = first.id
-            controller.surfaceTree = first.surfaceTree
-        }
-
-        // Try to restore the selected tab
+        // Select the saved tab, falling back to the first tab/group. Each
+        // addRestoredTab call above selected the tab it added, so the
+        // last-added tab is currently selected; the final selection must go
+        // through selectTab too — raw selectedTabID/surfaceTree assignments
+        // leave the highlight and the previously selected tab's saved state
+        // inconsistent, which is why the last tab used to stay selected.
+        var target = controller.tabs.first
         if let selectedName = state.selectedScreenName {
-            // Search in top-level tabs and group children
+            // Search in top-level tabs and group children; if the selected
+            // session was in a group, select the group.
             for tab in controller.tabs {
-                if tab.screenSessionName == selectedName {
-                    controller.selectTab(tab)
+                if tab.screenSessionName == selectedName
+                    || tab.children.contains(where: { $0.screenSessionName == selectedName }) {
+                    target = tab
                     break
                 }
-                if tab.isGroup {
-                    // If the selected session was in a group, select the group
-                    if tab.children.contains(where: { $0.screenSessionName == selectedName }) {
-                        controller.selectTab(tab)
-                        break
-                    }
-                }
             }
+        }
+        if let target, controller.selectedTabID != target.id {
+            controller.selectTab(target)
         }
 
         // Set up the window and show it (same as newWindow)
