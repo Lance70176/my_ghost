@@ -101,6 +101,16 @@ enum ClaudeUsageFetcher {
             let ib = order.firstIndex(of: b) ?? order.count
             return ia == ib ? a < b : ia < ib
         }
+        // The limits[] array repeats the session/weekly windows with their own
+        // resets_at; five_hour/seven_day occasionally arrive with resets_at
+        // null while the matching limits entry still carries the time, so keep
+        // it as a fallback (kind "session" ↔ five_hour, "weekly_all" ↔ seven_day).
+        let limits = dict["limits"] as? [[String: Any]] ?? []
+        func limitResetsAt(kind: String) -> Date? {
+            guard let limit = limits.first(where: { $0["kind"] as? String == kind }) else { return nil }
+            return AIUsageFetcher.parseISODate(limit["resets_at"])
+        }
+
         for key in sortedKeys {
             // extra_usage carries a monthly credit budget, not a rate-limit
             // window — only worth a row when the user has it enabled.
@@ -111,10 +121,18 @@ enum ClaudeUsageFetcher {
             guard let value = dict[key] as? [String: Any],
                   let utilization = value["utilization"] as? NSNumber
             else { continue }
+            var resetsAt = AIUsageFetcher.parseISODate(value["resets_at"])
+            if resetsAt == nil {
+                switch key {
+                case "five_hour": resetsAt = limitResetsAt(kind: "session")
+                case "seven_day": resetsAt = limitResetsAt(kind: "weekly_all")
+                default: break
+                }
+            }
             windows.append(AIUsageWindow(
                 label: label(for: key),
                 usedPercent: min(max(utilization.doubleValue, 0), 100),
-                resetsAt: AIUsageFetcher.parseISODate(value["resets_at"])))
+                resetsAt: resetsAt))
         }
 
         // Per-model caps (e.g. the Fable weekly limit shown on claude.ai's
@@ -122,18 +140,16 @@ enum ClaudeUsageFetcher {
         // than top-level windows: {group: "weekly", percent, resets_at,
         // scope: {model: {display_name: "Fable"}}}. Entries the API stops
         // sending simply disappear.
-        if let limits = dict["limits"] as? [[String: Any]] {
-            for limit in limits {
-                guard let percent = limit["percent"] as? NSNumber,
-                      let scope = limit["scope"] as? [String: Any],
-                      let model = scope["model"] as? [String: Any],
-                      let name = model["display_name"] as? String, !name.isEmpty
-                else { continue }
-                windows.append(AIUsageWindow(
-                    label: name,
-                    usedPercent: min(max(percent.doubleValue, 0), 100),
-                    resetsAt: AIUsageFetcher.parseISODate(limit["resets_at"])))
-            }
+        for limit in limits {
+            guard let percent = limit["percent"] as? NSNumber,
+                  let scope = limit["scope"] as? [String: Any],
+                  let model = scope["model"] as? [String: Any],
+                  let name = model["display_name"] as? String, !name.isEmpty
+            else { continue }
+            windows.append(AIUsageWindow(
+                label: name,
+                usedPercent: min(max(percent.doubleValue, 0), 100),
+                resetsAt: AIUsageFetcher.parseISODate(limit["resets_at"])))
         }
 
         guard !windows.isEmpty else {
