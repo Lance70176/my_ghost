@@ -22,8 +22,9 @@ class FileNode: Identifiable, ObservableObject {
     }
 
     /// Load this directory's children off the main thread so expanding a folder
-    /// with many entries never blocks/freezes the UI.
-    func loadChildren() {
+    /// with many entries never blocks/freezes the UI. `completion` runs on the
+    /// main thread after `children` is set.
+    func loadChildren(completion: (() -> Void)? = nil) {
         guard isDirectory, children == nil, !isLoading else { return }
         isLoading = true
         let dirURL = url
@@ -35,23 +36,8 @@ class FileNode: Identifiable, ObservableObject {
             DispatchQueue.main.async {
                 self.children = loaded
                 self.isLoading = false
+                completion?()
             }
-        }
-    }
-
-    func toggle() {
-        if isExpanded {
-            isExpanded = false
-        } else {
-            isExpanded = true
-            loadChildren()
-        }
-    }
-
-    func reload() {
-        children = nil
-        if isExpanded {
-            loadChildren()
         }
     }
 }
@@ -60,6 +46,13 @@ class FileNode: Identifiable, ObservableObject {
 class FileBrowserState: ObservableObject {
     @Published var currentPath: URL = FileManager.default.homeDirectoryForCurrentUser
     @Published var rootNodes: [FileNode] = []
+
+    /// The expanded tree flattened into the rows currently visible, in display
+    /// order. The list renders this flat array inside a single LazyVStack so
+    /// row creation stays lazy at every depth — rendering the tree recursively
+    /// materialized a folder's entire subtree the moment it was expanded, which
+    /// froze the UI on folders with thousands of entries.
+    @Published private(set) var visibleRows: [FileNode] = []
 
     /// For backward compatibility with breadcrumb and flat entry access
     @Published var entries: [FileEntry] = []
@@ -193,6 +186,9 @@ class FileBrowserState: ObservableObject {
                 if !refreshed.elementsEqual(self.rootNodes, by: ===) {
                     self.rootNodes = refreshed
                 }
+                // Reconcile can swap children of reused nodes even when the
+                // top level is identical, so always re-derive the flat rows.
+                self.rebuildVisibleRows()
             }
         }
     }
@@ -202,21 +198,48 @@ class FileBrowserState: ObservableObject {
         // Clear the old directory's rows immediately for responsiveness; the new
         // contents arrive from the background scan.
         rootNodes = []
+        rebuildVisibleRows()
         loadEntries(force: true)
     }
 
-    /// Flatten the visible tree for keyboard shortcut support
-    func visibleNode(withID id: UUID) -> FileNode? {
-        func find(in nodes: [FileNode]) -> FileNode? {
+    /// Expand or collapse a directory row and refresh the flat row list.
+    /// Children load in the background on first expansion and slot in when
+    /// ready, so a huge folder never blocks the main thread.
+    func toggle(_ node: FileNode) {
+        guard node.isDirectory else { return }
+        if node.isExpanded {
+            node.isExpanded = false
+            rebuildVisibleRows()
+        } else {
+            node.isExpanded = true
+            rebuildVisibleRows()
+            node.loadChildren { [weak self] in
+                self?.rebuildVisibleRows()
+            }
+        }
+    }
+
+    /// Re-derive `visibleRows` from the tree. Skips the publish when the rows
+    /// are identical so the 2s auto-refresh doesn't cause needless re-renders.
+    private func rebuildVisibleRows() {
+        var rows: [FileNode] = []
+        func walk(_ nodes: [FileNode]) {
             for node in nodes {
-                if node.id == id { return node }
+                rows.append(node)
                 if node.isExpanded, let children = node.children {
-                    if let found = find(in: children) { return found }
+                    walk(children)
                 }
             }
-            return nil
         }
-        return find(in: rootNodes)
+        walk(rootNodes)
+        if !rows.elementsEqual(visibleRows, by: ===) {
+            visibleRows = rows
+        }
+    }
+
+    /// Look up a visible row for keyboard shortcut support
+    func visibleNode(withID id: UUID) -> FileNode? {
+        visibleRows.first { $0.id == id }
     }
 }
 
@@ -273,11 +296,12 @@ struct FileBrowserView: View {
 
             Divider()
 
-            // Tree list
+            // Tree list, rendered as a flat lazy list of the visible rows so
+            // expanding a folder with thousands of entries stays responsive.
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 1) {
-                    ForEach(state.rootNodes) { node in
-                        TreeNodeView(node: node, state: state, selectedNodeID: $selectedNodeID)
+                    ForEach(state.visibleRows) { node in
+                        TreeRowContent(node: node, state: state, selectedNodeID: $selectedNodeID)
                     }
                 }
                 .padding(.vertical, 6)
@@ -326,26 +350,6 @@ struct FileBrowserView: View {
 
 // MARK: - Tree node row
 
-private struct TreeNodeView: View {
-    @ObservedObject var node: FileNode
-    @ObservedObject var state: FileBrowserState
-    @Binding var selectedNodeID: UUID?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // The row itself
-            TreeRowContent(node: node, state: state, selectedNodeID: $selectedNodeID)
-
-            // Expanded children
-            if node.isExpanded, let children = node.children {
-                ForEach(children) { child in
-                    TreeNodeView(node: child, state: state, selectedNodeID: $selectedNodeID)
-                }
-            }
-        }
-    }
-}
-
 private struct TreeRowContent: View {
     @ObservedObject var node: FileNode
     @ObservedObject var state: FileBrowserState
@@ -368,7 +372,7 @@ private struct TreeRowContent: View {
                     .foregroundColor(.secondary)
                     .frame(width: 14, height: 20)
                     .contentShape(Rectangle())
-                    .onTapGesture { node.toggle() }
+                    .onTapGesture { state.toggle(node) }
             } else {
                 Spacer().frame(width: 14)
             }
@@ -402,7 +406,7 @@ private struct TreeRowContent: View {
         .onTapGesture {
             selectedNodeID = node.id
             if node.isDirectory {
-                node.toggle()
+                state.toggle(node)
             }
         }
         .simultaneousGesture(TapGesture(count: 2).onEnded {
