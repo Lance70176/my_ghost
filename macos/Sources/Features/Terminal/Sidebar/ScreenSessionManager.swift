@@ -345,9 +345,26 @@ class ScreenSessionManager {
         var customTitle: String?
     }
 
+    /// A host tab in the top host tab bar. `target` is "local" for the local
+    /// machine, otherwise the ssh destination (config alias or "user@host").
+    struct HostState: Codable {
+        let name: String
+        let target: String
+        var sshOptions: [String]?
+        /// The tmux session of the tab selected when this host was last active.
+        var selectedScreenName: String?
+    }
+
     struct SavedState: Codable {
         let sessions: [SessionState]
         let selectedScreenName: String?
+        /// Open host tabs in the top bar. nil in files saved by older versions.
+        var hosts: [HostState]? = nil
+        /// Bucketing key ("local" or ssh target) of the selected host tab.
+        var selectedHostKey: String? = nil
+        /// Sessions belonging to closed host tabs. The remote tmux sessions
+        /// keep running; reopening the host restores these as sidebar tabs.
+        var dormantSessions: [SessionState]? = nil
     }
 
     /// Save the current tab state to disk.

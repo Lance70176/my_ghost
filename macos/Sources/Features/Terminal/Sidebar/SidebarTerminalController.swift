@@ -23,6 +23,27 @@ class SidebarTerminalController: BaseTerminalController {
     /// it tracks which child is focused.
     @Published var highlightedItemID: UUID?
 
+    /// Host tabs shown in the top host tab bar. The first entry is always the
+    /// local machine; remote hosts are opened via the globe menu.
+    @Published var hostTabs: [SidebarHostEntry] = []
+
+    /// The ID of the currently selected host tab.
+    @Published var selectedHostID: UUID?
+
+    /// Sessions belonging to closed host tabs, restored when the host is
+    /// reopened. Loaded lazily from the saved state file, kept in memory,
+    /// and written back on every save.
+    private static var _dormantSessions: [ScreenSessionManager.SessionState]? = nil
+    static var dormantSessions: [ScreenSessionManager.SessionState] {
+        get {
+            if _dormantSessions == nil {
+                _dormantSessions = ScreenSessionManager.shared.loadState()?.dormantSessions ?? []
+            }
+            return _dormantSessions!
+        }
+        set { _dormantSessions = newValue }
+    }
+
     /// Shared UI state for sidebar mode switching.
     let sidebarUIState = SidebarUIState()
 
@@ -68,6 +89,10 @@ class SidebarTerminalController: BaseTerminalController {
         firstTab.screenSessionName = initialScreenName
         tabs.append(firstTab)
         selectedTabID = firstTab.id
+
+        let localHost = SidebarHostEntry.local()
+        hostTabs = [localHost]
+        selectedHostID = localHost.id
 
         // Notifications
         let center = NotificationCenter.default
@@ -177,11 +202,225 @@ class SidebarTerminalController: BaseTerminalController {
         Self.allControllers.remove(self)
     }
 
+    // MARK: - Host Tabs
+
+    /// The currently selected host tab entry.
+    var currentHost: SidebarHostEntry? {
+        hostTabs.first(where: { $0.id == selectedHostID }) ?? hostTabs.first
+    }
+
+    /// Bucketing key of the currently selected host.
+    var currentHostKey: String { currentHost?.key ?? SidebarHostEntry.localKey }
+
+    /// The host bucketing key a tab belongs to. Groups belong to the host of
+    /// their children (mixed groups are split at restore time).
+    func hostKey(of tab: SidebarTabEntry) -> String {
+        if tab.isGroup {
+            return tab.children.first?.remoteTarget ?? SidebarHostEntry.localKey
+        }
+        return tab.remoteTarget ?? SidebarHostEntry.localKey
+    }
+
+    /// The tabs belonging to the currently selected host — everything the
+    /// sidebar list and Cmd+number shortcuts operate on.
+    var visibleTabs: [SidebarTabEntry] {
+        tabs(forHostKey: currentHostKey)
+    }
+
+    private func tabs(forHostKey key: String) -> [SidebarTabEntry] {
+        tabs.filter { hostKey(of: $0) == key }
+    }
+
+    /// Remember the current host's selection so switching back restores it.
+    private func rememberCurrentHostSelection() {
+        guard let host = hostTabs.first(where: { $0.id == selectedHostID }) else { return }
+        host.lastSelectedTabID = selectedTabID
+        host.lastHighlightedItemID = highlightedItemID
+    }
+
+    /// Select a host tab: switch to the host's last selected sidebar tab,
+    /// creating a first connection/shell tab if the host has none.
+    func selectHost(_ host: SidebarHostEntry) {
+        guard host.id != selectedHostID else { return }
+        rememberCurrentHostSelection()
+        selectedHostID = host.id
+
+        let visible = visibleTabs
+        guard !visible.isEmpty else {
+            addTabForCurrentHost()
+            return
+        }
+
+        let tab = visible.first(where: { $0.id == host.lastSelectedTabID }) ?? visible[0]
+        selectTab(tab)
+        if let hi = host.lastHighlightedItemID,
+           tab.children.contains(where: { $0.id == hi }) {
+            highlightedItemID = hi
+        }
+        saveScreenSessionState()
+    }
+
+    /// Open (or focus) the host tab for a remote host, restoring the tabs the
+    /// host had when its tab was last closed.
+    func openHostTab(host: RemoteHost) {
+        if let existing = hostTabs.first(where: { $0.target == host.target }) {
+            selectHost(existing)
+            return
+        }
+
+        let entry = SidebarHostEntry(name: host.name, target: host.target, sshOptions: host.sshOptions)
+        rememberCurrentHostSelection()
+        hostTabs.append(entry)
+        selectedHostID = entry.id
+        if !restoreDormantTabs(for: entry) {
+            addRemoteTab(target: host.target, options: host.sshOptions, displayName: host.name)
+        }
+        saveScreenSessionState()
+    }
+
+    /// Close a remote host tab: disconnect its SSH tabs but leave the remote
+    /// tmux sessions running, and remember the tab list so reopening the host
+    /// restores it. The local host tab cannot be closed.
+    func closeHostTab(_ host: SidebarHostEntry) {
+        guard host.target != nil else { return }
+        let key = host.key
+        let removed = tabs(forHostKey: key)
+
+        // Remember the tab list for the next time this host is opened.
+        Self.dormantSessions.removeAll { sessionHostKey($0) == key }
+        Self.dormantSessions.append(contentsOf: removed.compactMap { sessionState(for: $0) })
+
+        // Switch away before removing tabs so the active surface tree never
+        // points into a removed tab.
+        if selectedHostID == host.id,
+           let fallback = hostTabs.first(where: { $0.isLocal })
+            ?? hostTabs.first(where: { $0.id != host.id }) {
+            selectHost(fallback)
+        }
+
+        hostTabs.removeAll { $0.id == host.id }
+        // Dropping the tabs tears down their ssh processes; the remote tmux
+        // sessions stay alive and reattach on reopen (tmux new-session -A).
+        let removedIDs = Set(removed.map(\.id))
+        tabs.removeAll { removedIDs.contains($0.id) }
+        saveScreenSessionState()
+    }
+
+    /// The host bucketing key of a saved session state.
+    private func sessionHostKey(_ s: ScreenSessionManager.SessionState) -> String {
+        if s.isGroup { return s.children?.first?.remoteTarget ?? SidebarHostEntry.localKey }
+        return s.remoteTarget ?? SidebarHostEntry.localKey
+    }
+
+    /// Restore the dormant tabs of a reopened host. Returns true if any were restored.
+    @discardableResult
+    private func restoreDormantTabs(for host: SidebarHostEntry) -> Bool {
+        let key = host.key
+        let matching = Self.dormantSessions.filter { sessionHostKey($0) == key }
+        guard !matching.isEmpty else { return false }
+        Self.dormantSessions.removeAll { sessionHostKey($0) == key }
+
+        for session in matching {
+            if session.isGroup {
+                guard let children = session.children, !children.isEmpty else { continue }
+                addRestoredGroup(
+                    groupName: session.groupName ?? "Tab Area",
+                    children: children,
+                    isFullMode: session.isFullMode ?? false,
+                    fullModeActiveChildIndex: session.fullModeActiveChildIndex
+                )
+            } else {
+                addRestoredTab(
+                    screenName: session.screenSessionName,
+                    title: session.title,
+                    workingDirectory: session.workingDirectory,
+                    remoteTarget: session.remoteTarget,
+                    remoteSSHOptions: session.remoteSSHOptions ?? [],
+                    remoteDisplayName: session.remoteDisplayName,
+                    customTitle: session.customTitle
+                )
+            }
+        }
+        return true
+    }
+
+    /// Rebuild the host tab bar from saved state after window restoration:
+    /// local first, then saved open hosts, then any host that has restored
+    /// tabs but no saved record (files written by older versions).
+    private func rebuildHostTabs(from state: ScreenSessionManager.SavedState) {
+        var hosts: [SidebarHostEntry] = hostTabs.filter { $0.isLocal }
+        if hosts.isEmpty { hosts = [.local()] }
+
+        func addHost(key: String, name: String?, options: [String]) {
+            guard key != SidebarHostEntry.localKey, !key.isEmpty else { return }
+            guard !hosts.contains(where: { $0.key == key }) else { return }
+            hosts.append(SidebarHostEntry(name: name ?? key, target: key, sshOptions: options))
+        }
+
+        for saved in state.hosts ?? [] {
+            addHost(key: saved.target, name: saved.name, options: saved.sshOptions ?? [])
+        }
+        for tab in tabs {
+            let key = hostKey(of: tab)
+            guard key != SidebarHostEntry.localKey else { continue }
+            let sample = tab.isGroup ? tab.children.first : tab
+            addHost(key: key, name: sample?.remoteDisplayName, options: sample?.remoteSSHOptions ?? [])
+        }
+
+        // Drop saved hosts that ended up with no restored tabs (their sessions
+        // were closed elsewhere); keep local always.
+        hosts = hosts.filter { $0.isLocal || !tabs(forHostKey: $0.key).isEmpty }
+
+        // Per-host remembered selection.
+        for saved in state.hosts ?? [] {
+            guard let sel = saved.selectedScreenName,
+                  let host = hosts.first(where: { $0.key == saved.target }) else { continue }
+            host.lastSelectedTabID = tabs.first(where: {
+                $0.screenSessionName == sel
+                    || $0.children.contains(where: { $0.screenSessionName == sel })
+            })?.id
+        }
+
+        hostTabs = hosts
+        syncSelectedHostToSelectedTab()
+    }
+
+    /// Point the host bar selection at the host owning the selected tab.
+    private func syncSelectedHostToSelectedTab() {
+        guard let cur = tabs.first(where: { $0.id == selectedTabID }) else {
+            selectedHostID = hostTabs.first?.id
+            return
+        }
+        let key = hostKey(of: cur)
+        selectedHostID = hostTabs.first(where: { $0.key == key })?.id ?? hostTabs.first?.id
+    }
+
+    /// Add a new tab on the currently selected host: a local shell for the
+    /// local host, or a new SSH connection (with its own remote tmux session)
+    /// for a remote host — so the "+" button behaves the same everywhere.
+    func addTabForCurrentHost() {
+        if let host = currentHost, let target = host.target {
+            addRemoteTab(target: target, options: host.sshOptions, displayName: host.name)
+        } else {
+            addNewTab()
+        }
+    }
+
     // MARK: - Tab Management
 
     /// Select a tab by switching the active surface tree.
     func selectTab(_ tab: SidebarTabEntry) {
         guard tab.id != selectedTabID else { return }
+
+        // Keep the host tab bar in sync: selecting a tab that belongs to a
+        // different host (goto-tab, restore, file browser) switches the host.
+        let key = hostKey(of: tab)
+        if key != currentHostKey {
+            rememberCurrentHostSelection()
+            if let host = hostTabs.first(where: { $0.key == key }) {
+                selectedHostID = host.id
+            }
+        }
 
         // Prevent surfaceTreeDidChange from misinterpreting the tree swap
         isModifyingChildren = true
@@ -198,8 +437,12 @@ class SidebarTerminalController: BaseTerminalController {
         highlightedItemID = tab.id
         surfaceTree = tab.surfaceTree
 
-        // Update window title to current tab
-        window?.title = tab.displayTitle
+        // Update window title to current tab, prefixed by the host when remote
+        if let host = currentHost, !host.isLocal {
+            window?.title = "\(host.name) — \(tab.displayTitle)"
+        } else {
+            window?.title = tab.displayTitle
+        }
 
         // Restore focus
         if let savedFocus = tab.focusedSurface {
@@ -245,6 +488,10 @@ class SidebarTerminalController: BaseTerminalController {
     /// a tmux session on the remote host, so it survives connection drops and
     /// app restarts; the bootstrap script reconnects automatically.
     func addRemoteTab(host: RemoteHost) {
+        addRemoteTab(target: host.target, options: host.sshOptions, displayName: host.name)
+    }
+
+    func addRemoteTab(target: String, options: [String], displayName: String) {
         guard let ghostty_app = ghostty.app else { return }
 
         let rmgr = RemoteHostManager.shared
@@ -252,8 +499,8 @@ class SidebarTerminalController: BaseTerminalController {
 
         var config = Ghostty.SurfaceConfiguration()
         config.command = rmgr.connectCommand(
-            target: host.target,
-            options: host.sshOptions,
+            target: target,
+            options: options,
             sessionName: sessionName
         )
 
@@ -261,10 +508,10 @@ class SidebarTerminalController: BaseTerminalController {
         let newTree = SplitTree<Ghostty.SurfaceView>(view: newSurface)
         let newTab = SidebarTabEntry(surfaceTree: newTree, focusedSurface: newSurface)
         newTab.screenSessionName = sessionName
-        newTab.remoteTarget = host.target
-        newTab.remoteSSHOptions = host.sshOptions
-        newTab.remoteDisplayName = host.name
-        newTab.defaultTitle = host.name
+        newTab.remoteTarget = target
+        newTab.remoteSSHOptions = options
+        newTab.remoteDisplayName = displayName
+        newTab.defaultTitle = displayName
 
         tabs.append(newTab)
         selectTab(newTab)
@@ -401,13 +648,21 @@ class SidebarTerminalController: BaseTerminalController {
         guard let ghostty_app = ghostty.app else { return }
         let mgr = ScreenSessionManager.shared
 
-        // Build child tab entries
+        // Build child tab entries (remote children reconnect over SSH)
         var childTabs: [SidebarTabEntry] = []
         for child in children {
             var config = Ghostty.SurfaceConfiguration()
-            config.command = mgr.reattachCommand(sessionName: child.screenSessionName)
-            if let wd = child.workingDirectory ?? mgr.getSessionWorkingDirectory(sessionName: child.screenSessionName) {
-                config.workingDirectory = wd
+            if let target = child.remoteTarget {
+                config.command = RemoteHostManager.shared.connectCommand(
+                    target: target,
+                    options: child.remoteSSHOptions ?? [],
+                    sessionName: child.screenSessionName
+                )
+            } else {
+                config.command = mgr.reattachCommand(sessionName: child.screenSessionName)
+                if let wd = child.workingDirectory ?? mgr.getSessionWorkingDirectory(sessionName: child.screenSessionName) {
+                    config.workingDirectory = wd
+                }
             }
             let surface = Ghostty.SurfaceView(ghostty_app, baseConfig: config)
             let tree = SplitTree<Ghostty.SurfaceView>(view: surface)
@@ -415,6 +670,9 @@ class SidebarTerminalController: BaseTerminalController {
             tab.screenSessionName = child.screenSessionName
             tab.defaultTitle = child.title
             tab.customTitle = child.customTitle
+            tab.remoteTarget = child.remoteTarget
+            tab.remoteSSHOptions = child.remoteSSHOptions ?? []
+            tab.remoteDisplayName = child.remoteDisplayName
             childTabs.append(tab)
         }
 
@@ -485,7 +743,9 @@ class SidebarTerminalController: BaseTerminalController {
         }
     }
 
-    private func closeTabImmediately(_ tab: SidebarTabEntry, killRemote: Bool = true) {
+    /// `hostKeyOverride` supplies the tab's host when it can no longer be
+    /// derived — a group whose children were already removed reports "local".
+    private func closeTabImmediately(_ tab: SidebarTabEntry, killRemote: Bool = true, hostKeyOverride: String? = nil) {
         // Look up the index at execution time: the tabs array may have changed
         // while a confirmation dialog was open, so a captured index could point
         // at (and remove) a different tab.
@@ -498,20 +758,41 @@ class SidebarTerminalController: BaseTerminalController {
         }
 
         let wasSelected = (tab.id == selectedTabID)
+        let closedKey = hostKeyOverride ?? hostKey(of: tab)
+        // Position within the host's tab list, for adjacent-tab selection.
+        let hostIndex = tabs(forHostKey: closedKey).firstIndex(where: { $0.id == tab.id }) ?? 0
         tabs.remove(at: index)
 
         if tabs.isEmpty {
-            // No more tabs — close the window.
+            // No more tabs on any host — close the window.
             saveScreenSessionState()
             window?.close()
             return
         }
 
+        // The host this tab belonged to may now be empty.
+        if tabs(forHostKey: closedKey).isEmpty {
+            if let host = hostTabs.first(where: { $0.key == closedKey && !$0.isLocal }) {
+                // A remote host's last tab closed — retire its host tab.
+                hostTabs.removeAll { $0.id == host.id }
+                if selectedHostID == host.id {
+                    selectedHostID = hostTabs.first?.id
+                }
+            } else if closedKey == SidebarHostEntry.localKey, currentHostKey == closedKey {
+                // The local host is selected and empty while remote hosts
+                // still have tabs — keep it alive with a fresh shell.
+                addNewTab()
+                return
+            }
+        }
+
         if wasSelected {
-            // Switch to an adjacent tab.
-            let newIndex = min(index, tabs.count - 1)
-            let newTab = tabs[newIndex]
-            selectTab(newTab)
+            // Switch to an adjacent tab within the same host, falling back to
+            // any remaining tab (selectTab syncs the host bar).
+            let visible = visibleTabs
+            if let newTab = visible.isEmpty ? tabs.first : visible[min(hostIndex, visible.count - 1)] {
+                selectTab(newTab)
+            }
         }
 
         saveScreenSessionState()
@@ -835,6 +1116,9 @@ class SidebarTerminalController: BaseTerminalController {
     /// with only one child, the group dissolves into a standalone tab.
     func closeChildTab(_ child: SidebarTabEntry, from group: SidebarTabEntry) {
         guard let childSurface = child.originalSurface else { return }
+        // Capture while children are still present — an emptied group can no
+        // longer report which host it belonged to.
+        let groupHostKey = hostKey(of: group)
         let leafNode = SplitTree<Ghostty.SurfaceView>.Node.leaf(view: childSurface)
 
         // Prevent surfaceTreeDidChange from double-processing
@@ -885,20 +1169,11 @@ class SidebarTerminalController: BaseTerminalController {
         // Kill the child's screen session (explicit user close — kill remote too)
         killSession(for: child, includeRemote: true)
 
-        // If no children left, close the group entirely
+        // If no children left, close the group entirely (host-aware: retires
+        // an emptied remote host tab and picks the adjacent tab in-host).
         if group.children.isEmpty {
-            if let index = tabs.firstIndex(where: { $0.id == group.id }) {
-                tabs.remove(at: index)
-                if tabs.isEmpty {
-                    saveScreenSessionState()
-                    window?.close()
-                    return
-                }
-                if group.id == selectedTabID {
-                    let newIndex = min(index, tabs.count - 1)
-                    selectTab(tabs[newIndex])
-                }
-            }
+            closeTabImmediately(group, killRemote: false, hostKeyOverride: groupHostKey)
+            return
         } else if group.isFullMode, group.children.count == 1 {
             // Exit full mode when only 1 child remains (no need to switch)
             group.isFullMode = false
@@ -1070,6 +1345,7 @@ class SidebarTerminalController: BaseTerminalController {
             // exited, but other children still exist. Handle the closed child and
             // switch to the next one instead of closing the entire group.
             if tab.isGroup && !tab.children.isEmpty {
+                let groupHostKey = hostKey(of: tab)
                 // Find which child's surface was in the old tree
                 let oldSurfaces = from.root?.leaves() ?? []
                 let closedChildren = tab.children.filter { child in
@@ -1088,7 +1364,7 @@ class SidebarTerminalController: BaseTerminalController {
                     // All children gone — close the group. Process-exit driven,
                     // so leave remote sessions alone (they may have been detached).
                     tab.screenSessionName = nil
-                    closeTabImmediately(tab, killRemote: false)
+                    closeTabImmediately(tab, killRemote: false, hostKeyOverride: groupHostKey)
                     return
                 }
 
@@ -1161,6 +1437,7 @@ class SidebarTerminalController: BaseTerminalController {
         // For groups: detect which children's surfaces were removed from the tree
         // (e.g. via Cmd+W closing a split pane) and sync group.children accordingly.
         if tab.isGroup {
+            let groupHostKey = hostKey(of: tab)
             // A child only counts as removed if its surface was in the old tree and
             // is gone from the new one. In full mode the visible tree contains just
             // the active child, so comparing children against the new tree alone
@@ -1190,7 +1467,7 @@ class SidebarTerminalController: BaseTerminalController {
 
                 // If no children left, close the group
                 if tab.children.isEmpty {
-                    closeTabImmediately(tab, killRemote: false)
+                    closeTabImmediately(tab, killRemote: false, hostKeyOverride: groupHostKey)
                     return
                 } else if tab.isFullMode, tab.children.count == 1 {
                     tab.isFullMode = false
@@ -1226,12 +1503,13 @@ class SidebarTerminalController: BaseTerminalController {
         toggleFullscreen(mode: .native)
     }
 
-    /// A flattened list of activatable items for Cmd+Number shortcuts.
+    /// A flattened list of activatable items for Cmd+Number shortcuts, scoped
+    /// to the currently selected host.
     /// Standalone tabs and group children are included; group headers are skipped.
     /// Each element is (tab: the tab/child entry, group: the parent group if child, otherwise nil).
     var flatActivatableItems: [(tab: SidebarTabEntry, group: SidebarTabEntry?)] {
         var items: [(tab: SidebarTabEntry, group: SidebarTabEntry?)] = []
-        for tab in tabs {
+        for tab in visibleTabs {
             if tab.isGroup {
                 for child in tab.children {
                     items.append((tab: child, group: tab))
@@ -1312,46 +1590,48 @@ class SidebarTerminalController: BaseTerminalController {
 
     // MARK: - Screen Session Persistence
 
+    /// Build the persistable session state for a tab or group, or nil if it
+    /// has nothing restorable.
+    func sessionState(for tab: SidebarTabEntry) -> ScreenSessionManager.SessionState? {
+        if tab.isGroup {
+            let childStates = tab.children.compactMap { sessionState(for: $0) }
+            guard !childStates.isEmpty else { return nil }
+            // Find active child index for full mode
+            var activeIndex: Int? = nil
+            if tab.isFullMode, let activeID = tab.fullModeActiveChildID {
+                activeIndex = tab.children.firstIndex(where: { $0.id == activeID })
+            }
+            return ScreenSessionManager.SessionState(
+                screenSessionName: "",
+                title: tab.displayTitle,
+                workingDirectory: nil,
+                isGroup: true,
+                groupName: tab.groupName,
+                children: childStates,
+                isFullMode: tab.isFullMode ? true : nil,
+                fullModeActiveChildIndex: activeIndex
+            )
+        } else {
+            guard let name = tab.screenSessionName else { return nil }
+            return ScreenSessionManager.SessionState(
+                screenSessionName: name,
+                title: tab.displayTitle,
+                workingDirectory: nil,
+                isGroup: false,
+                groupName: nil,
+                children: nil,
+                remoteTarget: tab.remoteTarget,
+                remoteSSHOptions: tab.isRemote ? tab.remoteSSHOptions : nil,
+                remoteDisplayName: tab.remoteDisplayName,
+                customTitle: tab.customTitle
+            )
+        }
+    }
+
     /// Collect all tabs' screen session info and persist to disk.
     func saveScreenSessionState() {
         let mgr = ScreenSessionManager.shared
         guard mgr.isAvailable else { return }
-
-        func stateFor(_ tab: SidebarTabEntry) -> ScreenSessionManager.SessionState? {
-            if tab.isGroup {
-                let childStates = tab.children.compactMap { stateFor($0) }
-                guard !childStates.isEmpty else { return nil }
-                // Find active child index for full mode
-                var activeIndex: Int? = nil
-                if tab.isFullMode, let activeID = tab.fullModeActiveChildID {
-                    activeIndex = tab.children.firstIndex(where: { $0.id == activeID })
-                }
-                return ScreenSessionManager.SessionState(
-                    screenSessionName: "",
-                    title: tab.displayTitle,
-                    workingDirectory: nil,
-                    isGroup: true,
-                    groupName: tab.groupName,
-                    children: childStates,
-                    isFullMode: tab.isFullMode ? true : nil,
-                    fullModeActiveChildIndex: activeIndex
-                )
-            } else {
-                guard let name = tab.screenSessionName else { return nil }
-                return ScreenSessionManager.SessionState(
-                    screenSessionName: name,
-                    title: tab.displayTitle,
-                    workingDirectory: nil,
-                    isGroup: false,
-                    groupName: nil,
-                    children: nil,
-                    remoteTarget: tab.remoteTarget,
-                    remoteSSHOptions: tab.isRemote ? tab.remoteSSHOptions : nil,
-                    remoteDisplayName: tab.remoteDisplayName,
-                    customTitle: tab.customTitle
-                )
-            }
-        }
 
         // Persist tabs from ALL windows. The state file is shared, so saving only
         // this window's tabs would wipe every other window's sessions from it
@@ -1363,7 +1643,7 @@ class SidebarTerminalController: BaseTerminalController {
         controllers.insert(self, at: 0)
 
         let sessions = controllers.flatMap { controller in
-            controller.tabs.compactMap { stateFor($0) }
+            controller.tabs.compactMap { controller.sessionState(for: $0) }
         }
 
         // Merge in entries from the existing state file whose sessions are
@@ -1411,8 +1691,36 @@ class SidebarTerminalController: BaseTerminalController {
             merged += existing.sessions.compactMap(prune)
         }
 
+        // Host tab bar state: open hosts across all windows, deduplicated by key.
+        var hostStates: [ScreenSessionManager.HostState] = []
+        var seenKeys = Set<String>()
+        for controller in controllers {
+            for host in controller.hostTabs {
+                guard !seenKeys.contains(host.key) else { continue }
+                seenKeys.insert(host.key)
+                let selName: String?
+                if controller.selectedHostID == host.id {
+                    selName = controller.currentTab?.screenSessionName
+                } else {
+                    selName = controller.tabs.first(where: { $0.id == host.lastSelectedTabID })?.screenSessionName
+                }
+                hostStates.append(ScreenSessionManager.HostState(
+                    name: host.name,
+                    target: host.key,
+                    sshOptions: host.sshOptions.isEmpty ? nil : host.sshOptions,
+                    selectedScreenName: selName
+                ))
+            }
+        }
+
         let selectedName = currentTab?.screenSessionName
-        mgr.saveState(ScreenSessionManager.SavedState(sessions: merged, selectedScreenName: selectedName))
+        mgr.saveState(ScreenSessionManager.SavedState(
+            sessions: merged,
+            selectedScreenName: selectedName,
+            hosts: hostStates,
+            selectedHostKey: currentHostKey,
+            dormantSessions: Self.dormantSessions.isEmpty ? nil : Self.dormantSessions
+        ))
     }
 
     /// Save state covering all windows. Safer than iterating NSApp.windows
@@ -1443,7 +1751,40 @@ class SidebarTerminalController: BaseTerminalController {
             return aliveSessions.contains(s.screenSessionName)
         }
 
-        let restorableSessions = state.sessions.filter { isAlive($0) }
+        // Legacy state files can contain groups mixing local and remote tabs.
+        // The host tab bar buckets a group under a single host, so split such
+        // groups into one group (or standalone tab) per host, preserving order.
+        func splitMixedGroups(_ sessions: [ScreenSessionManager.SessionState]) -> [ScreenSessionManager.SessionState] {
+            sessions.flatMap { s -> [ScreenSessionManager.SessionState] in
+                guard s.isGroup, let children = s.children,
+                      Set(children.map { $0.remoteTarget ?? "" }).count > 1 else { return [s] }
+                var order: [String] = []
+                var byKey: [String: [ScreenSessionManager.SessionState]] = [:]
+                for child in children {
+                    let key = child.remoteTarget ?? ""
+                    if byKey[key] == nil { order.append(key) }
+                    byKey[key, default: []].append(child)
+                }
+                return order.map { key in
+                    let kids = byKey[key]!
+                    if kids.count == 1 { return kids[0] }
+                    return ScreenSessionManager.SessionState(
+                        screenSessionName: "",
+                        title: s.title,
+                        workingDirectory: nil,
+                        isGroup: true,
+                        groupName: s.groupName,
+                        children: kids,
+                        isFullMode: s.isFullMode,
+                        fullModeActiveChildIndex: nil
+                    )
+                }
+            }
+        }
+
+        Self.dormantSessions = state.dormantSessions ?? []
+
+        let restorableSessions = splitMixedGroups(state.sessions.filter { isAlive($0) })
         guard !restorableSessions.isEmpty else { return nil }
 
         // Build a config for the first restorable leaf session
@@ -1642,9 +1983,15 @@ class SidebarTerminalController: BaseTerminalController {
                 }
             }
         }
+        // Rebuild the host tab bar before the final selection so selectTab can
+        // sync the selected host. Existing remote tabs migrate to their own
+        // host tab automatically (legacy files carry no host list).
+        controller.rebuildHostTabs(from: state)
+
         if let target, controller.selectedTabID != target.id {
             controller.selectTab(target)
         }
+        controller.syncSelectedHostToSelectedTab()
 
         // Set up the window and show it (same as newWindow)
         controller.setupWindow()
@@ -1706,6 +2053,14 @@ private struct SidebarRootView: View {
     @ObservedObject var editorState = TextEditorManager.shared.state
 
     var body: some View {
+        VStack(spacing: 0) {
+            HostTabBarView(controller: controller)
+            Divider()
+            splitContent
+        }
+    }
+
+    private var splitContent: some View {
         HSplitView {
             SidebarView(controller: controller, sidebarMode: $uiState.sidebarMode)
                 .frame(minWidth: 150, maxWidth: 300)

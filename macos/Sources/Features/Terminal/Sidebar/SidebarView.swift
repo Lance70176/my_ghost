@@ -169,7 +169,8 @@ private struct TabDragDropModifier: ViewModifier {
 
 /// An action-row icon styled to match the mode switcher above it: same icon
 /// size/color, with a hover highlight for interaction feedback.
-private struct SidebarActionIcon: View {
+/// Also used by the host tab bar's globe menu.
+struct SidebarActionIcon: View {
     let systemName: String
 
     @State private var isHovering = false
@@ -209,9 +210,6 @@ struct SidebarView: View {
     /// Persistent file browser state across mode switches.
     @StateObject private var fileBrowserState = FileBrowserState()
 
-    /// Whether the "Add Remote Host" sheet is visible.
-    @State private var showAddRemoteHostSheet = false
-
     /// AI quota accounts and their latest usage, shown above the menu.
     @ObservedObject private var quotaManager = AIQuotaManager.shared
 
@@ -229,11 +227,11 @@ struct SidebarView: View {
         return map
     }
 
-    /// Build a flat list of row items — children are shown unless their group
-    /// is collapsed via the header's disclosure chevron.
+    /// Build a flat list of row items for the selected host — children are
+    /// shown unless their group is collapsed via the header's disclosure chevron.
     private var flatRows: [SidebarRowItem] {
         var rows: [SidebarRowItem] = []
-        for (index, tab) in controller.tabs.enumerated() {
+        for (index, tab) in controller.visibleTabs.enumerated() {
             if tab.isGroup {
                 rows.append(.group(group: tab, index: index))
                 if !tab.isCollapsed {
@@ -296,7 +294,7 @@ struct SidebarView: View {
             // Row 2: Action buttons (sub-menu style)
             if sidebarMode == .terminal {
                 HStack(spacing: 10) {
-                    Button(action: { controller.addNewTab() }) {
+                    Button(action: { controller.addTabForCurrentHost() }) {
                         SidebarActionIcon(systemName: "plus")
                     }
                     .buttonStyle(.borderless)
@@ -304,7 +302,7 @@ struct SidebarView: View {
                     Button(action: {
                         if let sel = selection {
                             // Check if selection is a child within a group
-                            for group in controller.tabs where group.isGroup {
+                            for group in controller.visibleTabs where group.isGroup {
                                 if let child = group.children.first(where: { $0.id == sel }) {
                                     controller.closeChildTab(child, from: group)
                                     return
@@ -312,7 +310,7 @@ struct SidebarView: View {
                             }
                             // Check if the selection is a group itself — close the
                             // active/first child instead of the entire group.
-                            if let tab = controller.tabs.first(where: { $0.id == sel }), tab.isGroup {
+                            if let tab = controller.visibleTabs.first(where: { $0.id == sel }), tab.isGroup {
                                 if let activeChild = tab.children.first(where: { $0.id == tab.fullModeActiveChildID })
                                     ?? tab.children.first {
                                     controller.closeChildTab(activeChild, from: tab)
@@ -322,7 +320,7 @@ struct SidebarView: View {
                                 return
                             }
                             // Otherwise close the top-level standalone tab
-                            if let tab = controller.tabs.first(where: { $0.id == sel }) {
+                            if let tab = controller.visibleTabs.first(where: { $0.id == sel }) {
                                 controller.closeTab(tab)
                             }
                         }
@@ -330,9 +328,7 @@ struct SidebarView: View {
                         SidebarActionIcon(systemName: "minus")
                     }
                     .buttonStyle(.borderless)
-                    .disabled(controller.tabs.isEmpty)
-
-                    remoteHostMenu
+                    .disabled(controller.visibleTabs.isEmpty)
 
                     // Entry point to AI usage settings, still reachable when
                     // the stats section itself is hidden.
@@ -392,70 +388,9 @@ struct SidebarView: View {
                 sidebarMode = .terminal
             }
         }
-        .sheet(isPresented: $showAddRemoteHostSheet) {
-            AddRemoteHostSheet { host in
-                RemoteHostManager.shared.addManualHost(host)
-                controller.addRemoteTab(host: host)
-            }
-        }
         .sheet(isPresented: $showAIQuotaSettings) {
             AIQuotaSettingsView(manager: quotaManager)
         }
-    }
-
-    /// Menu for connecting to a remote host: lists ~/.ssh/config aliases and
-    /// manually saved hosts, plus an entry to add a new host.
-    private var remoteHostMenu: some View {
-        Menu {
-            let configHosts = RemoteHostManager.shared.sshConfigHosts()
-            let manualHosts = RemoteHostManager.shared.manualHosts()
-
-            if configHosts.isEmpty && manualHosts.isEmpty {
-                Text("No saved hosts")
-            }
-
-            ForEach(configHosts) { host in
-                Button {
-                    controller.addRemoteTab(host: host)
-                } label: {
-                    Label(host.name, systemImage: "doc.text")
-                }
-            }
-
-            if !configHosts.isEmpty && !manualHosts.isEmpty {
-                Divider()
-            }
-
-            ForEach(manualHosts) { host in
-                Button {
-                    controller.addRemoteTab(host: host)
-                } label: {
-                    Label(host.name, systemImage: "network")
-                }
-            }
-
-            Divider()
-
-            Button("Add Remote Host…") {
-                showAddRemoteHostSheet = true
-            }
-
-            if !manualHosts.isEmpty {
-                Menu("Remove Saved Host") {
-                    ForEach(manualHosts) { host in
-                        Button(host.name) {
-                            RemoteHostManager.shared.removeManualHost(host)
-                        }
-                    }
-                }
-            }
-        } label: {
-            SidebarActionIcon(systemName: "network")
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help("Connect to a remote host (SSH + tmux)")
     }
 
     /// Visual indicator shown on the drop target row.
@@ -873,9 +808,9 @@ private struct SidebarStandaloneTabRow: View {
 
             Divider()
 
-            // Join into another tab or group. Targets that already have 4
-            // panes are allowed; joinTab asks for confirmation in that case.
-            let joinableTargets = controller.tabs.filter {
+            // Join into another tab or group on the same host. Targets that
+            // already have 4 panes are allowed; joinTab asks for confirmation.
+            let joinableTargets = controller.visibleTabs.filter {
                 $0.id != tab.id
             }
             if !joinableTargets.isEmpty {
@@ -1113,8 +1048,9 @@ private struct SidebarGroupChildRow: View {
 // MARK: - Add Remote Host Sheet
 
 /// Form for adding a remote SSH host manually (IP or hostname).
-/// The host is saved and a remote tab is opened immediately.
-private struct AddRemoteHostSheet: View {
+/// The host is saved and a host tab is opened immediately.
+/// Presented from the host tab bar's globe menu.
+struct AddRemoteHostSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     /// Called with the new host when the user confirms.

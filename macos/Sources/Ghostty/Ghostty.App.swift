@@ -1131,7 +1131,7 @@ extension Ghostty {
                     // For SidebarTerminalController, check tabs count instead of tabGroup.
                     let hasTabs: Bool
                     if let sidebarController = surfaceView.window?.windowController as? SidebarTerminalController {
-                        hasTabs = sidebarController.tabs.count > 1
+                        hasTabs = sidebarController.visibleTabs.count > 1
                     } else {
                         hasTabs = (surfaceView.window?.tabGroup?.windows.count ?? 0) > 1
                     }
