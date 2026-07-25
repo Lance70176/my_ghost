@@ -88,38 +88,13 @@ struct HostTabBarView: View {
         }
     }
 
-    /// Menu for opening a host tab: lists ~/.ssh/config aliases and manually
-    /// saved hosts, plus an entry to add a new host.
+    /// Menu for opening a host tab. "Add Remote Host…" and the manually saved
+    /// hosts come first — the ~/.ssh/config list can be very long, and putting
+    /// them at the bottom meant scrolling through it every time.
     private var remoteHostMenu: some View {
         Menu {
             let configHosts = RemoteHostManager.shared.sshConfigHosts()
             let manualHosts = RemoteHostManager.shared.manualHosts()
-
-            if configHosts.isEmpty && manualHosts.isEmpty {
-                Text("No saved hosts")
-            }
-
-            ForEach(configHosts) { host in
-                Button {
-                    controller.openHostTab(host: host)
-                } label: {
-                    Label(host.name, systemImage: "doc.text")
-                }
-            }
-
-            if !configHosts.isEmpty && !manualHosts.isEmpty {
-                Divider()
-            }
-
-            ForEach(manualHosts) { host in
-                Button {
-                    controller.openHostTab(host: host)
-                } label: {
-                    Label(host.name, systemImage: "network")
-                }
-            }
-
-            Divider()
 
             Button("Add Remote Host…") {
                 showAddRemoteHostSheet = true
@@ -131,6 +106,30 @@ struct HostTabBarView: View {
                         Button(host.name) {
                             RemoteHostManager.shared.removeManualHost(host)
                         }
+                    }
+                }
+            }
+
+            if !manualHosts.isEmpty {
+                Divider()
+
+                ForEach(manualHosts) { host in
+                    Button {
+                        controller.openHostTab(host: host)
+                    } label: {
+                        Label(host.name, systemImage: "network")
+                    }
+                }
+            }
+
+            if !configHosts.isEmpty {
+                Divider()
+
+                ForEach(configHosts) { host in
+                    Button {
+                        controller.openHostTab(host: host)
+                    } label: {
+                        Label(host.name, systemImage: "doc.text")
                     }
                 }
             }
