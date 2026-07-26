@@ -47,6 +47,74 @@ struct AIQuotaSectionView: View {
     }
 }
 
+/// Builds the coloured tooltip lines describing one account's quota windows.
+enum AIQuotaTooltip {
+    static func lines(for snapshot: AIUsageSnapshot?, dim: NSColor) -> [FastTooltipLine] {
+        guard let snapshot else {
+            return [FastTooltipLine("  Click to check quota", color: dim)]
+        }
+        if let error = snapshot.errorMessage {
+            return [FastTooltipLine("  \(error)", color: .systemOrange)]
+        }
+        guard !snapshot.windows.isEmpty else {
+            return [FastTooltipLine("  No usage windows reported", color: dim)]
+        }
+
+        // Pad labels so the time columns line up across windows. The bars
+        // already show usage, so the tooltip is only about reset timing.
+        let labelWidth = snapshot.windows.map(\.label.count).max() ?? 0
+        var lines: [FastTooltipLine] = []
+        for window in snapshot.windows {
+            let label = window.label.padding(
+                toLength: labelWidth, withPad: " ", startingAt: 0)
+            var spans = [FastTooltipSpan("  \(label)", bold: true)]
+            if let resetsAt = window.resetsAt {
+                spans.append(FastTooltipSpan("   ", color: dim))
+                spans.append(FastTooltipSpan(resetText(resetsAt), color: .systemTeal))
+                spans.append(FastTooltipSpan("   ", color: dim))
+                spans.append(FastTooltipSpan(remaining(until: resetsAt), color: .systemYellow))
+            } else {
+                spans.append(FastTooltipSpan("   reset time unavailable", color: dim))
+            }
+            lines.append(FastTooltipLine(spans))
+        }
+        return lines
+    }
+
+    /// Reset instant: time alone when it lands today, date + time otherwise.
+    static func resetText(_ date: Date) -> String {
+        Calendar.current.isDateInToday(date)
+            ? timeFormatter.string(from: date)
+            : dateTimeFormatter.string(from: date)
+    }
+
+    /// Human-readable time remaining, e.g. "in 2d 14h" / "in 1h 05m".
+    static func remaining(until date: Date) -> String {
+        let seconds = Int(date.timeIntervalSinceNow)
+        guard seconds > 0 else { return "resetting now" }
+        let days = seconds / 86400
+        let hours = (seconds % 86400) / 3600
+        let minutes = (seconds % 3600) / 60
+        if days > 0 { return "in \(days)d \(hours)h" }
+        if hours > 0 { return String(format: "in %dh %02dm", hours, minutes) }
+        return "in \(minutes)m"
+    }
+
+    static let dateTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        return formatter
+    }()
+
+    static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        return formatter
+    }()
+}
+
 /// One account's row: provider icon + name, then a compact bar per window.
 private struct AIQuotaAccountRow: View {
     let account: AIQuotaAccount
@@ -85,7 +153,6 @@ private struct AIQuotaAccountRow: View {
                         .foregroundColor(.secondary)
                 }
             }
-            .help(rowHelp)
 
             if let snapshot, !snapshot.windows.isEmpty {
                 ForEach(snapshot.windows, id: \.label) { window in
@@ -111,8 +178,6 @@ private struct AIQuotaAccountRow: View {
                             .foregroundColor(.secondary)
                             .frame(width: 30, alignment: .trailing)
                     }
-                    .contentShape(Rectangle())
-                    .help(resetHelp(for: window))
                 }
             } else if let error = snapshot?.errorMessage {
                 Text(error)
@@ -127,58 +192,18 @@ private struct AIQuotaAccountRow: View {
             RoundedRectangle(cornerRadius: 5)
                 .fill(isHovering ? Color.secondary.opacity(0.12) : Color.clear))
         .contentShape(Rectangle())
+        // The account block is the hover target, not the individual bars —
+        // they are only a few points tall and were fiddly to land on. One
+        // hover lists every window this account has.
+        .fastHelp(accountHelp)
         .onHover { isHovering = $0 }
         .onTapGesture { onTap() }
     }
 
-    private var rowHelp: String {
-        var lines = ["\(account.provider.displayName) — click to check quota"]
-        if let fetchedAt = snapshot?.fetchedAt {
-            lines.append("Updated \(Self.timeFormatter.string(from: fetchedAt))")
-        }
-        return lines.joined(separator: "\n")
+    private var accountHelp: [FastTooltipLine] {
+        [FastTooltipLine(account.name, bold: true)]
+            + AIQuotaTooltip.lines(for: snapshot, dim: .secondaryLabelColor)
     }
-
-    /// Tooltip for one window row: absolute reset time, remaining countdown,
-    /// and when the numbers were last fetched.
-    private func resetHelp(for window: AIUsageWindow) -> String {
-        var lines: [String] = []
-        if let resetsAt = window.resetsAt {
-            lines.append("\(window.label): resets \(Self.dateTimeFormatter.string(from: resetsAt)) (\(remaining(until: resetsAt)))")
-        } else {
-            lines.append("\(window.label): reset time unavailable")
-        }
-        if let fetchedAt = snapshot?.fetchedAt {
-            lines.append("Updated \(Self.timeFormatter.string(from: fetchedAt))")
-        }
-        return lines.joined(separator: "\n")
-    }
-
-    /// Human-readable time remaining, e.g. "in 2d 14h" / "in 1h 05m".
-    private func remaining(until date: Date) -> String {
-        let seconds = Int(date.timeIntervalSinceNow)
-        guard seconds > 0 else { return "resetting now" }
-        let days = seconds / 86400
-        let hours = (seconds % 86400) / 3600
-        let minutes = (seconds % 3600) / 60
-        if days > 0 { return "in \(days)d \(hours)h" }
-        if hours > 0 { return String(format: "in %dh %02dm", hours, minutes) }
-        return "in \(minutes)m"
-    }
-
-    private static let dateTimeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .short
-        formatter.timeStyle = .short
-        return formatter
-    }()
-
-    private static let timeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .none
-        formatter.timeStyle = .short
-        return formatter
-    }()
 
     private func barColor(for percent: Double) -> Color {
         switch percent {

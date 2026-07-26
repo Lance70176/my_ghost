@@ -267,11 +267,16 @@ enum ChatGPTUsageFetcher {
                 if minutes == nil, let seconds = (dict["limit_window_seconds"] as? NSNumber)?.intValue {
                     minutes = seconds / 60
                 }
+                // Prefer the absolute timestamp: the relative field reports the
+                // whole window length while a window is still unused, so it
+                // drifts later on every refresh.
                 var resetsAt: Date?
-                if let seconds = ((dict["resets_in_seconds"] ?? dict["reset_after_seconds"]) as? NSNumber)?.doubleValue {
-                    resetsAt = Date().addingTimeInterval(seconds)
-                } else if let resets = ((dict["resets_at"] ?? dict["reset_at"]) as? NSNumber)?.doubleValue {
+                if let resets = ((dict["resets_at"] ?? dict["reset_at"]) as? NSNumber)?.doubleValue {
                     resetsAt = Date(timeIntervalSince1970: resets)
+                } else if let iso = AIUsageFetcher.parseISODate(dict["resets_at"] ?? dict["reset_at"]) {
+                    resetsAt = iso
+                } else if let seconds = ((dict["resets_in_seconds"] ?? dict["reset_after_seconds"]) as? NSNumber)?.doubleValue {
+                    resetsAt = Date().addingTimeInterval(seconds)
                 }
                 windows.append(AIUsageWindow(
                     label: label(forMinutes: minutes, index: windows.count),
