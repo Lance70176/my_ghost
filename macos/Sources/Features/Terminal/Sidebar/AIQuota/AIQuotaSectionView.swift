@@ -88,7 +88,7 @@ private struct AIQuotaAccountRow: View {
             .help(rowHelp)
 
             if let snapshot, !snapshot.windows.isEmpty {
-                ForEach(Array(snapshot.windows.enumerated()), id: \.offset) { _, window in
+                ForEach(snapshot.windows, id: \.label) { window in
                     HStack(spacing: 4) {
                         Text(window.label)
                             .font(.system(size: 9))
@@ -146,7 +146,7 @@ private struct AIQuotaAccountRow: View {
         if let resetsAt = window.resetsAt {
             lines.append("\(window.label): resets \(Self.dateTimeFormatter.string(from: resetsAt)) (\(remaining(until: resetsAt)))")
         } else {
-            lines.append(window.label)
+            lines.append("\(window.label): reset time unavailable")
         }
         if let fetchedAt = snapshot?.fetchedAt {
             lines.append("Updated \(Self.timeFormatter.string(from: fetchedAt))")
