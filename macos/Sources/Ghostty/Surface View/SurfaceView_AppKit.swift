@@ -1510,6 +1510,7 @@ extension Ghostty {
 
         @IBAction func paste(_ sender: Any?) {
             guard let surface = self.surface else { return }
+            if uploadPastedFilesIfNeeded() { return }
             if forwardImagePasteIfNeeded() { return }
             let action = "paste_from_clipboard"
             if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
@@ -1519,6 +1520,7 @@ extension Ghostty {
 
         @IBAction func pasteAsPlainText(_ sender: Any?) {
             guard let surface = self.surface else { return }
+            if uploadPastedFilesIfNeeded() { return }
             if forwardImagePasteIfNeeded() { return }
             let action = "paste_from_clipboard"
             if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
@@ -1532,6 +1534,21 @@ extension Ghostty {
         /// clipboard-aware programs like Claude Code read the image themselves.
         /// This must be a key event, not sendText: text is delivered as a
         /// (bracketed) paste which strips the control character.
+        /// Files copied in Finder paste as their *local* paths, which don't
+        /// exist on a remote host. In a remote tab, upload them first and paste
+        /// the remote paths instead.
+        private func uploadPastedFilesIfNeeded() -> Bool {
+            let pb = NSPasteboard.general
+            guard let urls = pb.readObjects(forClasses: [NSURL.self]) as? [URL] else {
+                return false
+            }
+            let fileURLs = urls.filter(\.isFileURL)
+            guard !fileURLs.isEmpty,
+                  let controller = self.window?.windowController as? SidebarTerminalController
+            else { return false }
+            return controller.uploadFilesToRemote(fileURLs, from: self)
+        }
+
         private func forwardImagePasteIfNeeded() -> Bool {
             let pb = NSPasteboard.general
             guard pb.getOpinionatedStringContents() == nil,
@@ -2165,6 +2182,15 @@ extension Ghostty.SurfaceView {
 
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
         let pb = sender.draggingPasteboard
+
+        // Remote tabs: a local path means nothing on the other host, so copy
+        // the files over and type the remote paths instead.
+        if let controller = self.window?.windowController as? SidebarTerminalController,
+           let urls = pb.readObjects(forClasses: [NSURL.self]) as? [URL],
+           !urls.filter(\.isFileURL).isEmpty,
+           controller.uploadFilesToRemote(urls.filter(\.isFileURL), from: self) {
+            return true
+        }
 
         // Use the unified pasteboard handler which handles file URLs,
         // image data, and plain strings with proper accessibility checks.

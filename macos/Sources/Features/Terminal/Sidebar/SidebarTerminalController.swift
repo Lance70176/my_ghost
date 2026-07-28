@@ -526,16 +526,9 @@ class SidebarTerminalController: BaseTerminalController {
     /// the paste was handled here. Only the tab's original surface runs ssh —
     /// splits opened inside a remote tab are local shells and return false.
     func pasteClipboardImageToRemote(from surfaceView: Ghostty.SurfaceView) -> Bool {
-        var entry: SidebarTabEntry?
-        outer: for tab in tabs {
-            for candidate in [tab] + tab.children {
-                if candidate.originalSurface === surfaceView {
-                    entry = candidate
-                    break outer
-                }
-            }
+        guard let entry = remoteEntry(for: surfaceView), let target = entry.remoteTarget else {
+            return false
         }
-        guard let entry, let target = entry.remoteTarget else { return false }
 
         RemoteHostManager.shared.uploadClipboardImage(
             target: target,
@@ -555,6 +548,58 @@ class SidebarTerminalController: BaseTerminalController {
             surfaceView?.surfaceModel?.sendText(remotePath + " ")
         }
         return true
+    }
+
+    /// If `surfaceView` is the ssh surface of a remote tab, copy `urls` to that
+    /// host and type the remote paths, so a local file dropped or pasted into a
+    /// remote tab is readable by programs running there. Returns true when the
+    /// upload was started here.
+    func uploadFilesToRemote(_ urls: [URL], from surfaceView: Ghostty.SurfaceView) -> Bool {
+        guard !urls.isEmpty,
+              let entry = remoteEntry(for: surfaceView),
+              let target = entry.remoteTarget
+        else { return false }
+
+        RemoteHostManager.shared.uploadFiles(
+            urls,
+            target: target,
+            options: entry.remoteSSHOptions
+        ) { [weak surfaceView, weak self] remotePaths in
+            if remotePaths.count < urls.count {
+                NSSound.beep()
+                if let window = self?.window {
+                    let failed = urls.count - remotePaths.count
+                    let alert = NSAlert()
+                    alert.messageText = failed == urls.count
+                        ? "Upload failed"
+                        : "Some files were not uploaded"
+                    alert.informativeText =
+                        "Could not copy \(failed) of \(urls.count) item(s) to \(target)."
+                    alert.alertStyle = .warning
+                    alert.beginSheetModal(for: window)
+                }
+            }
+            guard !remotePaths.isEmpty else { return }
+            // Quote paths so spaces survive, and leave a trailing space so the
+            // user can keep typing after the last path.
+            let text = remotePaths
+                .map { $0.contains(" ") ? "'\($0.replacingOccurrences(of: "'", with: #"'\''"#))'" : $0 }
+                .joined(separator: " ")
+            surfaceView?.surfaceModel?.sendText(text + " ")
+        }
+        return true
+    }
+
+    /// The tab entry whose ssh surface is `surfaceView`, if any. Only a tab's
+    /// original surface runs ssh — splits opened inside a remote tab are local
+    /// shells, so they don't match.
+    private func remoteEntry(for surfaceView: Ghostty.SurfaceView) -> SidebarTabEntry? {
+        for tab in tabs {
+            for candidate in [tab] + tab.children where candidate.originalSurface === surfaceView {
+                return candidate
+            }
+        }
+        return nil
     }
 
     /// Kill the tmux session backing a tab. Local sessions are always killed.

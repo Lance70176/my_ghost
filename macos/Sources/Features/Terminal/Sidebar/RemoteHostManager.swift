@@ -287,6 +287,117 @@ class RemoteHostManager {
         }
     }
 
+    /// Directory on the remote host that dropped/pasted files are copied into.
+    /// A stable location rather than /tmp, which the system prunes — an agent
+    /// reading the file later shouldn't find it gone.
+    static let uploadDirectory = "$HOME/myghost-uploads"
+
+    /// Copy local files (or folders) to the remote host so remote programs can
+    /// read them, calling `completion` on the main queue with the remote paths
+    /// in the same order. Paths that failed to upload are omitted.
+    ///
+    /// Files stream through `ssh … cat`, folders through `tar`, so both reuse
+    /// the exact ssh options the tab connected with. The remote side picks a
+    /// non-clashing name and echoes back the path it actually wrote.
+    func uploadFiles(
+        _ localURLs: [URL],
+        target: String,
+        options: [String],
+        completion: @escaping ([String]) -> Void
+    ) {
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            let paths = localURLs.compactMap {
+                uploadOne($0, target: target, options: options)
+            }
+            DispatchQueue.main.async { completion(paths) }
+        }
+    }
+
+    /// Upload one file or folder, returning the remote path it landed on.
+    /// Runs synchronously — call it off the main thread.
+    private func uploadOne(_ localURL: URL, target: String, options: [String]) -> String? {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: localURL.path, isDirectory: &isDirectory) else {
+            return nil
+        }
+        let name = localURL.lastPathComponent
+        guard !name.isEmpty else { return nil }
+
+        let ssh = Process()
+        ssh.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        ssh.arguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
+            + options
+            + [target, "--", Self.remoteReceiveCommand(name: name, isDirectory: isDirectory.boolValue)]
+
+        let output = Pipe()
+        ssh.standardOutput = output
+        ssh.standardError = FileHandle.nullDevice
+
+        // A folder is streamed as a tar of its contents; a file is streamed raw.
+        var tar: Process?
+        if isDirectory.boolValue {
+            let pipe = Pipe()
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+            process.arguments = [
+                "-cf", "-",
+                "-C", localURL.deletingLastPathComponent().path,
+                name,
+            ]
+            process.standardOutput = pipe
+            process.standardError = FileHandle.nullDevice
+            ssh.standardInput = pipe
+            tar = process
+        } else {
+            guard let handle = FileHandle(forReadingAtPath: localURL.path) else { return nil }
+            ssh.standardInput = handle
+        }
+
+        do {
+            try ssh.run()
+            try tar?.run()
+        } catch {
+            return nil
+        }
+        // Read before waiting so a large listing can't fill the pipe buffer.
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        ssh.waitUntilExit()
+        tar?.waitUntilExit()
+
+        guard ssh.terminationStatus == 0,
+              let remotePath = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !remotePath.isEmpty
+        else { return nil }
+        return remotePath
+    }
+
+    /// The command run on the remote host to receive one upload.
+    ///
+    /// The remote login shell may be fish, which can't parse POSIX syntax, so
+    /// the script is base64'd and handed to `/bin/sh` — that also keeps the
+    /// file name clear of any quoting. stdin stays free for the payload.
+    private static func remoteReceiveCommand(name: String, isDirectory: Bool) -> String {
+        let receive = isDirectory
+            ? #"mkdir -p "$p"; tar -xf - -C "$p" --strip-components 1"#
+            : #"cat > "$p""#
+        let script = """
+        set -e
+        d="\(uploadDirectory)"
+        mkdir -p "$d"
+        n=$MG_NAME
+        p="$d/$n"
+        i=1
+        while [ -e "$p" ]; do p="$d/$i-$n"; i=$((i+1)); done
+        \(receive)
+        printf '%s\\n' "$p"
+        """
+        let scriptB64 = Data(script.utf8).base64EncodedString()
+        let nameB64 = Data(name.utf8).base64EncodedString()
+        return "/bin/sh -c 'MG_NAME=$(printf %s \(nameB64) | base64 -d); "
+            + "eval \"$(printf %s \(scriptB64) | base64 -d)\"'"
+    }
+
     /// The clipboard image as PNG data: raw PNG if present, otherwise any
     /// image representation (TIFF, copied file, …) converted via NSImage.
     private func clipboardPNGData() -> Data? {
