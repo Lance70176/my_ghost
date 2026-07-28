@@ -397,12 +397,14 @@ class SidebarTerminalController: BaseTerminalController {
 
     /// Add a new tab on the currently selected host: a local shell for the
     /// local host, or a new SSH connection (with its own remote tmux session)
-    /// for a remote host — so the "+" button behaves the same everywhere.
-    func addTabForCurrentHost() {
+    /// for a remote host — so the "+" button and Cmd+T behave the same
+    /// everywhere. `baseConfig` (an inherited working directory, say) only
+    /// applies to local tabs; a remote tab builds its own ssh command.
+    func addTabForCurrentHost(baseConfig: Ghostty.SurfaceConfiguration? = nil) {
         if let host = currentHost, let target = host.target {
             addRemoteTab(target: target, options: host.sshOptions, displayName: host.name)
         } else {
-            addNewTab()
+            addNewTab(baseConfig: baseConfig)
         }
     }
 

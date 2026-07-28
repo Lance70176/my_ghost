@@ -969,9 +969,11 @@ class AppDelegate: NSObject,
         let configAny = notification.userInfo?[Ghostty.Notification.NewSurfaceConfigKey]
         let config = configAny as? Ghostty.SurfaceConfiguration
 
-        // If the window is managed by a SidebarTerminalController, add a tab there.
+        // If the window is managed by a SidebarTerminalController, add a tab
+        // there — on the host tab that is currently selected, so Cmd+T inside
+        // a remote host stays on that host instead of dropping back to local.
         if let sidebarController = window.windowController as? SidebarTerminalController {
-            sidebarController.addNewTab(baseConfig: config)
+            sidebarController.addTabForCurrentHost(baseConfig: config)
             return
         }
 
@@ -1212,9 +1214,10 @@ class AppDelegate: NSObject,
     }
 
     @IBAction func newTab(_ sender: Any?) {
-        // If the key window is a SidebarTerminalController, add a tab there.
+        // If the key window is a SidebarTerminalController, add a tab there —
+        // on the currently selected host, not always the local one.
         if let sidebarController = NSApp.keyWindow?.windowController as? SidebarTerminalController {
-            sidebarController.addNewTab()
+            sidebarController.addTabForCurrentHost()
             return
         }
         _ = TerminalController.newTab(
