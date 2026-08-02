@@ -18,6 +18,19 @@
   <a href="https://github.com/Lance70176/my_ghost/releases">All releases（所有版本）</a>
 </p>
 
+## Platforms · 平台入口
+
+| Platform | How to use |
+| --- | --- |
+| **macOS** | Native app — [download `MyGhost.dmg`](https://github.com/Lance70176/my_ghost/releases/latest/download/MyGhost.dmg), drag to Applications.<br>原生 App：下載 DMG 拖進 Applications 即可。 |
+| **Windows / Linux / any browser** | [**MyGhost Web**](web/README.md) — run the bundled web server on the Mac that owns your sessions, then open the printed URL from any browser: same tabs, terminal, file browser, and AI usage panel.<br>在持有 session 的 Mac 上啟動內附的 web 伺服器（`web/start.sh`），任何瀏覽器開啟網址就能使用同一批分頁、終端機、檔案瀏覽器與 AI 額度面板。 |
+
+> The terminal core and session persistence are macOS-native (Ghostty + tmux),
+> so there is no standalone Windows build — MyGhost Web is the supported way to
+> work from Windows.
+> 終端核心與 session 持久化是 macOS 原生實作（Ghostty＋tmux），因此沒有獨立的
+> Windows 版；Windows 請使用 MyGhost Web。
+
 ---
 
 ## Screenshots · 截圖

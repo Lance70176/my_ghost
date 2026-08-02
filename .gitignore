@@ -26,3 +26,8 @@ glad.zip
 
 vgcore.*
 default.profraw
+
+# MyGhost Web
+web/node_modules/
+web/web.log
+web/.web.pid

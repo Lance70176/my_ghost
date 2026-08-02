@@ -1,0 +1,16 @@
+{
+  "name": "myghost-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Browser access to MyGhost tmux sessions — terminal, file browser, and AI usage from any OS",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "node-pty": "^1.0.0",
+    "ws": "^8.18.0"
+  }
+}
