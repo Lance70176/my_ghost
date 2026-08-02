@@ -48,6 +48,12 @@ function loadToken() {
 }
 const TOKEN = loadToken();
 
+// MYGHOST_WEB_NO_AUTH=1 turns the token check off entirely — for networks
+// where every device is trusted (a private tailnet / home LAN). Anyone who
+// can reach the port then has a full shell as this user; leave auth on if
+// guests ever join the network.
+const NO_AUTH = process.env.MYGHOST_WEB_NO_AUTH === "1";
+
 function requestToken(req) {
   const url = new URL(req.url, "http://x");
   if (url.searchParams.get("token")) return url.searchParams.get("token");
@@ -60,6 +66,7 @@ function requestToken(req) {
 }
 
 function authed(req) {
+  if (NO_AUTH) return true;
   const got = requestToken(req);
   if (!got || got.length !== TOKEN.length) return false;
   return crypto.timingSafeEqual(Buffer.from(got), Buffer.from(TOKEN));
@@ -486,8 +493,9 @@ server.listen(PORT, HOST, () => {
   for (const list of Object.values(ifaces))
     for (const i of list || [])
       if (i.family === "IPv4" && !i.internal) addrs.push(i.address);
-  console.log(`MyGhost Web listening on port ${PORT}`);
-  console.log(`  local:  http://127.0.0.1:${PORT}/?token=${TOKEN}`);
-  for (const a of addrs) console.log(`  lan:    http://${a}:${PORT}/?token=${TOKEN}`);
-  console.log(`Token file: ${TOKEN_FILE}`);
+  const suffix = NO_AUTH ? "" : `/?token=${TOKEN}`;
+  console.log(`MyGhost Web listening on port ${PORT}${NO_AUTH ? " (no auth)" : ""}`);
+  console.log(`  local:  http://127.0.0.1:${PORT}${suffix}`);
+  for (const a of addrs) console.log(`  lan:    http://${a}:${PORT}${suffix}`);
+  if (!NO_AUTH) console.log(`Token file: ${TOKEN_FILE}`);
 });

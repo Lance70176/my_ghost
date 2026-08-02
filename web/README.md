@@ -18,7 +18,18 @@ cd web
 ./start.sh              # foreground（第一次會自動 npm install）
 ./start.sh --daemon     # background，log 寫到 web.log
 ./start.sh --stop       # stop the daemon
+
+# Start at login and keep alive (launchd) · 開機自動啟動
+./install-launchd.sh              # with token auth
+./install-launchd.sh --no-auth    # no token — trusted networks only
+./install-launchd.sh --uninstall
 ```
+
+`--no-auth` skips the token entirely; anyone who can reach the port gets a
+shell as your user, so only use it on a fully trusted network (private
+tailnet / home LAN with no guests).
+`--no-auth` 會完全關閉 token 驗證；能連上這個 port 的人就等於拿到你的 shell，
+請只在完全信任的網路（私人 tailnet／無訪客的家用網路）使用。
 
 The server prints a tokened URL like
 `http://<ip>:8899/?token=…` — open it from any browser. The token is stored in
