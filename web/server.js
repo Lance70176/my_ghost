@@ -508,6 +508,37 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok: true });
     }
 
+    // Scroll a session's history. tmux runs on the alternate screen, so the
+    // scrollback lives in tmux, not in the browser's terminal — asking tmux to
+    // scroll is the only thing that moves it. `copy-mode -e` leaves the mode on
+    // its own once the view is back at the bottom, so typing afterwards isn't
+    // swallowed by copy mode.
+    if (p === "/api/scroll" && req.method === "POST") {
+      const session = url.searchParams.get("session") || "";
+      if (!/^myghost[a-zA-Z0-9_-]*$/.test(session)) {
+        return send(res, 400, { error: "bad session" });
+      }
+      let body = "";
+      for await (const c of req) body += c;
+      const lines = Math.trunc(Number(JSON.parse(body || "{}").lines) || 0);
+      if (!lines) return send(res, 200, { ok: true });
+
+      const count = Math.min(Math.abs(lines), 200);
+      const inMode =
+        (await tmux(["display-message", "-p", "-t", session, "#{pane_in_mode}"]).catch(
+          () => "0"
+        )).trim() === "1";
+      if (!inMode) {
+        if (lines < 0) return send(res, 200, { ok: true }); // already at the bottom
+        await tmux(["copy-mode", "-e", "-t", session]);
+      }
+      await tmux([
+        "send-keys", "-t", session, "-X", "-N", String(count),
+        lines > 0 ? "scroll-up" : "scroll-down",
+      ]).catch(() => {});
+      return send(res, 200, { ok: true });
+    }
+
     if (p === "/api/files" && req.method === "GET") {
       const dir = safePath(url.searchParams.get("path"));
       if (!dir) return send(res, 400, { error: "path outside home" });

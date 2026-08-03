@@ -52,46 +52,73 @@
 
   const IS_TOUCH = window.matchMedia("(pointer: coarse)").matches;
 
-  /// Drag to scroll the scrollback.
+  /// Scroll the session's history.
   ///
-  /// Full-screen programs (Claude Code, vim) turn on mouse reporting, and the
-  /// terminal then forwards a touch drag to the program as a mouse drag — so
-  /// the view never moves. Take vertical drags for scrolling before the
-  /// terminal sees them; horizontal drags still reach the program.
+  /// tmux runs on the alternate screen, so the browser terminal holds no
+  /// scrollback of its own — `scrollLines` here would move nothing. The
+  /// history belongs to tmux, so the server asks tmux to scroll it.
+  /// Positive lines go back into history.
+  let scrollPending = 0;
+  let scrollInFlight = false;
+  function scrollSession(lines) {
+    if (!current || !lines) return;
+    scrollPending += lines;
+    if (scrollInFlight) return;
+    scrollInFlight = true;
+    const flush = () => {
+      const batch = scrollPending;
+      scrollPending = 0;
+      if (!batch) { scrollInFlight = false; return; }
+      fetch(`/api/scroll?session=${encodeURIComponent(current)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lines: batch }),
+      }).catch(() => {}).then(() => setTimeout(flush, 40));
+    };
+    flush();
+  }
+
+  /// Drag to scroll.
+  ///
+  /// Full-screen programs turn on mouse reporting, so a touch drag would
+  /// otherwise reach the program as a mouse drag and move nothing. Claim
+  /// clearly vertical drags; horizontal ones still reach the program.
   function installTouchScroll() {
     const el = $("terminal");
     let lastY = null;
     let carry = 0;
-    let scrolling = false;
+    let claimed = false;
 
-    const rowHeight = () => Math.max(1, el.clientHeight / (term.rows || 24));
+    const rowHeight = () => Math.max(12, el.clientHeight / (term.rows || 24));
 
     el.addEventListener("touchstart", (e) => {
       if (e.touches.length !== 1) return;
       lastY = e.touches[0].clientY;
       carry = 0;
-      scrolling = false;
+      claimed = false;
     }, { capture: true, passive: true });
 
     el.addEventListener("touchmove", (e) => {
       if (lastY === null || e.touches.length !== 1) return;
       const y = e.touches[0].clientY;
-      const dy = lastY - y;
-      // Only claim the gesture once it is clearly vertical.
-      if (!scrolling && Math.abs(carry + dy) < 8) { carry += dy; lastY = y; return; }
-      scrolling = true;
-      carry += dy;
+      carry += lastY - y;
+      lastY = y;
+      if (!claimed) {
+        if (Math.abs(carry) < 10) return;
+        claimed = true;
+      }
+      // Dragging up (content moves up) reveals newer output, so a downward
+      // drag goes back into history — the direction a scrollbar would imply.
       const lines = Math.trunc(carry / rowHeight());
       if (lines !== 0) {
-        term.scrollLines(lines);
+        scrollSession(-lines);
         carry -= lines * rowHeight();
       }
-      lastY = y;
       e.preventDefault();
       e.stopPropagation();
     }, { capture: true, passive: false });
 
-    const end = () => { lastY = null; scrolling = false; };
+    const end = () => { lastY = null; claimed = false; };
     el.addEventListener("touchend", end, { capture: true, passive: true });
     el.addEventListener("touchcancel", end, { capture: true, passive: true });
   }
@@ -157,6 +184,14 @@
       button.onclick = () => {
         sendRaw(KEYS[button.dataset.key] || "");
         input.focus();
+      };
+    }
+    // Half-page jumps, for when a drag is awkward (or lands on something the
+    // program wants to handle itself).
+    for (const button of bar.querySelectorAll("#compose-keys button[data-scroll]")) {
+      button.onclick = () => {
+        const page = Math.max(3, Math.floor((term.rows || 24) / 2));
+        scrollSession(Number(button.dataset.scroll) * page);
       };
     }
   }
