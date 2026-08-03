@@ -15,6 +15,9 @@ class SidebarTerminalController: BaseTerminalController {
     /// All tabs managed by this controller.
     @Published var tabs: [SidebarTabEntry] = []
 
+    /// Picks up tab reordering done in MyGhost Web.
+    private let webOrderSync = WebOrderSync()
+
     /// The ID of the currently selected tab (top-level tab or group).
     @Published var selectedTabID: UUID?
 
@@ -111,6 +114,11 @@ class SidebarTerminalController: BaseTerminalController {
             selector: #selector(ghosttyConfigDidChange(_:)),
             name: .ghosttyConfigDidChange,
             object: nil)
+
+        webOrderSync.onOrderChanged = { [weak self] order in
+            self?.applyWebOrder(order)
+        }
+        webOrderSync.start()
     }
 
     required init?(coder: NSCoder) {
@@ -120,6 +128,41 @@ class SidebarTerminalController: BaseTerminalController {
     deinit {
         NotificationCenter.default.removeObserver(self)
         Self.allControllers.remove(self)
+        webOrderSync.stop()
+    }
+
+    // MARK: - Web ordering
+
+    /// Applies an ordering made in MyGhost Web to this window's tabs.
+    /// Reordering only — tabs are never added or removed from here.
+    private func applyWebOrder(_ order: [String]) {
+        guard !tabs.isEmpty else { return }
+        // A group is one entry in `tabs`; place it where its first member sits
+        // in the browser's list.
+        func rank(_ tab: SidebarTabEntry) -> Int? {
+            let names = tab.isGroup
+                ? tab.children.compactMap { $0.screenSessionName }
+                : [tab.screenSessionName].compactMap { $0 }
+            return names.compactMap { order.firstIndex(of: $0) }.min()
+        }
+
+        // Tabs the browser doesn't know about (another host's, or created
+        // since) keep their current position relative to the ones it does.
+        let ranked = tabs.enumerated().map { index, tab in
+            (tab: tab, rank: rank(tab), index: index)
+        }
+        let reordered = ranked.sorted { lhs, rhs in
+            switch (lhs.rank, rhs.rank) {
+            case let (l?, r?): return l == r ? lhs.index < rhs.index : l < r
+            case (nil, _?): return false
+            case (_?, nil): return true
+            case (nil, nil): return lhs.index < rhs.index
+            }
+        }.map(\.tab)
+
+        guard !reordered.elementsEqual(tabs, by: { $0 === $1 }) else { return }
+        tabs = reordered
+        saveScreenSessionState()
     }
 
     // MARK: - Hashable (for Set storage)

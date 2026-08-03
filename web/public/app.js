@@ -89,25 +89,22 @@
   function renderTabs() {
     const list = $("tab-list");
     list.innerHTML = "";
-    const groups = new Map();
+    // Walk the list in order and start a group wherever the group changes, so
+    // groups sit between the tabs around them exactly as they do in the app —
+    // bucketing by group instead pushed every group to the bottom.
+    let openGroup = null;
     for (const s of state.sessions) {
-      const key = s.group || "";
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(s);
-    }
-    const ordered = [...groups.entries()].sort((a, b) => {
-      if (a[0] === "") return -1;
-      if (b[0] === "") return 1;
-      return a[0].localeCompare(b[0]);
-    });
-    for (const [group, sessions] of ordered) {
-      if (group) {
-        const label = document.createElement("div");
-        label.className = "group-label";
-        label.textContent = group;
-        list.appendChild(label);
+      const group = s.group || "";
+      if (group !== openGroup) {
+        openGroup = group;
+        if (group) {
+          const label = document.createElement("div");
+          label.className = "group-label";
+          label.textContent = group;
+          list.appendChild(label);
+        }
       }
-      for (const s of sessions) {
+      {
         const el = document.createElement("div");
         el.className = "tab" + (s.name === current ? " active" : "");
         const title = document.createElement("span");
