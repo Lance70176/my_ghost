@@ -121,6 +121,31 @@ body {
 }
 .xterm .xterm-viewport { background: transparent !important; }
 
+/* --- Claude conversations --- */
+#agent-pane { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+.pane-hint { font-size: 10px; color: #6f748a; padding: 8px 12px 4px; }
+#agent-list { flex: 1; padding: 0 6px 10px; }
+.agent {
+  display: flex; align-items: flex-start; gap: 7px; text-decoration: none;
+  padding: 7px 8px; border-radius: 6px; color: inherit;
+}
+.agent:hover { background: #232734; }
+.agent-state {
+  flex: none; width: 15px; text-align: center; font-size: 10px;
+  line-height: 16px; border-radius: 4px; background: #2c2f3b; color: #8a8fa3;
+}
+.agent-state.s-blocked { background: #4a3d1d; color: #e0c04e; }
+.agent-state.s-working { background: #1e3f2a; color: #78c87c; }
+.agent-state.s-failed { background: #4a2626; color: #e06c75; }
+.agent-body { display: flex; flex-direction: column; min-width: 0; }
+.agent-name {
+  font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.agent-sub {
+  font-size: 10px; color: #6f748a;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
 /* --- touch compose bar --- */
 #compose {
   position: absolute; left: 0; right: 0; bottom: 0;

@@ -505,14 +505,61 @@
   $("expand-sidebar").onclick = () => setCollapsed(false);
   if (localStorage.getItem("myghost_sidebar_collapsed") === "1") setCollapsed(true);
 
+  // ------------------------------------------------------------------ agents
+
+  /// Claude Code conversations on this machine, each linking to claude.ai/code
+  /// — the address the Claude phone app opens, so a conversation started here
+  /// can be carried on there.
+  async function loadAgents() {
+    const list = $("agent-list");
+    let agents;
+    try {
+      agents = (await api("/api/agents")).agents;
+    } catch {
+      list.textContent = "Couldn't read conversations.";
+      return;
+    }
+    list.innerHTML = "";
+    if (!agents.length) {
+      list.innerHTML = '<div class="pane-hint">No conversations found.</div>';
+      return;
+    }
+    for (const a of agents) {
+      const row = document.createElement("a");
+      row.className = "agent";
+      row.href = a.url;
+      row.target = "_blank";
+      row.rel = "noopener";
+      const state = document.createElement("span");
+      state.className = "agent-state s-" + a.state;
+      state.textContent = { blocked: "?", working: "▸", failed: "!", stopped: "■" }[a.state] || "✓";
+      state.title = a.state;
+      const body = document.createElement("span");
+      body.className = "agent-body";
+      const title = document.createElement("span");
+      title.className = "agent-name";
+      title.textContent = a.name;
+      const sub = document.createElement("span");
+      sub.className = "agent-sub";
+      sub.textContent = a.project + (a.detail ? " · " + a.detail : "");
+      body.append(title, sub);
+      row.append(state, body);
+      list.appendChild(row);
+    }
+  }
+
   $("mode-term").onclick = () => setMode("term");
   $("mode-files").onclick = () => setMode("files");
+  $("mode-agents").onclick = () => setMode("agents");
   function setMode(m) {
     $("mode-term").classList.toggle("active", m === "term");
     $("mode-files").classList.toggle("active", m === "files");
+    $("mode-agents").classList.toggle("active", m === "agents");
     $("tab-pane").classList.toggle("hidden", m !== "term");
     $("file-pane").classList.toggle("hidden", m !== "files");
+    $("agent-pane").classList.toggle("hidden", m !== "agents");
     if (m === "files" && cwd === null) loadDir("");
+    if (m === "agents") loadAgents();
   }
 
   // ------------------------------------------------------------------ boot
