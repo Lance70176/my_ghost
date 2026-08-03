@@ -204,6 +204,7 @@
       ws = null;
     }
     current = name;
+    localStorage.setItem("myghost_last_session", name);
     $("term-empty").classList.add("hidden");
     term.clear();
     fit.fit();
@@ -516,9 +517,31 @@
 
   // ------------------------------------------------------------------ boot
 
-  // No auto-attach: attaching resizes the tmux window for every client, so
-  // grabbing a session the desktop app is showing should be a deliberate act.
-  refreshState();
+  /// The session to open on load, if any.
+  ///
+  /// `?tab=` names one outright — hand a phone a Home Screen shortcut with it
+  /// and the page lands straight in that conversation. Otherwise reopen
+  /// whatever was last attached from this browser. There is no blind "first
+  /// session" fallback: attaching resizes the tmux window for every client, so
+  /// it should only happen where it was asked for.
+  function preferredSession() {
+    const want = new URL(location.href).searchParams.get("tab");
+    if (want) {
+      const needle = want.toLowerCase();
+      const match =
+        state.sessions.find((s) => s.name === want) ||
+        state.sessions.find((s) => (s.title || "").toLowerCase() === needle) ||
+        state.sessions.find((s) => (s.title || "").toLowerCase().includes(needle));
+      if (match) return match.name;
+    }
+    const last = localStorage.getItem("myghost_last_session");
+    return last && state.sessions.some((s) => s.name === last) ? last : null;
+  }
+
+  refreshState().then(() => {
+    const target = preferredSession();
+    if (target) attach(target);
+  });
   refreshAI();
   setInterval(refreshState, 5000);
   setInterval(refreshAI, 60000);
