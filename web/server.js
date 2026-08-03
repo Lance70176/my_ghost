@@ -226,65 +226,6 @@ function appTabOrder(alive) {
 }
 
 // ---------------------------------------------------------------------------
-// Claude Code agents
-//
-// Each background agent conversation is a directory under ~/.claude/jobs. The
-// ones bridged to Anthropic's servers carry a `bridgeSessionId` like
-// "cse_01AbC…", and the same id as "session_01AbC…" is what claude.ai/code
-// uses — which is the link the Claude phone app opens. Surfacing it lets a
-// conversation started on this Mac be picked up in the app.
-
-const JOBS_DIR = path.join(os.homedir(), ".claude/jobs");
-
-function agentURL(bridgeSessionId) {
-  if (typeof bridgeSessionId !== "string") return null;
-  const suffix = bridgeSessionId.replace(/^cse_/, "");
-  if (!suffix) return null;
-  return `https://claude.ai/code/session_${suffix}`;
-}
-
-function listAgents() {
-  let dirs = [];
-  try {
-    dirs = fs.readdirSync(JOBS_DIR, { withFileTypes: true })
-      .filter((d) => d.isDirectory())
-      .map((d) => path.join(JOBS_DIR, d.name, "state.json"));
-  } catch {
-    return [];
-  }
-
-  const agents = [];
-  for (const file of dirs) {
-    let stat, state;
-    try {
-      stat = fs.statSync(file);
-      state = JSON.parse(fs.readFileSync(file, "utf8"));
-    } catch {
-      continue;
-    }
-    const url = agentURL(state.bridgeSessionId);
-    if (!url) continue; // not bridged — nothing for the app to open
-    agents.push({
-      id: path.basename(path.dirname(file)),
-      name: state.name || path.basename(state.cwd || "") || "(untitled)",
-      detail: typeof state.detail === "string" ? state.detail.slice(0, 160) : "",
-      state: state.state || "unknown",
-      project: path.basename(state.cwd || ""),
-      updatedAt: stat.mtimeMs,
-      url,
-    });
-  }
-  // Live conversations first, then most recently touched.
-  const rank = { blocked: 0, working: 1, stopped: 2, failed: 3, done: 4 };
-  agents.sort((a, b) => {
-    const ra = rank[a.state] ?? 5;
-    const rb = rank[b.state] ?? 5;
-    return ra !== rb ? ra - rb : b.updatedAt - a.updatedAt;
-  });
-  return agents.slice(0, 40);
-}
-
-// ---------------------------------------------------------------------------
 // AI usage (same endpoints the app queries), cached briefly.
 
 function getJSON(url, headers) {
@@ -631,12 +572,6 @@ const server = http.createServer(async (req, res) => {
         req.on("error", bad);
       });
       return send(res, 200, { path: dest });
-    }
-
-    // Claude Code agent conversations running on this machine, each with the
-    // claude.ai link that opens it in the Claude app.
-    if (p === "/api/agents" && req.method === "GET") {
-      return send(res, 200, { agents: listAgents() });
     }
 
     if (p === "/api/ai-usage" && req.method === "GET") {

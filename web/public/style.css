@@ -58,18 +58,40 @@ body {
 #new-tab:hover { background: #3a3e50; }
 #host-name { font-size: 11px; color: #8a8fa3; }
 #tab-list { flex: 1; padding: 2px 6px 10px; }
+/* Group heading and member rows mirror the app's sidebar: a chevron and
+   stack glyph on the group, and a tree line plus terminal glyph on each
+   member, with the active row's glyph picking up the accent colour. */
 .group-label {
-  display: flex; align-items: center; gap: 5px;
-  font-size: 10px; font-weight: 600; color: #8a8fa3;
-  padding: 8px 6px 2px; text-transform: none;
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13px; font-weight: 500; color: #d8dae2;
+  padding: 7px 6px 3px; cursor: pointer; user-select: none;
 }
-.group-label svg { flex: none; opacity: 0.85; }
+.group-label .chev, .group-label .gicon {
+  display: flex; align-items: center; color: #8a8fa3; flex: none;
+}
+.group-label .gname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .tab {
   display: flex; align-items: center; gap: 6px;
   padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 13px;
 }
 .tab:hover { background: #232734; }
 .tab.active { background: #2e3342; }
+.tab.active .title { font-weight: 600; }
+
+/* Members sit under the group with the app's connector and glyph. */
+.tab.child { position: relative; margin-left: 16px; padding-left: 20px; }
+.tab.child::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0;
+  border-left: 1px solid #3a3e50;
+}
+.tab.child::after {
+  content: ""; position: absolute; left: 1px; top: 50%; width: 7px;
+  border-top: 1px solid #3a3e50;
+}
+.tab .ticon { display: flex; align-items: center; color: #8a8fa3; flex: none; }
+.tab.active .ticon { color: #4a8cf7; }
+
 .tab .title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tab .badge { font-size: 9px; color: #8a8fa3; border: 1px solid #3a3e50;
   border-radius: 3px; padding: 0 4px; }
@@ -120,31 +142,6 @@ body {
   justify-content: center; color: #565b6e; font-size: 14px;
 }
 .xterm .xterm-viewport { background: transparent !important; }
-
-/* --- Claude conversations --- */
-#agent-pane { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
-.pane-hint { font-size: 10px; color: #6f748a; padding: 8px 12px 4px; }
-#agent-list { flex: 1; padding: 0 6px 10px; }
-.agent {
-  display: flex; align-items: flex-start; gap: 7px; text-decoration: none;
-  padding: 7px 8px; border-radius: 6px; color: inherit;
-}
-.agent:hover { background: #232734; }
-.agent-state {
-  flex: none; width: 15px; text-align: center; font-size: 10px;
-  line-height: 16px; border-radius: 4px; background: #2c2f3b; color: #8a8fa3;
-}
-.agent-state.s-blocked { background: #4a3d1d; color: #e0c04e; }
-.agent-state.s-working { background: #1e3f2a; color: #78c87c; }
-.agent-state.s-failed { background: #4a2626; color: #e06c75; }
-.agent-body { display: flex; flex-direction: column; min-width: 0; }
-.agent-name {
-  font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.agent-sub {
-  font-size: 10px; color: #6f748a;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
 
 /* --- touch compose bar --- */
 #compose {

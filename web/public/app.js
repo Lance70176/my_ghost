@@ -5,6 +5,25 @@
   // Glyph for the "join to group" button: a framed plus, which reads as
   // "add into a container" next to the plain ▲▼ move controls.
   const JOIN_GLYPH = "&#8862;"; // ⊞
+
+  // Sidebar glyphs drawn to match the app's SF Symbols: chevron.down /
+  // chevron.right on a group, rectangle.stack for the group itself, and
+  // the terminal icon each group member carries.
+  const svg = (body, size = 13) =>
+    `<svg viewBox="0 0 16 16" width="${size}" height="${size}" fill="none" ` +
+    `stroke="currentColor" stroke-width="1.5" stroke-linecap="round" ` +
+    `stroke-linejoin="round">${body}</svg>`;
+  const ICON = {
+    chevronDown: svg('<path d="M4 6.5L8 10.5l4-4"/>', 11),
+    chevronRight: svg('<path d="M6.5 4l4 4-4 4"/>', 11),
+    stack: svg('<rect x="2.5" y="6" width="11" height="7.5" rx="1.8"/>' +
+               '<path d="M4.8 3.5h6.4"/>', 12),
+    terminal: svg('<rect x="1.8" y="3.5" width="12.4" height="9" rx="2"/>' +
+                  '<path d="M4.6 6.6L6.6 8l-2 1.4M8.4 9.8h3"/>', 13),
+  };
+
+  const collapsedGroups = new Set(
+    JSON.parse(localStorage.getItem("myghost_collapsed_groups") || "[]"));
   const api = (p, opts) => fetch(p, opts).then((r) => {
     if (!r.ok) throw new Error("HTTP " + r.status);
     return r.json();
@@ -250,21 +269,35 @@
         if (group) {
           const label = document.createElement("div");
           label.className = "group-label";
-          // Stacked rectangles, matching the app's rectangle.stack icon for a
-          // full-mode group — groups synced from here are always full mode.
+          const collapsed = collapsedGroups.has(group);
           label.innerHTML =
-            '<svg viewBox="0 0 16 16" width="11" height="11" fill="none" ' +
-            'stroke="currentColor" stroke-width="1.2">' +
-            '<rect x="1.5" y="4.5" width="10" height="8" rx="1.5"/>' +
-            '<path d="M4.5 4.5V3.2A1.7 1.7 0 0 1 6.2 1.5h6.1A1.7 1.7 0 0 1 14 3.2v6.1' +
-            'a1.7 1.7 0 0 1-1.7 1.7H11.5"/></svg>' +
-            `<span>${group}</span>`;
+            `<span class="chev">${collapsed ? ICON.chevronRight : ICON.chevronDown}</span>` +
+            `<span class="gicon">${ICON.stack}</span>` +
+            `<span class="gname"></span>`;
+          label.querySelector(".gname").textContent = group;
+          label.onclick = () => {
+            if (collapsedGroups.has(group)) collapsedGroups.delete(group);
+            else collapsedGroups.add(group);
+            localStorage.setItem(
+              "myghost_collapsed_groups", JSON.stringify([...collapsedGroups]));
+            renderTabs();
+          };
           list.appendChild(label);
         }
       }
+      if (group && collapsedGroups.has(group)) continue;
       {
         const el = document.createElement("div");
-        el.className = "tab" + (s.name === current ? " active" : "");
+        el.className = "tab" + (s.name === current ? " active" : "") +
+          (group ? " child" : "");
+        // Group members carry the app's tree line and terminal glyph; a
+        // top-level tab is plain text there, same as the app.
+        if (group) {
+          const icon = document.createElement("span");
+          icon.className = "ticon";
+          icon.innerHTML = ICON.terminal;
+          el.appendChild(icon);
+        }
         const title = document.createElement("span");
         title.className = "title";
         title.textContent = s.title;
@@ -505,61 +538,14 @@
   $("expand-sidebar").onclick = () => setCollapsed(false);
   if (localStorage.getItem("myghost_sidebar_collapsed") === "1") setCollapsed(true);
 
-  // ------------------------------------------------------------------ agents
-
-  /// Claude Code conversations on this machine, each linking to claude.ai/code
-  /// — the address the Claude phone app opens, so a conversation started here
-  /// can be carried on there.
-  async function loadAgents() {
-    const list = $("agent-list");
-    let agents;
-    try {
-      agents = (await api("/api/agents")).agents;
-    } catch {
-      list.textContent = "Couldn't read conversations.";
-      return;
-    }
-    list.innerHTML = "";
-    if (!agents.length) {
-      list.innerHTML = '<div class="pane-hint">No conversations found.</div>';
-      return;
-    }
-    for (const a of agents) {
-      const row = document.createElement("a");
-      row.className = "agent";
-      row.href = a.url;
-      row.target = "_blank";
-      row.rel = "noopener";
-      const state = document.createElement("span");
-      state.className = "agent-state s-" + a.state;
-      state.textContent = { blocked: "?", working: "▸", failed: "!", stopped: "■" }[a.state] || "✓";
-      state.title = a.state;
-      const body = document.createElement("span");
-      body.className = "agent-body";
-      const title = document.createElement("span");
-      title.className = "agent-name";
-      title.textContent = a.name;
-      const sub = document.createElement("span");
-      sub.className = "agent-sub";
-      sub.textContent = a.project + (a.detail ? " · " + a.detail : "");
-      body.append(title, sub);
-      row.append(state, body);
-      list.appendChild(row);
-    }
-  }
-
   $("mode-term").onclick = () => setMode("term");
   $("mode-files").onclick = () => setMode("files");
-  $("mode-agents").onclick = () => setMode("agents");
   function setMode(m) {
     $("mode-term").classList.toggle("active", m === "term");
     $("mode-files").classList.toggle("active", m === "files");
-    $("mode-agents").classList.toggle("active", m === "agents");
     $("tab-pane").classList.toggle("hidden", m !== "term");
     $("file-pane").classList.toggle("hidden", m !== "files");
-    $("agent-pane").classList.toggle("hidden", m !== "agents");
     if (m === "files" && cwd === null) loadDir("");
-    if (m === "agents") loadAgents();
   }
 
   // ------------------------------------------------------------------ boot
