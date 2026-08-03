@@ -13,8 +13,19 @@ AI 額度面板。
 
 ## Start · 啟動
 
+Run it from a copy **outside** the git checkout — `npm install`, logs and the
+pid file would otherwise show up as changes and block `git pull`:
+
+請從 git checkout **之外**的副本執行——否則 `npm install`、log 與 pid 檔會變成
+未提交的變更，讓 `git pull` 被擋下：
+
 ```bash
-cd web
+rsync -a --exclude node_modules web/ ~/myghost-web/
+cd ~/myghost-web && ./install-launchd.sh --no-auth
+```
+
+```bash
+cd web                  # or ~/myghost-web
 ./start.sh              # foreground（第一次會自動 npm install）
 ./start.sh --daemon     # background，log 寫到 web.log
 ./start.sh --stop       # stop the daemon
