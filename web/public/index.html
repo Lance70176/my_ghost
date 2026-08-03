@@ -44,6 +44,24 @@
   <main id="term-wrap">
     <div id="term-empty">Select a tab to attach</div>
     <div id="terminal"></div>
+    <!-- Touch devices compose here instead of typing into the terminal:
+         iOS dictation and IME rewrite text as they go, which the terminal
+         can only take as a stream of fresh keystrokes. -->
+    <div id="compose" class="hidden">
+      <div id="compose-keys">
+        <button data-key="esc">esc</button>
+        <button data-key="tab">tab</button>
+        <button data-key="ctrlc">^C</button>
+        <button data-key="up">&#8593;</button>
+        <button data-key="down">&#8595;</button>
+        <button id="compose-newline" title="Insert a line break without sending">&#9166;+</button>
+      </div>
+      <div id="compose-row">
+        <textarea id="compose-input" rows="1" placeholder="Type or dictate, then send…"
+                  autocapitalize="off" autocomplete="off" autocorrect="off"></textarea>
+        <button id="compose-send" title="Send">➤</button>
+      </div>
+    </div>
   </main>
 </div>
 <script src="/vendor/xterm.js"></script>

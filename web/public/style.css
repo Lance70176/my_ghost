@@ -121,6 +121,33 @@ body {
 }
 .xterm .xterm-viewport { background: transparent !important; }
 
+/* --- touch compose bar --- */
+#compose {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  background: #171922; border-top: 1px solid #2c2f3b;
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+}
+/* Keep the terminal clear of the bar so the last lines stay visible. */
+#term-wrap.with-compose #terminal { bottom: 96px; }
+#compose-keys { display: flex; gap: 6px; margin-bottom: 6px; }
+#compose-keys button {
+  flex: 1; padding: 7px 0; border: none; border-radius: 6px;
+  background: #232734; color: #b9bdcc; font-size: 12px; cursor: pointer;
+}
+#compose-keys button:active { background: #333849; }
+#compose-row { display: flex; gap: 6px; align-items: flex-end; }
+#compose-input {
+  flex: 1; resize: none; border: none; border-radius: 8px;
+  background: #232734; color: #d8dae2; padding: 9px 10px;
+  font: 15px -apple-system, system-ui, sans-serif; line-height: 1.3;
+}
+#compose-input:focus { outline: 1px solid #3a4f7d; }
+#compose-send {
+  border: none; border-radius: 8px; background: #3a5a92; color: #fff;
+  font-size: 16px; padding: 9px 14px; cursor: pointer;
+}
+#compose-send:active { background: #46689f; }
+
 @media (max-width: 720px) {
   #sidebar { width: 200px; min-width: 200px; }
 }

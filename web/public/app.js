@@ -45,6 +45,120 @@
       if (ws && ws.readyState === WebSocket.OPEN)
         ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
     }).observe($("term-wrap"));
+
+    installTouchScroll();
+    if (IS_TOUCH) installComposeBar();
+  }
+
+  const IS_TOUCH = window.matchMedia("(pointer: coarse)").matches;
+
+  /// Drag to scroll the scrollback.
+  ///
+  /// Full-screen programs (Claude Code, vim) turn on mouse reporting, and the
+  /// terminal then forwards a touch drag to the program as a mouse drag — so
+  /// the view never moves. Take vertical drags for scrolling before the
+  /// terminal sees them; horizontal drags still reach the program.
+  function installTouchScroll() {
+    const el = $("terminal");
+    let lastY = null;
+    let carry = 0;
+    let scrolling = false;
+
+    const rowHeight = () => Math.max(1, el.clientHeight / (term.rows || 24));
+
+    el.addEventListener("touchstart", (e) => {
+      if (e.touches.length !== 1) return;
+      lastY = e.touches[0].clientY;
+      carry = 0;
+      scrolling = false;
+    }, { capture: true, passive: true });
+
+    el.addEventListener("touchmove", (e) => {
+      if (lastY === null || e.touches.length !== 1) return;
+      const y = e.touches[0].clientY;
+      const dy = lastY - y;
+      // Only claim the gesture once it is clearly vertical.
+      if (!scrolling && Math.abs(carry + dy) < 8) { carry += dy; lastY = y; return; }
+      scrolling = true;
+      carry += dy;
+      const lines = Math.trunc(carry / rowHeight());
+      if (lines !== 0) {
+        term.scrollLines(lines);
+        carry -= lines * rowHeight();
+      }
+      lastY = y;
+      e.preventDefault();
+      e.stopPropagation();
+    }, { capture: true, passive: false });
+
+    const end = () => { lastY = null; scrolling = false; };
+    el.addEventListener("touchend", end, { capture: true, passive: true });
+    el.addEventListener("touchcancel", end, { capture: true, passive: true });
+  }
+
+  /// A compose box for touch devices.
+  ///
+  /// Dictation and IME keyboards edit text in place and re-emit what they have
+  /// so far, which reaches a terminal as repeated, ever-growing input (the
+  /// "在在手機版本在手機版本上…" effect). Composing in a normal text field and
+  /// sending the finished line avoids that entirely.
+  function installComposeBar() {
+    const bar = $("compose");
+    const input = $("compose-input");
+    bar.classList.remove("hidden");
+    $("term-wrap").classList.add("with-compose");
+    // Tapping the terminal shouldn't raise the system keyboard: input goes
+    // through the compose box, so the terminal's own field stays quiet.
+    if (term.textarea) term.textarea.setAttribute("inputmode", "none");
+
+    const grow = () => {
+      input.style.height = "auto";
+      input.style.height = Math.min(input.scrollHeight, 96) + "px";
+    };
+
+    const sendRaw = (data) => {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
+    };
+
+    const submit = () => {
+      const text = input.value;
+      if (!text) { sendRaw("\r"); return; }
+      sendRaw(text + "\r");
+      input.value = "";
+      grow();
+    };
+
+    input.addEventListener("input", grow);
+    input.addEventListener("keydown", (e) => {
+      // A hardware keyboard (iPad) should still feel normal: Enter sends,
+      // Shift+Enter inserts a line break.
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        submit();
+      }
+    });
+    $("compose-send").onclick = submit;
+    $("compose-newline").onclick = () => {
+      const at = input.selectionStart ?? input.value.length;
+      input.value = input.value.slice(0, at) + "\n" + input.value.slice(at);
+      input.selectionStart = input.selectionEnd = at + 1;
+      grow();
+      input.focus();
+    };
+
+    const KEYS = {
+      esc: "\x1b",
+      tab: "\t",
+      ctrlc: "\x03",
+      up: "\x1b[A",
+      down: "\x1b[B",
+    };
+    for (const button of bar.querySelectorAll("#compose-keys button[data-key]")) {
+      button.onclick = () => {
+        sendRaw(KEYS[button.dataset.key] || "");
+        input.focus();
+      };
+    }
   }
 
   function attach(name) {
