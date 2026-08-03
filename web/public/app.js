@@ -1,6 +1,11 @@
 /* MyGhost Web front-end: sidebar tabs + xterm.js terminal + file browser. */
 (() => {
   const $ = (id) => document.getElementById(id);
+
+  // Glyph for the "join to group" button. Candidates, in the order they were
+  // considered: ⧉ (overlapping frames — reads as "combine"), ⊞ (framed plus),
+  // ⇥ (move into), ＋ (the plain fallback). Swap the constant to try another.
+  const JOIN_GLYPH = "&#10697;"; // ⧉
   const api = (p, opts) => fetch(p, opts).then((r) => {
     if (!r.ok) throw new Error("HTTP " + r.status);
     return r.json();
@@ -116,6 +121,24 @@
           b.textContent = "app·ssh";
           el.appendChild(b);
         }
+
+        // Reorder controls: the browser can't drag rows the way the app can,
+        // so each row carries explicit move buttons. Moving swaps with the
+        // neighbour in the same group, then the whole order is saved.
+        const tools = document.createElement("span");
+        tools.className = "tools";
+        const mkBtn = (label, cls, help, fn) => {
+          const b = document.createElement("button");
+          b.className = cls;
+          b.innerHTML = label;
+          b.title = help;
+          b.onclick = (ev) => { ev.stopPropagation(); fn(); };
+          return b;
+        };
+        tools.appendChild(mkBtn("&#9650;", "move", "Move up", () => move(s, -1)));
+        tools.appendChild(mkBtn("&#9660;", "move", "Move down", () => move(s, 1)));
+        tools.appendChild(mkBtn(JOIN_GLYPH, "join", "Join to a group", () => joinTo(s)));
+        el.appendChild(tools);
         if (s.web) {
           const close = document.createElement("button");
           close.className = "close";
@@ -144,6 +167,47 @@
         list.appendChild(el);
       }
     }
+  }
+
+  // Move `s` one slot within its own group and persist the full order.
+  async function move(s, delta) {
+    const all = state.sessions;
+    const sameGroup = all.filter((x) => (x.group || "") === (s.group || ""));
+    const at = sameGroup.findIndex((x) => x.name === s.name);
+    const swapWith = sameGroup[at + delta];
+    if (!swapWith) return;
+    const names = all.map((x) => x.name);
+    const i = names.indexOf(s.name);
+    const j = names.indexOf(swapWith.name);
+    names[i] = swapWith.name;
+    names[j] = s.name;
+    // Reflect immediately, then save; the poll will confirm.
+    const byName = new Map(all.map((x) => [x.name, x]));
+    state.sessions = names.map((n) => byName.get(n));
+    renderTabs();
+    await fetch("/api/order", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ order: names }),
+    });
+  }
+
+  // Put a tab into a group (or take it out). Groups are a browser-side label;
+  // the app's own grouping is left untouched.
+  async function joinTo(s) {
+    const existing = [...new Set(state.sessions.map((x) => x.group).filter(Boolean))];
+    const hint = existing.length
+      ? `Existing groups: ${existing.join(", ")}`
+      : "No groups yet — type a name to create one";
+    const name = prompt(`Join "${s.title}" to which group?\n${hint}\n(leave empty to ungroup)`,
+      s.group || "");
+    if (name === null) return;
+    await fetch(`/api/tabs/${s.name}/group`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ group: name.trim() }),
+    });
+    refreshState();
   }
 
   $("new-tab").onclick = async () => {
@@ -272,6 +336,20 @@
   };
 
   // ------------------------------------------------------------------ modes
+
+  function setCollapsed(collapsed) {
+    $("sidebar").classList.toggle("collapsed", collapsed);
+    $("expand-sidebar").classList.toggle("hidden", !collapsed);
+    localStorage.setItem("myghost_sidebar_collapsed", collapsed ? "1" : "0");
+    if (term) setTimeout(() => {
+      fit.fit();
+      if (ws && ws.readyState === WebSocket.OPEN)
+        ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+    }, 60);
+  }
+  $("collapse-sidebar").onclick = () => setCollapsed(true);
+  $("expand-sidebar").onclick = () => setCollapsed(false);
+  if (localStorage.getItem("myghost_sidebar_collapsed") === "1") setCollapsed(true);
 
   $("mode-term").onclick = () => setMode("term");
   $("mode-files").onclick = () => setMode("files");

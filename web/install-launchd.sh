@@ -42,6 +42,11 @@ NO_AUTH=0
 WEB_DIR="$(pwd)"
 PORT="${MYGHOST_WEB_PORT:-8899}"
 
+# Record the location so the app's Web Access panel can find and control it.
+SUPPORT="$HOME/Library/Application Support/MyGhost"
+mkdir -p "$SUPPORT"
+printf '%s\n' "$WEB_DIR" > "$SUPPORT/web_dir"
+
 mkdir -p "$HOME/Library/LaunchAgents"
 cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

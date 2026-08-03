@@ -9,9 +9,13 @@
 </head>
 <body>
 <div id="app">
+  <button id="expand-sidebar" class="hidden" title="Show sidebar">›</button>
   <aside id="sidebar">
     <div id="ai-usage">
-      <div class="ai-header">AI Usage</div>
+      <div class="ai-header">
+        <span>AI Usage</span>
+        <button id="collapse-sidebar" title="Hide sidebar">‹</button>
+      </div>
       <div id="ai-body"></div>
     </div>
 

@@ -105,12 +105,35 @@ function readJSON(file, fallback) {
 // MyGhost app saved in its state file (when this machine runs the app) and
 // the titles of web-created tabs. Remote-tab entries in the state file point
 // at *other* hosts and are skipped — each host serves its own sessions.
+// Browser-side tab metadata: titles for web-created tabs, plus the ordering
+// and grouping the browser applies on top of whatever the app saved. The
+// browser can't drag-and-drop the way the app does, so order is explicit.
+function readWebTabs() {
+  const raw = readJSON(WEB_TABS_FILE, {});
+  // Older files were a flat {session: title} map.
+  if (raw && (raw.titles || raw.order || raw.groups)) {
+    return {
+      titles: raw.titles || {},
+      order: raw.order || [],
+      orderBase: raw.orderBase || [],
+      groups: raw.groups || {},
+    };
+  }
+  return { titles: raw || {}, order: [], orderBase: [], groups: {} };
+}
+
+function writeWebTabs(data) {
+  fs.mkdirSync(APP_SUPPORT, { recursive: true });
+  fs.writeFileSync(WEB_TABS_FILE, JSON.stringify(data));
+}
+
 async function sessionList() {
   const alive = await aliveSessions();
   const state = readJSON(STATE_FILE, { sessions: [] });
-  const webTabs = readJSON(WEB_TABS_FILE, {});
+  const web = readWebTabs();
+  const webTabs = web.titles;
 
-  const meta = new Map(); // name -> {title, group}
+  const meta = new Map(); // name -> {title, group}; insertion order = app order
   const walk = (entries, group) => {
     for (const s of entries || []) {
       if (s.isGroup) walk(s.children, s.groupName || s.title || "Group");
@@ -124,7 +147,10 @@ async function sessionList() {
   };
   walk(state.sessions, null);
 
-  return alive.map((name) => {
+  // The app's own tab order, which the sidebar should match by default.
+  const appOrder = [...meta.keys()].filter((n) => alive.includes(n));
+
+  const sessions = alive.map((name) => {
     const m = meta.get(name);
     const isWeb = name.startsWith("myghostweb_");
     let title = (m && m.title) || webTabs[name] || null;
@@ -133,13 +159,56 @@ async function sessionList() {
       if (name.startsWith("myghostr_")) title = "ssh " + name.slice(9, 17);
       else title = name.slice(-8);
     }
-    return {
-      name,
-      title,
-      group: (m && m.group) || (isWeb ? "Web" : null),
-      web: isWeb,
-    };
+    // A group set in the browser wins over the app's, so grouping done here
+    // sticks; "" means explicitly ungrouped.
+    let group = (m && m.group) || (isWeb ? "Web" : null);
+    if (Object.prototype.hasOwnProperty.call(web.groups, name)) {
+      group = web.groups[name] || null;
+    }
+    return { name, title, group, web: isWeb };
   });
+
+  // Order: follow the app's tab order, so both sidebars read the same. A
+  // reorder done in the browser overrides it, but only until the app itself
+  // reorders — the app is authoritative, and its order having changed since
+  // the override was made retires the override.
+  let order = appOrder;
+  if (web.order.length) {
+    const baseStillCurrent =
+      web.orderBase.length === appOrder.length &&
+      web.orderBase.every((n, i) => n === appOrder[i]);
+    if (baseStillCurrent) {
+      order = web.order;
+    } else {
+      web.order = [];
+      web.orderBase = [];
+      writeWebTabs(web);
+    }
+  }
+
+  // Sessions the ordering doesn't mention (web tabs, ssh tabs owned by another
+  // machine's app) keep their place at the end.
+  const rank = new Map(order.map((n, i) => [n, i]));
+  sessions.sort((a, b) => {
+    const ra = rank.has(a.name) ? rank.get(a.name) : Number.MAX_SAFE_INTEGER;
+    const rb = rank.has(b.name) ? rank.get(b.name) : Number.MAX_SAFE_INTEGER;
+    return ra !== rb ? ra - rb : a.name.localeCompare(b.name);
+  });
+  return sessions;
+}
+
+/// The app's tab order for sessions that are currently alive.
+function appTabOrder(alive) {
+  const state = readJSON(STATE_FILE, { sessions: [] });
+  const names = [];
+  const walk = (entries) => {
+    for (const s of entries || []) {
+      if (s.isGroup) walk(s.children);
+      else if (s.screenSessionName && !s.remoteTarget) names.push(s.screenSessionName);
+    }
+  };
+  walk(state.sessions);
+  return names.filter((n) => alive.includes(n));
 }
 
 // ---------------------------------------------------------------------------
@@ -368,10 +437,37 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/tabs" && req.method === "POST") {
       const name = "myghostweb_" + crypto.randomBytes(4).toString("hex");
       await tmux(["new-session", "-d", "-s", name, "-c", os.homedir()]);
-      const tabs = readJSON(WEB_TABS_FILE, {});
-      tabs[name] = "Web " + name.slice(-4);
-      fs.writeFileSync(WEB_TABS_FILE, JSON.stringify(tabs));
+      const web = readWebTabs();
+      web.titles[name] = "Web " + name.slice(-4);
+      writeWebTabs(web);
       return send(res, 200, { name });
+    }
+
+    // Full ordering, sent by the browser after a move.
+    if (p === "/api/order" && req.method === "PUT") {
+      let body = "";
+      for await (const c of req) body += c;
+      const order = JSON.parse(body || "{}").order;
+      if (!Array.isArray(order)) return send(res, 400, { error: "order must be an array" });
+      const web = readWebTabs();
+      web.order = order.filter((n) => typeof n === "string").slice(0, 500);
+      // Remember the app order this override was made against, so a later
+      // reorder in the app supersedes it instead of the two fighting.
+      web.orderBase = appTabOrder(await aliveSessions());
+      writeWebTabs(web);
+      return send(res, 200, { ok: true });
+    }
+
+    // Group assignment: {group: "Web"} to join, {group: null} to leave.
+    const groupMatch = p.match(/^\/api\/tabs\/(myghost[a-zA-Z0-9_-]+)\/group$/);
+    if (groupMatch && req.method === "PUT") {
+      let body = "";
+      for await (const c of req) body += c;
+      const raw = JSON.parse(body || "{}").group;
+      const web = readWebTabs();
+      web.groups[groupMatch[1]] = raw ? String(raw).slice(0, 40) : "";
+      writeWebTabs(web);
+      return send(res, 200, { ok: true });
     }
 
     const tabMatch = p.match(/^\/api\/tabs\/(myghostweb_[a-f0-9]+)$/);
@@ -379,9 +475,11 @@ const server = http.createServer(async (req, res) => {
       // Only web-created tabs can be killed from the browser; the app's own
       // tabs must be closed in the app, which also updates its saved state.
       await tmux(["kill-session", "-t", tabMatch[1]]).catch(() => {});
-      const tabs = readJSON(WEB_TABS_FILE, {});
-      delete tabs[tabMatch[1]];
-      fs.writeFileSync(WEB_TABS_FILE, JSON.stringify(tabs));
+      const web = readWebTabs();
+      delete web.titles[tabMatch[1]];
+      delete web.groups[tabMatch[1]];
+      web.order = web.order.filter((n) => n !== tabMatch[1]);
+      writeWebTabs(web);
       return send(res, 200, { ok: true });
     }
     if (tabMatch && req.method === "PATCH") {
@@ -389,9 +487,9 @@ const server = http.createServer(async (req, res) => {
       for await (const c of req) body += c;
       const title = String(JSON.parse(body || "{}").title || "").slice(0, 60);
       if (title) {
-        const tabs = readJSON(WEB_TABS_FILE, {});
-        tabs[tabMatch[1]] = title;
-        fs.writeFileSync(WEB_TABS_FILE, JSON.stringify(tabs));
+        const web = readWebTabs();
+        web.titles[tabMatch[1]] = title;
+        writeWebTabs(web);
       }
       return send(res, 200, { ok: true });
     }

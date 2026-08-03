@@ -2090,6 +2090,16 @@ class SidebarTerminalController: BaseTerminalController {
 /// conform to ObservableObject).
 class SidebarUIState: ObservableObject {
     @Published var sidebarMode: SidebarMode = .terminal
+
+    /// Hides the tab/file sidebar so the terminal fills the window. Remembered
+    /// across launches — it's a layout preference, not per-window state.
+    @Published var isSidebarCollapsed: Bool = UserDefaults.standard.bool(
+        forKey: "MyGhostSidebarCollapsed"
+    ) {
+        didSet {
+            UserDefaults.standard.set(isSidebarCollapsed, forKey: "MyGhostSidebarCollapsed")
+        }
+    }
 }
 
 // MARK: - Root SwiftUI View (observes SidebarUIState for mode switching)
@@ -2101,7 +2111,22 @@ private struct SidebarRootView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HostTabBarView(controller: controller)
+            HStack(spacing: 6) {
+                // Collapsing the sidebar gives the terminal the full window;
+                // the button stays put so it can also bring the sidebar back.
+                Button {
+                    uiState.isSidebarCollapsed.toggle()
+                } label: {
+                    Image(systemName: uiState.isSidebarCollapsed
+                          ? "sidebar.left" : "sidebar.leading")
+                        .font(.system(size: 12))
+                }
+                .buttonStyle(.borderless)
+                .help(uiState.isSidebarCollapsed ? "Show sidebar" : "Hide sidebar")
+                .padding(.leading, 8)
+
+                HostTabBarView(controller: controller)
+            }
             Divider()
             splitContent
         }
@@ -2109,8 +2134,10 @@ private struct SidebarRootView: View {
 
     private var splitContent: some View {
         HSplitView {
-            SidebarView(controller: controller, sidebarMode: $uiState.sidebarMode)
-                .frame(minWidth: 150, maxWidth: 300)
+            if !uiState.isSidebarCollapsed {
+                SidebarView(controller: controller, sidebarMode: $uiState.sidebarMode)
+                    .frame(minWidth: 150, maxWidth: 300)
+            }
 
             // The terminal stays mounted underneath the editor so surfaces
             // are never torn down when switching to editor mode.

@@ -213,6 +213,8 @@ class AppDelegate: NSObject,
         // Store our start time
         applicationLaunchTime = ProcessInfo.processInfo.systemUptime
 
+        installWebAccessMenuItem()
+
         // Check if secure input was enabled when we last quit.
         if UserDefaults.standard.bool(forKey: "SecureInput") != SecureInput.shared.enabled {
             toggleSecureInput(self)
@@ -1229,6 +1231,24 @@ class AppDelegate: NSObject,
     @IBAction func closeAllWindows(_ sender: Any?) {
         TerminalController.closeAllWindows()
         AboutController.shared.hide()
+    }
+
+    /// Add "Web Access…" to the app menu, under About. Done in code so the
+    /// shared MainMenu.xib (which tracks upstream Ghostty) stays untouched.
+    private func installWebAccessMenuItem() {
+        guard let appMenu = NSApp.mainMenu?.item(at: 0)?.submenu else { return }
+        guard appMenu.items.allSatisfy({ $0.action != #selector(showWebAccess(_:)) }) else { return }
+        let item = NSMenuItem(
+            title: "Web Access…",
+            action: #selector(showWebAccess(_:)),
+            keyEquivalent: "")
+        item.target = self
+        let afterAbout = appMenu.indexOfItem(withTarget: nil, andAction: #selector(showAbout(_:)))
+        appMenu.insertItem(item, at: afterAbout >= 0 ? afterAbout + 1 : 1)
+    }
+
+    @IBAction func showWebAccess(_ sender: Any?) {
+        WebAccessController.shared.show()
     }
 
     @IBAction func showAbout(_ sender: Any?) {
