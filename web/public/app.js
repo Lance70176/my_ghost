@@ -2,10 +2,9 @@
 (() => {
   const $ = (id) => document.getElementById(id);
 
-  // Glyph for the "join to group" button. Candidates, in the order they were
-  // considered: ⧉ (overlapping frames — reads as "combine"), ⊞ (framed plus),
-  // ⇥ (move into), ＋ (the plain fallback). Swap the constant to try another.
-  const JOIN_GLYPH = "&#10697;"; // ⧉
+  // Glyph for the "join to group" button: a framed plus, which reads as
+  // "add into a container" next to the plain ▲▼ move controls.
+  const JOIN_GLYPH = "&#8862;"; // ⊞
   const api = (p, opts) => fetch(p, opts).then((r) => {
     if (!r.ok) throw new Error("HTTP " + r.status);
     return r.json();
