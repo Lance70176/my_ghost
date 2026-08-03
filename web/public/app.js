@@ -100,7 +100,15 @@
         if (group) {
           const label = document.createElement("div");
           label.className = "group-label";
-          label.textContent = group;
+          // Stacked rectangles, matching the app's rectangle.stack icon for a
+          // full-mode group — groups synced from here are always full mode.
+          label.innerHTML =
+            '<svg viewBox="0 0 16 16" width="11" height="11" fill="none" ' +
+            'stroke="currentColor" stroke-width="1.2">' +
+            '<rect x="1.5" y="4.5" width="10" height="8" rx="1.5"/>' +
+            '<path d="M4.5 4.5V3.2A1.7 1.7 0 0 1 6.2 1.5h6.1A1.7 1.7 0 0 1 14 3.2v6.1' +
+            'a1.7 1.7 0 0 1-1.7 1.7H11.5"/></svg>' +
+            `<span>${group}</span>`;
           list.appendChild(label);
         }
       }

@@ -118,6 +118,9 @@ class SidebarTerminalController: BaseTerminalController {
         webOrderSync.onOrderChanged = { [weak self] order in
             self?.applyWebOrder(order)
         }
+        webOrderSync.onGroupsChanged = { [weak self] groups in
+            self?.applyWebGroups(groups)
+        }
         webOrderSync.start()
     }
 
@@ -163,6 +166,81 @@ class SidebarTerminalController: BaseTerminalController {
         guard !reordered.elementsEqual(tabs, by: { $0 === $1 }) else { return }
         tabs = reordered
         saveScreenSessionState()
+    }
+
+    /// The tab for a session name, plus the group holding it, if any.
+    private func entry(forSession name: String) -> (leaf: SidebarTabEntry, group: SidebarTabEntry?)? {
+        for tab in tabs {
+            if !tab.isGroup, tab.screenSessionName == name { return (tab, nil) }
+            for child in tab.children where child.screenSessionName == name { return (child, tab) }
+        }
+        return nil
+    }
+
+    /// Applies grouping made in MyGhost Web. Groups it creates go straight to
+    /// full mode — the browser shows one pane at a time, so a split layout it
+    /// can't represent would only make the two views disagree again.
+    ///
+    /// A group needs two members, so a name claimed by a single tab is left
+    /// pending until a second tab joins it.
+    private func applyWebGroups(_ desired: [String: String]) {
+        guard !desired.isEmpty else { return }
+        var changed = false
+
+        // Explicit ungrouping first, so a tab moving between groups frees up.
+        for (session, group) in desired where group.isEmpty {
+            if let found = entry(forSession: session), let holder = found.group {
+                unjoinTab(found.leaf, from: holder)
+                changed = true
+            }
+        }
+
+        let byGroup = Dictionary(
+            grouping: desired.filter { !$0.value.isEmpty },
+            by: { $0.value })
+
+        for (groupName, wanted) in byGroup {
+            let sessions = wanted.map(\.key)
+            // Tabs already sitting in the right group need no work.
+            let misplaced = sessions.filter { session in
+                guard let found = entry(forSession: session) else { return false }
+                return found.group?.groupName != groupName
+            }
+            guard !misplaced.isEmpty else { continue }
+
+            // Move anything held by another group back to the top level, since
+            // joinTab works on top-level tabs.
+            for session in misplaced {
+                if let found = entry(forSession: session), let holder = found.group {
+                    unjoinTab(found.leaf, from: holder)
+                    changed = true
+                }
+            }
+
+            var target = tabs.first { $0.isGroup && $0.groupName == groupName }
+            if target == nil {
+                // Needs two members to become a group at all.
+                let seeds = misplaced.compactMap { entry(forSession: $0)?.leaf }
+                guard seeds.count >= 2 else { continue }
+                joinTab(seeds[1], into: seeds[0], confirmed: true)
+                target = tabs.first { group in
+                    group.isGroup && group.children.contains { $0.id == seeds[0].id }
+                }
+                target?.groupName = groupName
+                if let target, !target.isFullMode { enterFullMode(for: target) }
+                changed = true
+            }
+
+            guard let target else { continue }
+            for session in misplaced {
+                guard let found = entry(forSession: session), found.group == nil else { continue }
+                joinTab(found.leaf, into: target, confirmed: true)
+                changed = true
+            }
+            if !target.isFullMode { enterFullMode(for: target) }
+        }
+
+        if changed { saveScreenSessionState() }
     }
 
     // MARK: - Hashable (for Set storage)

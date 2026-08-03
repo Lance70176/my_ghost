@@ -12,10 +12,15 @@ final class WebOrderSync {
     /// Called on the main queue with the session names, browser order first.
     var onOrderChanged: (([String]) -> Void)?
 
+    /// Called on the main queue with session name → group name ("" = leave the
+    /// group it is in).
+    var onGroupsChanged: (([String: String]) -> Void)?
+
     private let fileURL: URL
     private var source: DispatchSourceFileSystemObject?
     private var descriptor: CInt = -1
     private var lastApplied: [String] = []
+    private var lastGroups: [String: String] = [:]
 
     init() {
         fileURL = FileManager.default
@@ -71,14 +76,20 @@ final class WebOrderSync {
 
     private func readAndReport() {
         guard let data = try? Data(contentsOf: fileURL),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let order = json["order"] as? [String],
-              !order.isEmpty,
-              order != lastApplied
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return }
-        lastApplied = order
-        DispatchQueue.main.async { [weak self] in
-            self?.onOrderChanged?(order)
+
+        if let groups = json["groups"] as? [String: String], groups != lastGroups {
+            lastGroups = groups
+            DispatchQueue.main.async { [weak self] in
+                self?.onGroupsChanged?(groups)
+            }
+        }
+        if let order = json["order"] as? [String], !order.isEmpty, order != lastApplied {
+            lastApplied = order
+            DispatchQueue.main.async { [weak self] in
+                self?.onOrderChanged?(order)
+            }
         }
     }
 }

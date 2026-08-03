@@ -150,6 +150,20 @@ async function sessionList() {
   // The app's own tab order, which the sidebar should match by default.
   const appOrder = [...meta.keys()].filter((n) => alive.includes(n));
 
+  // A grouping override lasts only until the app has applied it (the app
+  // watches this file). Once every override matches what the app reports, the
+  // override is retired so the app stays the single source of truth.
+  let groupsPending = false;
+  for (const [name, want] of Object.entries(web.groups)) {
+    if (!alive.includes(name)) continue;
+    const appGroup = (meta.get(name) || {}).group || "";
+    if ((want || "") !== appGroup) { groupsPending = true; break; }
+  }
+  if (!groupsPending && Object.keys(web.groups).length) {
+    web.groups = {};
+    writeWebTabs(web);
+  }
+
   const sessions = alive.map((name) => {
     const m = meta.get(name);
     const isWeb = name.startsWith("myghostweb_");
@@ -159,10 +173,10 @@ async function sessionList() {
       if (name.startsWith("myghostr_")) title = "ssh " + name.slice(9, 17);
       else title = name.slice(-8);
     }
-    // A group set in the browser wins over the app's, so grouping done here
-    // sticks; "" means explicitly ungrouped.
+    // A group set in the browser wins until the app adopts it (below), so a
+    // join sticks while it propagates; "" means explicitly ungrouped.
     let group = (m && m.group) || (isWeb ? "Web" : null);
-    if (Object.prototype.hasOwnProperty.call(web.groups, name)) {
+    if (groupsPending && Object.prototype.hasOwnProperty.call(web.groups, name)) {
       group = web.groups[name] || null;
     }
     return { name, title, group, web: isWeb };
