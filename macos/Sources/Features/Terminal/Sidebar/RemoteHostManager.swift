@@ -410,6 +410,45 @@ class RemoteHostManager {
         return rep.representation(using: .png, properties: [:])
     }
 
+    /// Store a tab's name on the remote tmux session itself, as the user
+    /// option `@myghost_title`.
+    ///
+    /// Renaming happens on this Mac, but the session lives on the other host —
+    /// where MyGhost Web would otherwise have nothing to show but a session id.
+    /// Keeping the name on the session means it travels with it: no extra file
+    /// to sync, and it survives this app quitting. Pass nil to clear it.
+    func setRemoteTitle(
+        target: String,
+        options: [String],
+        sessionName: String,
+        title: String?
+    ) {
+        // A remote login shell may be fish, which can't parse POSIX syntax, so
+        // run through /bin/sh; the title rides along base64'd to keep it clear
+        // of quoting entirely.
+        let assign: String
+        if let title, !title.isEmpty {
+            let encoded = Data(title.utf8).base64EncodedString()
+            assign = "\"$T\" set-option -t \(sessionName) @myghost_title "
+                + "\"$(printf %s \(encoded) | base64 -d)\""
+        } else {
+            assign = "\"$T\" set-option -u -t \(sessionName) @myghost_title"
+        }
+        let script = "T=$(command -v tmux || echo /opt/homebrew/bin/tmux); \(assign)"
+
+        DispatchQueue.global(qos: .utility).async {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            process.arguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
+                + options
+                + [target, "--", "/bin/sh -c '\(script)'"]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            try? process.run()
+            process.waitUntilExit()
+        }
+    }
+
     /// Kill a remote tmux session (best-effort, in the background). Used when
     /// the user explicitly closes a remote tab so sessions don't pile up.
     func killRemoteSession(target: String, options: [String], sessionName: String) {

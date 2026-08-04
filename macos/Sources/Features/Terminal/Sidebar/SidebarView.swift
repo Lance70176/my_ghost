@@ -371,6 +371,9 @@ struct SidebarView: View {
                             }
                         }
                         fileBrowserState.onEditFile = { url in
+                            // Remember where we left, so coming back from the
+                            // editor lands on this file rather than the top.
+                            fileBrowserState.focusedPath = url.path
                             if TextEditorManager.shared.openDocument(url: url) {
                                 sidebarMode = .editor
                             }
@@ -731,6 +734,7 @@ private enum TabRenameHelper {
     }
 
     private static func afterChange(_ tab: SidebarTabEntry, controller: SidebarTerminalController) {
+        controller.publishRemoteTitle(for: tab)
         if controller.selectedTabID == tab.id {
             controller.window?.title = tab.displayTitle
         }

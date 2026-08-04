@@ -66,7 +66,10 @@
     }).observe($("term-wrap"));
 
     installTouchScroll();
-    if (IS_TOUCH) installComposeBar();
+    if (IS_TOUCH) {
+      installComposeBar();
+      installScrollPad();
+    }
   }
 
   const IS_TOUCH = window.matchMedia("(pointer: coarse)").matches;
@@ -103,7 +106,9 @@
   /// otherwise reach the program as a mouse drag and move nothing. Claim
   /// clearly vertical drags; horizontal ones still reach the program.
   function installTouchScroll() {
-    const el = $("terminal");
+    // Listen on the wrapper, not the terminal element: xterm owns everything
+    // inside it, and the wrapper is the outermost node the gesture crosses.
+    const el = $("term-wrap");
     let lastY = null;
     let carry = 0;
     let claimed = false;
@@ -123,7 +128,7 @@
       carry += lastY - y;
       lastY = y;
       if (!claimed) {
-        if (Math.abs(carry) < 10) return;
+        if (Math.abs(carry) < 6) return;
         claimed = true;
       }
       // Dragging up (content moves up) reveals newer output, so a downward
@@ -140,6 +145,28 @@
     const end = () => { lastY = null; claimed = false; };
     el.addEventListener("touchend", end, { capture: true, passive: true });
     el.addEventListener("touchcancel", end, { capture: true, passive: true });
+  }
+
+  /// Half-page scroll buttons pinned to the right edge on touch devices.
+  /// A swipe can be claimed by whatever is running full screen; a button
+  /// can't, so this is the reliable way back through the history.
+  function installScrollPad() {
+    const pad = $("scroll-pad");
+    pad.classList.remove("hidden");
+    for (const button of pad.querySelectorAll("button[data-scroll]")) {
+      const step = () => {
+        const page = Math.max(3, Math.floor((term.rows || 24) / 2));
+        scrollSession(Number(button.dataset.scroll) * page);
+      };
+      // Respond on touchstart so it feels immediate, and don't let the press
+      // reach the terminal underneath.
+      button.addEventListener("touchstart", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        step();
+      }, { passive: false });
+      button.onclick = (e) => { e.preventDefault(); };
+    }
   }
 
   /// A compose box for touch devices.

@@ -2,14 +2,22 @@
 html, body, #app { height: 100%; }
 body {
   font: 13px -apple-system, "Segoe UI", system-ui, sans-serif;
-  background: #1d2029; color: #d8dae2;
+  background: #171922; color: #d8dae2;
+  /* Full-screen on iOS the page owns the status bar area too; letting it
+     rubber-band would drag the whole UI away from under the notch. */
+  overscroll-behavior: none;
 }
 #app { display: flex; }
 
+/* Added to the Home Screen the page runs under the status bar, so everything
+   that would sit at the very top is inset past the notch / Dynamic Island
+   (and past the rounded corner in landscape). */
 #sidebar {
   width: 250px; min-width: 250px; height: 100%;
   background: #171922; border-right: 1px solid #2c2f3b;
   display: flex; flex-direction: column;
+  padding-top: env(safe-area-inset-top);
+  padding-left: env(safe-area-inset-left);
 }
 
 /* --- AI usage --- */
@@ -24,7 +32,9 @@ body {
 }
 #collapse-sidebar:hover, #expand-sidebar:hover { color: #d8dae2; }
 #expand-sidebar {
-  position: absolute; top: 8px; left: 4px; z-index: 5;
+  position: absolute; z-index: 5;
+  top: calc(8px + env(safe-area-inset-top));
+  left: calc(4px + env(safe-area-inset-left));
   background: #232734; border-radius: 0 5px 5px 0; padding: 6px 5px;
 }
 #sidebar.collapsed { display: none; }
@@ -136,12 +146,31 @@ body {
 
 /* --- terminal --- */
 #term-wrap { flex: 1; position: relative; background: #1d2029; }
-#terminal { position: absolute; inset: 6px 0 6px 8px; }
+#terminal {
+  position: absolute; right: 0; bottom: 6px;
+  top: calc(6px + env(safe-area-inset-top));
+  left: calc(8px + env(safe-area-inset-left));
+}
 #term-empty {
   position: absolute; inset: 0; display: flex; align-items: center;
   justify-content: center; color: #565b6e; font-size: 14px;
 }
 .xterm .xterm-viewport { background: transparent !important; }
+
+/* --- touch scroll pad --- */
+#scroll-pad {
+  position: absolute; right: 6px; top: 45%; z-index: 6;
+  display: flex; flex-direction: column; gap: 6px;
+}
+#scroll-pad button {
+  width: 38px; height: 38px; border: none; border-radius: 19px;
+  background: rgba(45, 50, 66, 0.82); color: #b9bdcc; font-size: 13px;
+  backdrop-filter: blur(6px); cursor: pointer;
+}
+#scroll-pad button:active { background: rgba(70, 104, 159, 0.9); color: #fff; }
+/* The terminal must not treat a vertical drag as its own gesture, or the
+   browser hands it to the program before the scroll handler sees it. */
+#term-wrap { touch-action: pan-x; }
 
 /* --- touch compose bar --- */
 #compose {

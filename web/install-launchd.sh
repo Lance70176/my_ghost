@@ -63,6 +63,11 @@ cat > "$PLIST" <<EOF
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <!-- launchd starts services with no locale, and tmux then replaces
+             anything it can't confirm is printable ASCII with "_" — which
+             mangles CJK tab names on the way out. -->
+        <key>LANG</key><string>en_US.UTF-8</string>
+        <key>LC_ALL</key><string>en_US.UTF-8</string>
         <key>MYGHOST_WEB_PORT</key><string>$PORT</string>
         <key>MYGHOST_WEB_NO_AUTH</key><string>$NO_AUTH</string>
     </dict>

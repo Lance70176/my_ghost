@@ -85,9 +85,32 @@ function tmux(args) {
 }
 
 async function aliveSessions() {
+  return (await sessionsWithTitles()).map((s) => s.name);
+}
+
+/// Live sessions plus the name stored on each by the app that owns it.
+///
+/// A tab renamed in the MyGhost app on another Mac writes the new name onto
+/// this host's tmux session as @myghost_title, so a session driven from there
+/// shows its real name here instead of an id.
+async function sessionsWithTitles() {
   try {
-    const out = await tmux(["list-sessions", "-F", "#{session_name}"]);
-    return out.split("\n").map((s) => s.trim()).filter((s) => /^myghost/.test(s));
+    // The separator must be printable: tmux sanitises control characters in
+    // format output to "_" when it can't verify the locale is UTF-8, which
+    // silently welded the delimiter onto the session name. A session name
+    // never contains "|", and a title that does survives the rejoin.
+    const out = await tmux([
+      "list-sessions", "-F", "#{session_name}|#{@myghost_title}",
+    ]);
+    return out
+      .split("\n")
+      .map((line) => {
+        const cut = line.indexOf("|");
+        const name = cut < 0 ? line : line.slice(0, cut);
+        const title = cut < 0 ? "" : line.slice(cut + 1);
+        return { name: name.trim(), title: title.trim() };
+      })
+      .filter((s) => /^myghost/.test(s.name));
   } catch {
     return []; // no tmux server running
   }
@@ -128,7 +151,9 @@ function writeWebTabs(data) {
 }
 
 async function sessionList() {
-  const alive = await aliveSessions();
+  const live = await sessionsWithTitles();
+  const alive = live.map((s) => s.name);
+  const remoteTitles = new Map(live.filter((s) => s.title).map((s) => [s.name, s.title]));
   const state = readJSON(STATE_FILE, { sessions: [] });
   const web = readWebTabs();
   const webTabs = web.titles;
@@ -167,7 +192,9 @@ async function sessionList() {
   const sessions = alive.map((name) => {
     const m = meta.get(name);
     const isWeb = name.startsWith("myghostweb_");
-    let title = (m && m.title) || webTabs[name] || null;
+    // Prefer this machine's own app, then the name pushed by the app driving
+    // the session from another Mac, then a web tab's own title.
+    let title = (m && m.title) || remoteTitles.get(name) || webTabs[name] || null;
     if (!title) {
       // myghostr_ sessions are tabs the app opened onto this host over ssh.
       if (name.startsWith("myghostr_")) title = "ssh " + name.slice(9, 17);
@@ -400,6 +427,7 @@ const MIME = {
   ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".svg": "image/svg+xml",
+  ".png": "image/png",
 };
 
 function send(res, code, body, headers) {
@@ -431,8 +459,11 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (!p.startsWith("/api/") && fs.existsSync(path.join(PUBLIC, p.slice(1))) && !p.includes("..")) {
-    send(res, 200, fs.readFileSync(path.join(PUBLIC, p.slice(1)), "utf8"),
-      { "Content-Type": MIME[path.extname(p)] || "application/octet-stream" });
+    // Read as bytes: the icons are binary and would be mangled as text.
+    res.writeHead(200, {
+      "Content-Type": MIME[path.extname(p)] || "application/octet-stream",
+    });
+    res.end(fs.readFileSync(path.join(PUBLIC, p.slice(1))));
     return;
   }
 

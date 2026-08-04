@@ -241,6 +241,11 @@ class FileBrowserState: ObservableObject {
     func visibleNode(withID id: UUID) -> FileNode? {
         visibleRows.first { $0.id == id }
     }
+
+    /// The row to scroll back to when the browser is shown again — the file
+    /// last opened or selected. Kept as a path because a refresh can replace
+    /// the node object, and the path is what the user actually cares about.
+    @Published var focusedPath: String?
 }
 
 /// Backward-compatible simple entry (used by keyboard shortcuts)
@@ -256,6 +261,18 @@ struct FileBrowserView: View {
     @ObservedObject var state: FileBrowserState
     @State private var selectedNodeID: UUID?
     @State private var refreshTimer: Timer?
+
+    /// Bring the last opened/selected row back into view. The rows are lazy,
+    /// so the scroll has to wait for the list to exist.
+    private func restoreScrollPosition(_ proxy: ScrollViewProxy) {
+        guard let path = state.focusedPath,
+              let node = state.visibleRows.first(where: { $0.url.path == path })
+        else { return }
+        DispatchQueue.main.async {
+            proxy.scrollTo(node.id, anchor: .center)
+            selectedNodeID = node.id
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -299,13 +316,21 @@ struct FileBrowserView: View {
             // Tree list, rendered as a flat lazy list of the visible rows so
             // expanding a folder with thousands of entries stays responsive.
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 1) {
-                    ForEach(state.visibleRows) { node in
-                        TreeRowContent(node: node, state: state, selectedNodeID: $selectedNodeID)
+                ScrollViewReader { proxy in
+                    LazyVStack(alignment: .leading, spacing: 1) {
+                        ForEach(state.visibleRows) { node in
+                            TreeRowContent(node: node, state: state, selectedNodeID: $selectedNodeID)
+                        }
+                    }
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 4)
+                    .onAppear {
+                        // Switching to the editor tears this list down, and it
+                        // would otherwise come back scrolled to the top —
+                        // nowhere near the file that was just opened.
+                        restoreScrollPosition(proxy)
                     }
                 }
-                .padding(.vertical, 6)
-                .padding(.horizontal, 4)
             }
         }
         .onAppear {
@@ -320,6 +345,10 @@ struct FileBrowserView: View {
         .onDisappear {
             refreshTimer?.invalidate()
             refreshTimer = nil
+        }
+        .onChange(of: state.currentPath) { _ in
+            // A new directory starts at the top; the old anchor is gone.
+            state.focusedPath = nil
         }
         .background(FileBrowserKeyMonitor(
             isFileBrowserActive: true,
@@ -405,6 +434,7 @@ private struct TreeRowContent: View {
         .contentShape(Rectangle())
         .onTapGesture {
             selectedNodeID = node.id
+            state.focusedPath = node.url.path
             if node.isDirectory {
                 state.toggle(node)
             }
@@ -435,6 +465,7 @@ private struct TreeRowContent: View {
                     NSWorkspace.shared.open(node.url)
                 }
                 Button("Edit") {
+                    state.focusedPath = node.url.path
                     state.onEditFile?(node.url)
                 }
                 Divider()

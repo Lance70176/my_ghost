@@ -10,6 +10,9 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="MyGhost">
 <meta name="theme-color" content="#171922">
+<!-- Home Screen / tab icon: the same mark as the desktop app. -->
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="icon" type="image/png" href="/favicon.png">
 <link rel="stylesheet" href="/vendor/xterm.css">
 <link rel="stylesheet" href="/style.css">
 </head>
@@ -53,13 +56,18 @@
     <!-- Touch devices compose here instead of typing into the terminal:
          iOS dictation and IME rewrite text as they go, which the terminal
          can only take as a stream of fresh keystrokes. -->
+    <!-- Always-visible scroll control on touch: a swipe can be claimed by a
+         full-screen program, a button never is. -->
+    <div id="scroll-pad" class="hidden">
+      <button data-scroll="1" title="Scroll back">&#9650;</button>
+      <button data-scroll="-1" title="Scroll forward">&#9660;</button>
+    </div>
+
     <div id="compose" class="hidden">
       <div id="compose-keys">
         <button data-key="esc">esc</button>
         <button data-key="tab">tab</button>
         <button data-key="ctrlc">^C</button>
-        <button data-scroll="1">&#8670;</button>
-        <button data-scroll="-1">&#8671;</button>
         <button data-key="up">&#8593;</button>
         <button data-key="down">&#8595;</button>
         <button id="compose-newline" title="Insert a line break without sending">&#9166;+</button>

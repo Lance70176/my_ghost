@@ -149,6 +149,11 @@ final class WebAccessManager: ObservableObject {
             "WorkingDirectory": webDirectory.path,
             "EnvironmentVariables": [
                 "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+                // launchd starts services with no locale, and tmux then
+                // replaces anything it can't confirm is printable ASCII with
+                // "_" — which mangles CJK tab names on the way out.
+                "LANG": "en_US.UTF-8",
+                "LC_ALL": "en_US.UTF-8",
                 "MYGHOST_WEB_PORT": String(port),
                 "MYGHOST_WEB_NO_AUTH": noAuth ? "1" : "0",
             ],

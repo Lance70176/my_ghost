@@ -168,6 +168,17 @@ class SidebarTerminalController: BaseTerminalController {
         saveScreenSessionState()
     }
 
+    /// Push a renamed remote tab's name onto the session on its host, so that
+    /// host's own sidebar (MyGhost Web there) shows the same name.
+    func publishRemoteTitle(for tab: SidebarTabEntry) {
+        guard let target = tab.remoteTarget, let session = tab.screenSessionName else { return }
+        RemoteHostManager.shared.setRemoteTitle(
+            target: target,
+            options: tab.remoteSSHOptions,
+            sessionName: session,
+            title: tab.customTitle)
+    }
+
     /// The tab for a session name, plus the group holding it, if any.
     private func entry(forSession name: String) -> (leaf: SidebarTabEntry, group: SidebarTabEntry?)? {
         for tab in tabs {
