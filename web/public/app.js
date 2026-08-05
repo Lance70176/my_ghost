@@ -213,7 +213,14 @@
         submit();
       }
     });
-    $("compose-send").onclick = submit;
+    // Sending shouldn't reopen the keyboard either: after a line goes out the
+    // next thing wanted is usually the output, not another line.
+    $("compose-send").addEventListener("mousedown", (e) => e.preventDefault());
+    $("compose-send").onclick = (e) => {
+      e.preventDefault();
+      submit();
+    };
+
     $("compose-newline").onclick = () => {
       const at = input.selectionStart ?? input.value.length;
       input.value = input.value.slice(0, at) + "\n" + input.value.slice(at);
@@ -230,9 +237,18 @@
       down: "\x1b[B",
     };
     for (const button of bar.querySelectorAll("#compose-keys button[data-key]")) {
-      button.onclick = () => {
+      // These send straight to the terminal, so they must not pull focus into
+      // the compose box — pressing esc or an arrow would otherwise throw the
+      // keyboard up over the screen you were trying to look at.
+      button.addEventListener("touchstart", (e) => {
+        e.preventDefault();
         sendRaw(KEYS[button.dataset.key] || "");
-        input.focus();
+      }, { passive: false });
+      button.addEventListener("mousedown", (e) => e.preventDefault());
+      button.onclick = (e) => {
+        e.preventDefault();
+        // Click still fires with a hardware keyboard or a trackpad.
+        if (!IS_TOUCH) sendRaw(KEYS[button.dataset.key] || "");
       };
     }
     // Half-page jumps, for when a drag is awkward (or lands on something the
