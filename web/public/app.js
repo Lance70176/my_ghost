@@ -357,18 +357,6 @@
         tools.appendChild(mkBtn(JOIN_GLYPH, "join", "Join to a group", () => joinTo(s)));
         el.appendChild(tools);
         if (s.web) {
-          const close = document.createElement("button");
-          close.className = "close";
-          close.textContent = "✕";
-          close.title = "Close this web tab (kills its shell)";
-          close.onclick = async (ev) => {
-            ev.stopPropagation();
-            if (!confirm(`Close ${s.title}? Its shell will be killed.`)) return;
-            await api("/api/tabs/" + s.name, { method: "DELETE" });
-            if (current === s.name && ws) ws.close();
-            refreshState();
-          };
-          el.appendChild(close);
           title.ondblclick = async () => {
             const t = prompt("Rename tab", s.title);
             if (!t) return;
@@ -426,6 +414,23 @@
     });
     refreshState();
   }
+
+  /// Close the attached tab, mirroring the app's "−". On touch there is no
+  /// hover, so the per-row ✕ is unreachable and this is the only way.
+  $("close-tab").onclick = async () => {
+    if (!current) return;
+    const tab = state.sessions.find((s) => s.name === current);
+    const label = tab ? tab.title : "this tab";
+    if (!confirm(`Close "${label}"? Its shell and everything running in it will stop.`)) {
+      return;
+    }
+    await api("/api/tabs/" + current, { method: "DELETE" }).catch(() => {});
+    if (ws) ws.close();
+    current = null;
+    localStorage.removeItem("myghost_last_session");
+    $("term-empty").classList.remove("hidden");
+    refreshState();
+  };
 
   $("new-tab").onclick = async () => {
     const { name } = await api("/api/tabs", { method: "POST" });

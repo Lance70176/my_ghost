@@ -515,10 +515,10 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok: true });
     }
 
-    const tabMatch = p.match(/^\/api\/tabs\/(myghostweb_[a-f0-9]+)$/);
+    const tabMatch = p.match(/^\/api\/tabs\/(myghost[a-zA-Z0-9_-]+)$/);
     if (tabMatch && req.method === "DELETE") {
-      // Only web-created tabs can be killed from the browser; the app's own
-      // tabs must be closed in the app, which also updates its saved state.
+      // Killing the session is how a tab closes: the app's client exits with
+      // it and the app drops the tab, the same as closing it there.
       await tmux(["kill-session", "-t", tabMatch[1]]).catch(() => {});
       const web = readWebTabs();
       delete web.titles[tabMatch[1]];
