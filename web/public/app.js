@@ -235,21 +235,57 @@
       ctrlc: "\x03",
       up: "\x1b[A",
       down: "\x1b[B",
+      left: "\x1b[D",
+      right: "\x1b[C",
+      // What a real Backspace sends: the default erase character, which is
+      // what readline and full-screen programs alike expect.
+      back: "\x7f",
     };
+    const REPEAT_DELAY = 400;
+    const REPEAT_RATE = 55;
+
+    // A finger that slides off the button never delivers its own touchend, so
+    // the release has to be caught globally or a held key would repeat for
+    // ever. Only one key can be down at a time, so one slot is enough.
+    let releaseHeldKey = null;
+    const release = () => releaseHeldKey && releaseHeldKey();
+    for (const ev of ["touchend", "touchcancel", "mouseup", "blur"])
+      window.addEventListener(ev, release, { passive: true });
+
     for (const button of bar.querySelectorAll("#compose-keys button[data-key]")) {
+      const repeats = button.hasAttribute("data-repeat");
+      let delayTimer = null;
+      let repeatTimer = null;
+
+      const stop = () => {
+        clearTimeout(delayTimer);
+        clearInterval(repeatTimer);
+        delayTimer = repeatTimer = null;
+        if (releaseHeldKey === stop) releaseHeldKey = null;
+      };
+      const press = () => {
+        release();
+        sendRaw(KEYS[button.dataset.key] || "");
+        if (!repeats) return;
+        releaseHeldKey = stop;
+        delayTimer = setTimeout(() => {
+          repeatTimer = setInterval(() => sendRaw(KEYS[button.dataset.key] || ""), REPEAT_RATE);
+        }, REPEAT_DELAY);
+      };
+
       // These send straight to the terminal, so they must not pull focus into
       // the compose box — pressing esc or an arrow would otherwise throw the
       // keyboard up over the screen you were trying to look at.
       button.addEventListener("touchstart", (e) => {
         e.preventDefault();
-        sendRaw(KEYS[button.dataset.key] || "");
+        press();
       }, { passive: false });
-      button.addEventListener("mousedown", (e) => e.preventDefault());
-      button.onclick = (e) => {
+      button.addEventListener("mousedown", (e) => {
         e.preventDefault();
-        // Click still fires with a hardware keyboard or a trackpad.
-        if (!IS_TOUCH) sendRaw(KEYS[button.dataset.key] || "");
-      };
+        // Touch already fired; a trackpad or hardware keyboard lands here.
+        if (!IS_TOUCH) press();
+      });
+      button.onclick = (e) => e.preventDefault();
     }
     // Half-page jumps, for when a drag is awkward (or lands on something the
     // program wants to handle itself).

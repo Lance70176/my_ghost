@@ -180,8 +180,11 @@ body {
   padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
 }
 /* Keep the terminal clear of the bar so the last lines stay visible. */
-#term-wrap.with-compose #terminal { bottom: 96px; }
-#compose-keys { display: flex; gap: 6px; margin-bottom: 6px; }
+/* The bar's own height plus the home-indicator inset it pads itself with —
+   a flat value would let the bar sit over the last lines on a phone. */
+#term-wrap.with-compose #terminal { bottom: calc(126px + env(safe-area-inset-bottom)); }
+#compose-keys { display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px; }
+#compose-keys .key-row { display: flex; gap: 6px; }
 #compose-keys button {
   flex: 1; padding: 7px 0; border: none; border-radius: 6px;
   background: #232734; color: #b9bdcc; font-size: 12px; cursor: pointer;

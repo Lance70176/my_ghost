@@ -66,12 +66,23 @@
 
     <div id="compose" class="hidden">
       <div id="compose-keys">
-        <button data-key="esc">esc</button>
-        <button data-key="tab">tab</button>
-        <button data-key="ctrlc">^C</button>
-        <button data-key="up">&#8593;</button>
-        <button data-key="down">&#8595;</button>
-        <button id="compose-newline" title="Insert a line break without sending">&#9166;+</button>
+        <div class="key-row">
+          <button data-key="esc">esc</button>
+          <button data-key="tab">tab</button>
+          <button data-key="ctrlc">^C</button>
+          <button data-key="up">&#8593;</button>
+          <button data-key="down">&#8595;</button>
+          <button id="compose-newline" title="Insert a line break without sending">&#9166;+</button>
+        </div>
+        <!-- Editing what is already on the program's input line: once text
+             leaves the compose box there is no other way to change it, since
+             the terminal's own field never raises the keyboard. Held down,
+             these repeat like a real key. -->
+        <div class="key-row">
+          <button data-key="left" data-repeat title="Left">&#8592;</button>
+          <button data-key="right" data-repeat title="Right">&#8594;</button>
+          <button data-key="back" data-repeat title="Backspace">&#9003;</button>
+        </div>
       </div>
       <div id="compose-row">
         <textarea id="compose-input" rows="1" placeholder="Type or dictate, then send…"
