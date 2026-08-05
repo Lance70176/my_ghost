@@ -86,7 +86,23 @@ fi
 rm -f .web.pid
 
 launchctl bootout "gui/$UID_NUM/$LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$UID_NUM" "$PLIST"
+# bootout is asynchronous: bootstrapping too soon fails, and with `set -e` the
+# script would exit having left nothing loaded — the service silently gone.
+for attempt in 1 2 3 4 5; do
+    if launchctl bootstrap "gui/$UID_NUM" "$PLIST" 2>/dev/null; then
+        break
+    fi
+    if [ "$attempt" = 5 ]; then
+        echo "error: could not load $LABEL — run 'launchctl bootstrap gui/$UID_NUM $PLIST' to see why" >&2
+        exit 1
+    fi
+    sleep 1
+done
+
 sleep 1
+if ! launchctl print "gui/$UID_NUM/$LABEL" >/dev/null 2>&1; then
+    echo "error: $LABEL did not stay loaded; see $WEB_DIR/web.log" >&2
+    exit 1
+fi
 tail -5 web.log
 echo "installed $LABEL (starts at login; uninstall with ./install-launchd.sh --uninstall)"

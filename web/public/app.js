@@ -74,30 +74,33 @@
 
   const IS_TOUCH = window.matchMedia("(pointer: coarse)").matches;
 
-  /// Scroll the session's history.
+  /// Scroll back through the session, `lines` rows at a time.
   ///
-  /// tmux runs on the alternate screen, so the browser terminal holds no
-  /// scrollback of its own — `scrollLines` here would move nothing. The
-  /// history belongs to tmux, so the server asks tmux to scroll it.
-  /// Positive lines go back into history.
-  let scrollPending = 0;
-  let scrollInFlight = false;
+  /// Nothing here can scroll it directly. A full-screen program (Claude Code,
+  /// vim) draws on the alternate screen, where neither the browser terminal
+  /// nor tmux keeps any scrollback — the history exists only inside that
+  /// program, which redraws as it scrolls. Asking tmux to scroll therefore
+  /// moved nothing at all.
+  ///
+  /// What does work is what a mouse does on the desktop: hand the terminal a
+  /// wheel event and let it decide. With mouse reporting on it forwards the
+  /// wheel to the program, which scrolls its own view; without it, the
+  /// terminal scrolls its own buffer.
   function scrollSession(lines) {
-    if (!current || !lines) return;
-    scrollPending += lines;
-    if (scrollInFlight) return;
-    scrollInFlight = true;
-    const flush = () => {
-      const batch = scrollPending;
-      scrollPending = 0;
-      if (!batch) { scrollInFlight = false; return; }
-      fetch(`/api/scroll?session=${encodeURIComponent(current)}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lines: batch }),
-      }).catch(() => {}).then(() => setTimeout(flush, 40));
-    };
-    flush();
+    if (!term || !lines) return;
+    const screen = term.element?.querySelector(".xterm-screen") || term.element;
+    if (!screen) return;
+    const rect = screen.getBoundingClientRect();
+    const cell = Math.max(8, rect.height / (term.rows || 24));
+    screen.dispatchEvent(new WheelEvent("wheel", {
+      // Positive `lines` means back through history, which is a wheel-up.
+      deltaY: -lines * cell,
+      deltaMode: 0,
+      bubbles: true,
+      cancelable: true,
+      clientX: rect.left + rect.width / 2,
+      clientY: rect.top + rect.height / 2,
+    }));
   }
 
   /// Drag to scroll.
