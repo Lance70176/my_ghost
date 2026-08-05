@@ -168,15 +168,33 @@ class SidebarTerminalController: BaseTerminalController {
         saveScreenSessionState()
     }
 
+    /// Names already pushed to remote hosts, so a name is only sent when it
+    /// actually changed. Shared across windows: the sessions are.
+    private static var publishedRemoteTitles: [String: String] = [:]
+
     /// Push a renamed remote tab's name onto the session on its host, so that
     /// host's own sidebar (MyGhost Web there) shows the same name.
     func publishRemoteTitle(for tab: SidebarTabEntry) {
         guard let target = tab.remoteTarget, let session = tab.screenSessionName else { return }
+        let title = tab.displayTitle
+        guard Self.publishedRemoteTitles[session] != title else { return }
+        Self.publishedRemoteTitles[session] = title
         RemoteHostManager.shared.setRemoteTitle(
             target: target,
             options: tab.remoteSSHOptions,
             sessionName: session,
-            title: tab.customTitle)
+            title: title)
+    }
+
+    /// Publish every remote tab's name. Renaming alone isn't enough: tabs named
+    /// before this existed, or restored from a previous run, would otherwise
+    /// never reach their host.
+    private func publishAllRemoteTitles() {
+        for tab in tabs {
+            for candidate in [tab] + tab.children where candidate.isRemote {
+                publishRemoteTitle(for: candidate)
+            }
+        }
     }
 
     /// The tab for a session name, plus the group holding it, if any.
@@ -772,6 +790,31 @@ class SidebarTerminalController: BaseTerminalController {
         }
         DispatchQueue.global(qos: .utility).async {
             ScreenSessionManager.shared.cleanupOrphanedSessions(activeSessionNames: activeNames)
+        }
+        cleanupOrphanedRemoteSessions(keeping: activeNames)
+    }
+
+    /// Retire remote sessions this Mac opened and no longer has a tab for.
+    ///
+    /// Closing a remote tab kills its session, but a crash or a tab lost
+    /// between runs leaves one behind, and it then shows up in that host's own
+    /// sidebar as a tab nobody owns. Only sessions tagged as ours are touched —
+    /// another Mac's tabs are detached whenever its app is closed, and killing
+    /// those would destroy its work.
+    private func cleanupOrphanedRemoteSessions(keeping: Set<String>) {
+        var hosts: [String: [String]] = [:] // target -> ssh options
+        for controller in Self.allControllers.union([self]) {
+            for tab in controller.tabs {
+                for candidate in [tab] + tab.children {
+                    if let target = candidate.remoteTarget {
+                        hosts[target] = candidate.remoteSSHOptions
+                    }
+                }
+            }
+        }
+        for (target, options) in hosts {
+            RemoteHostManager.shared.cleanupOrphanedSessions(
+                target: target, options: options, keeping: keeping)
         }
     }
 
@@ -1900,6 +1943,10 @@ class SidebarTerminalController: BaseTerminalController {
             selectedHostKey: currentHostKey,
             dormantSessions: Self.dormantSessions.isEmpty ? nil : Self.dormantSessions
         ))
+
+        // Mirror the names onto the hosts that own the sessions; only ones that
+        // actually changed cross the network.
+        publishAllRemoteTitles()
     }
 
     /// Save state covering all windows. Safer than iterating NSApp.windows

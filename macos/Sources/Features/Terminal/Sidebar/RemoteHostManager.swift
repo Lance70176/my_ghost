@@ -426,7 +426,7 @@ class RemoteHostManager {
         // A remote login shell may be fish, which can't parse POSIX syntax, so
         // run through /bin/sh; the title rides along base64'd to keep it clear
         // of quoting entirely.
-        let assign: String
+        var assign: String
         if let title, !title.isEmpty {
             let encoded = Data(title.utf8).base64EncodedString()
             assign = "\"$T\" set-option -t \(sessionName) @myghost_title "
@@ -434,6 +434,11 @@ class RemoteHostManager {
         } else {
             assign = "\"$T\" set-option -u -t \(sessionName) @myghost_title"
         }
+        // Stamp ownership at the same time: cleanup must be able to tell our
+        // leftovers from another Mac's live tabs.
+        let owner = Data(Self.ownerID.utf8).base64EncodedString()
+        assign += "; \"$T\" set-option -t \(sessionName) @myghost_owner "
+            + "\"$(printf %s \(owner) | base64 -d)\""
         let script = "T=$(command -v tmux || echo /opt/homebrew/bin/tmux); \(assign)"
 
         DispatchQueue.global(qos: .utility).async {
@@ -446,6 +451,44 @@ class RemoteHostManager {
             process.standardError = FileHandle.nullDevice
             try? process.run()
             process.waitUntilExit()
+        }
+    }
+
+    /// Identifies this Mac on the sessions it opens elsewhere.
+    static let ownerID = ProcessInfo.processInfo.hostName
+
+    /// Kill remote sessions this Mac opened but no longer has a tab for.
+    ///
+    /// Only sessions stamped with our owner id are considered: a session with
+    /// no stamp, or another Mac's, is left alone. Detachment is not evidence of
+    /// abandonment — every session detaches while its app is closed.
+    func cleanupOrphanedSessions(target: String, options: [String], keeping: Set<String>) {
+        DispatchQueue.global(qos: .utility).async { [self] in
+            let script = "T=$(command -v tmux || echo /opt/homebrew/bin/tmux); "
+                + "\"$T\" list-sessions -F '#{session_name}|#{@myghost_owner}' 2>/dev/null"
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            process.arguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
+                + options
+                + [target, "--", "/bin/sh -c '\(script)'"]
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = FileHandle.nullDevice
+            do { try process.run() } catch { return }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0,
+                  let output = String(data: data, encoding: .utf8) else { return }
+
+            for line in output.split(separator: "\n") {
+                let parts = line.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+                guard parts.count == 2 else { continue }
+                let name = String(parts[0]).trimmingCharacters(in: .whitespaces)
+                let owner = String(parts[1]).trimmingCharacters(in: .whitespaces)
+                guard name.hasPrefix("myghostr_"), owner == Self.ownerID,
+                      !keeping.contains(name) else { continue }
+                killRemoteSession(target: target, options: options, sessionName: name)
+            }
         }
     }
 
