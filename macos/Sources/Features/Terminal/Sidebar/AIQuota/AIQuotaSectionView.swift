@@ -154,8 +154,8 @@ private struct AIQuotaAccountRow: View {
                 }
             }
 
-            if let snapshot, !snapshot.windows.isEmpty {
-                ForEach(snapshot.windows, id: \.label) { window in
+            if !visibleWindows.isEmpty {
+                ForEach(visibleWindows, id: \.label) { window in
                     HStack(spacing: 4) {
                         Text(window.label)
                             .font(.system(size: 9))
@@ -200,9 +200,18 @@ private struct AIQuotaAccountRow: View {
         .onTapGesture { onTap() }
     }
 
+    /// Windows the API reported, minus the ones switched off in settings.
+    private var visibleWindows: [AIUsageWindow] {
+        (snapshot?.windows ?? []).filter { !account.hiddenWindows.contains($0.label) }
+    }
+
     private var accountHelp: [FastTooltipLine] {
-        [FastTooltipLine(account.name, bold: true)]
-            + AIQuotaTooltip.lines(for: snapshot, dim: .secondaryLabelColor)
+        // Tooltip lists the same windows as the bars, so hiding one hides it
+        // in both places.
+        var shown = snapshot
+        shown?.windows = visibleWindows
+        return [FastTooltipLine(account.name, bold: true)]
+            + AIQuotaTooltip.lines(for: shown, dim: .secondaryLabelColor)
     }
 
     private func barColor(for percent: Double) -> Color {

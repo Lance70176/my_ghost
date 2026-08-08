@@ -55,6 +55,33 @@ struct AIQuotaAccount: Codable, Identifiable, Equatable {
     var accountID: String = ""
     /// Whether this account's row is shown in the sidebar section.
     var isVisible: Bool = true
+    /// Window labels switched off for this account. Labels come from the API
+    /// response, so an entry can outlive the window that produced it.
+    var hiddenWindows: Set<String> = []
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, provider, authMode, token, accountID, isVisible, hiddenWindows
+    }
+}
+
+// Decoding is hand-written so a settings file written by an older build still
+// loads: the synthesized decoder throws on a key that didn't exist when the
+// file was saved, which would drop every configured account rather than just
+// the new field.
+extension AIQuotaAccount {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
+        provider = try container.decodeIfPresent(AIProvider.self, forKey: .provider) ?? .claudeCode
+        authMode = try container.decodeIfPresent(
+            AIQuotaAuthMode.self, forKey: .authMode) ?? .localLogin
+        token = try container.decodeIfPresent(String.self, forKey: .token) ?? ""
+        accountID = try container.decodeIfPresent(String.self, forKey: .accountID) ?? ""
+        isVisible = try container.decodeIfPresent(Bool.self, forKey: .isVisible) ?? true
+        hiddenWindows = try container.decodeIfPresent(
+            Set<String>.self, forKey: .hiddenWindows) ?? []
+    }
 }
 
 /// A single rate-limit window (e.g. the 5-hour or weekly window).

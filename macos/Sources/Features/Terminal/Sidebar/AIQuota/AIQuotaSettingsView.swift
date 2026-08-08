@@ -69,6 +69,17 @@ struct AIQuotaSettingsView: View {
 
     @ViewBuilder
     private func accountRow(_ account: AIQuotaAccount) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            accountHeader(account)
+            windowToggles(for: account)
+        }
+        .padding(.vertical, 4)
+        .padding(.horizontal, 6)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.06)))
+    }
+
+    @ViewBuilder
+    private func accountHeader(_ account: AIQuotaAccount) -> some View {
         HStack(spacing: 8) {
             Image(systemName: account.provider.symbolName)
                 .foregroundColor(account.provider == .claudeCode ? .orange : .green)
@@ -108,9 +119,55 @@ struct AIQuotaSettingsView: View {
             .buttonStyle(.borderless)
             .help("Delete account")
         }
-        .padding(.vertical, 4)
-        .padding(.horizontal, 6)
-        .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.06)))
+    }
+
+    /// One switch per quota window the API actually reported for this account.
+    /// The API's window set varies by plan and changes over time, so the list
+    /// is built from the last response rather than hardcoded — a window the
+    /// API stops sending simply loses its switch.
+    @ViewBuilder
+    private func windowToggles(for account: AIQuotaAccount) -> some View {
+        let labels = windowLabels(for: account)
+        if labels.isEmpty {
+            Text("Refresh this account to list its quota windows.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        } else {
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 120), alignment: .leading)],
+                alignment: .leading, spacing: 2
+            ) {
+                ForEach(labels, id: \.self) { label in
+                    Toggle(label, isOn: windowBinding(account.id, label))
+                        .toggleStyle(.checkbox)
+                        .controlSize(.small)
+                        .font(.caption)
+                        .help("Show the \(label) bar in the sidebar")
+                }
+            }
+        }
+    }
+
+    private func windowLabels(for account: AIQuotaAccount) -> [String] {
+        manager.snapshots[account.id]?.windows.map(\.label) ?? []
+    }
+
+    private func windowBinding(_ id: UUID, _ label: String) -> Binding<Bool> {
+        Binding(
+            get: {
+                guard let account = manager.accounts.first(where: { $0.id == id })
+                else { return false }
+                return !account.hiddenWindows.contains(label)
+            },
+            set: { isShown in
+                guard let index = manager.accounts.firstIndex(where: { $0.id == id })
+                else { return }
+                if isShown {
+                    manager.accounts[index].hiddenWindows.remove(label)
+                } else {
+                    manager.accounts[index].hiddenWindows.insert(label)
+                }
+            })
     }
 
     private func visibilityBinding(for id: UUID) -> Binding<Bool> {
