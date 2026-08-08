@@ -84,31 +84,38 @@ function tmux(args) {
   });
 }
 
-async function aliveSessions() {
-  return (await sessionsWithTitles()).map((s) => s.name);
-}
-
-/// Live sessions plus the name stored on each by the app that owns it.
+/// Live sessions plus the placement the app that owns them stamped on each.
 ///
-/// A tab renamed in the MyGhost app on another Mac writes the new name onto
-/// this host's tmux session as @myghost_title, so a session driven from there
-/// shows its real name here instead of an id.
+/// A tab renamed, grouped, or reordered in the MyGhost app on another Mac
+/// writes onto this host's tmux sessions, so a session driven from there reads
+/// the same here as it does in that app's sidebar. Without this a host that
+/// only runs somebody else's ssh tabs has nothing but session ids to sort and
+/// no idea any of them belong together.
 async function sessionsWithTitles() {
   try {
     // The separator must be printable: tmux sanitises control characters in
     // format output to "_" when it can't verify the locale is UTF-8, which
     // silently welded the delimiter onto the session name. A session name
-    // never contains "|", and a title that does survives the rejoin.
+    // never contains "|", and the title is taken as everything after the last
+    // fixed field so one inside it survives the rejoin — which is why the
+    // free-form title goes last and the bounded fields lead.
     const out = await tmux([
-      "list-sessions", "-F", "#{session_name}|#{@myghost_title}",
+      "list-sessions", "-F",
+      "#{session_name}|#{@myghost_order}|#{@myghost_group}|#{@myghost_title}",
     ]);
     return out
       .split("\n")
       .map((line) => {
-        const cut = line.indexOf("|");
-        const name = cut < 0 ? line : line.slice(0, cut);
-        const title = cut < 0 ? "" : line.slice(cut + 1);
-        return { name: name.trim(), title: title.trim() };
+        const parts = line.split("|");
+        const name = (parts.shift() || "").trim();
+        const order = parseInt((parts.shift() || "").trim(), 10);
+        const group = (parts.shift() || "").trim();
+        return {
+          name,
+          title: parts.join("|").trim(),
+          group: group || null,
+          order: Number.isFinite(order) ? order : null,
+        };
       })
       .filter((s) => /^myghost/.test(s.name));
   } catch {
@@ -154,6 +161,7 @@ async function sessionList() {
   const live = await sessionsWithTitles();
   const alive = live.map((s) => s.name);
   const remoteTitles = new Map(live.filter((s) => s.title).map((s) => [s.name, s.title]));
+  const remoteGroups = new Map(live.filter((s) => s.group).map((s) => [s.name, s.group]));
   const state = readJSON(STATE_FILE, { sessions: [] });
   const web = readWebTabs();
   const webTabs = web.titles;
@@ -173,7 +181,7 @@ async function sessionList() {
   walk(state.sessions, null);
 
   // The app's own tab order, which the sidebar should match by default.
-  const appOrder = [...meta.keys()].filter((n) => alive.includes(n));
+  const appOrder = appTabOrder(live);
 
   // A grouping override lasts only until the app has applied it (the app
   // watches this file). Once every override matches what the app reports, the
@@ -202,7 +210,9 @@ async function sessionList() {
     }
     // A group set in the browser wins until the app adopts it (below), so a
     // join sticks while it propagates; "" means explicitly ungrouped.
-    let group = (m && m.group) || (isWeb ? "Web" : null);
+    // This machine's own app first, then the grouping stamped on the session
+    // by the app driving it from another Mac.
+    let group = (m && m.group) || remoteGroups.get(name) || (isWeb ? "Web" : null);
     if (groupsPending && Object.prototype.hasOwnProperty.call(web.groups, name)) {
       group = web.groups[name] || null;
     }
@@ -239,7 +249,12 @@ async function sessionList() {
 }
 
 /// The app's tab order for sessions that are currently alive.
-function appTabOrder(alive) {
+///
+/// The state file only describes tabs this Mac's own app drives. A host that
+/// just runs sessions another Mac opened over ssh has nothing in it, so fall
+/// back to the position that Mac stamped on each session.
+function appTabOrder(live) {
+  const alive = live.map((s) => s.name);
   const state = readJSON(STATE_FILE, { sessions: [] });
   const names = [];
   const walk = (entries) => {
@@ -249,7 +264,12 @@ function appTabOrder(alive) {
     }
   };
   walk(state.sessions);
-  return names.filter((n) => alive.includes(n));
+  const local = names.filter((n) => alive.includes(n));
+  if (local.length) return local;
+  return live
+    .filter((s) => s.order !== null)
+    .sort((a, b) => a.order - b.order)
+    .map((s) => s.name);
 }
 
 // ---------------------------------------------------------------------------
@@ -498,7 +518,7 @@ const server = http.createServer(async (req, res) => {
       web.order = order.filter((n) => typeof n === "string").slice(0, 500);
       // Remember the app order this override was made against, so a later
       // reorder in the app supersedes it instead of the two fighting.
-      web.orderBase = appTabOrder(await aliveSessions());
+      web.orderBase = appTabOrder(await sessionsWithTitles());
       writeWebTabs(web);
       return send(res, 200, { ok: true });
     }

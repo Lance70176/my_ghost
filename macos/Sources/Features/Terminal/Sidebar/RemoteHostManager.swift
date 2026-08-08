@@ -410,29 +410,39 @@ class RemoteHostManager {
         return rep.representation(using: .png, properties: [:])
     }
 
-    /// Store a tab's name on the remote tmux session itself, as the user
-    /// option `@myghost_title`.
+    /// Store a tab's placement on the remote tmux session itself, as the user
+    /// options `@myghost_title`, `@myghost_group`, and `@myghost_order`.
     ///
-    /// Renaming happens on this Mac, but the session lives on the other host —
-    /// where MyGhost Web would otherwise have nothing to show but a session id.
-    /// Keeping the name on the session means it travels with it: no extra file
-    /// to sync, and it survives this app quitting. Pass nil to clear it.
+    /// Naming, grouping, and ordering all happen on this Mac, but the session
+    /// lives on the other host — where MyGhost Web would otherwise have nothing
+    /// to show but a session id in tmux's own alphabetical order, with no idea
+    /// which tabs belong together. Keeping it on the session means it travels
+    /// with it: no extra file to sync, and it survives this app quitting.
+    /// Pass nil to clear the name or the group.
     func setRemoteTitle(
         target: String,
         options: [String],
         sessionName: String,
-        title: String?
+        title: String?,
+        group: String? = nil,
+        order: Int? = nil
     ) {
         // A remote login shell may be fish, which can't parse POSIX syntax, so
-        // run through /bin/sh; the title rides along base64'd to keep it clear
-        // of quoting entirely.
-        var assign: String
-        if let title, !title.isEmpty {
-            let encoded = Data(title.utf8).base64EncodedString()
-            assign = "\"$T\" set-option -t \(sessionName) @myghost_title "
+        // run through /bin/sh; text rides along base64'd to keep it clear of
+        // quoting entirely.
+        func setText(_ option: String, _ value: String?) -> String {
+            guard let value, !value.isEmpty else {
+                return "\"$T\" set-option -u -t \(sessionName) \(option)"
+            }
+            let encoded = Data(value.utf8).base64EncodedString()
+            return "\"$T\" set-option -t \(sessionName) \(option) "
                 + "\"$(printf %s \(encoded) | base64 -d)\""
-        } else {
-            assign = "\"$T\" set-option -u -t \(sessionName) @myghost_title"
+        }
+
+        var assign = setText("@myghost_title", title)
+        assign += "; " + setText("@myghost_group", group)
+        if let order {
+            assign += "; \"$T\" set-option -t \(sessionName) @myghost_order \(order)"
         }
         // Stamp ownership at the same time: cleanup must be able to tell our
         // leftovers from another Mac's live tabs.

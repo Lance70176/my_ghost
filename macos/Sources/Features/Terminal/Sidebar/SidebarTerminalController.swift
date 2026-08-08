@@ -168,22 +168,47 @@ class SidebarTerminalController: BaseTerminalController {
         saveScreenSessionState()
     }
 
-    /// Names already pushed to remote hosts, so a name is only sent when it
-    /// actually changed. Shared across windows: the sessions are.
+    /// Placements already pushed to remote hosts, so a session is only written
+    /// when something about it changed. Shared across windows: the sessions are.
     private static var publishedRemoteTitles: [String: String] = [:]
 
-    /// Push a renamed remote tab's name onto the session on its host, so that
-    /// host's own sidebar (MyGhost Web there) shows the same name.
+    /// Where a tab sits in this window's sidebar: its group, if any, and its
+    /// position in the flattened list. Both travel to the host with the name.
+    private func placement(of tab: SidebarTabEntry) -> (group: String?, order: Int)? {
+        var position = 0
+        for entry in tabs {
+            if entry.isGroup {
+                for child in entry.children {
+                    if child === tab { return (entry.groupName, position) }
+                    position += 1
+                }
+            } else {
+                if entry === tab { return (nil, position) }
+                position += 1
+            }
+        }
+        return nil
+    }
+
+    /// Push a remote tab's name, group, and position onto the session on its
+    /// host, so that host's own sidebar (MyGhost Web there) reads the same.
     func publishRemoteTitle(for tab: SidebarTabEntry) {
-        guard let target = tab.remoteTarget, let session = tab.screenSessionName else { return }
+        guard let target = tab.remoteTarget, let session = tab.screenSessionName,
+              let place = placement(of: tab)
+        else { return }
         let title = tab.displayTitle
-        guard Self.publishedRemoteTitles[session] != title else { return }
-        Self.publishedRemoteTitles[session] = title
+        // Group and position are part of the stamp, so regrouping or dragging a
+        // tab republishes it just as renaming does.
+        let stamp = "\(title)\u{1}\(place.group ?? "")\u{1}\(place.order)"
+        guard Self.publishedRemoteTitles[session] != stamp else { return }
+        Self.publishedRemoteTitles[session] = stamp
         RemoteHostManager.shared.setRemoteTitle(
             target: target,
             options: tab.remoteSSHOptions,
             sessionName: session,
-            title: title)
+            title: title,
+            group: place.group,
+            order: place.order)
     }
 
     /// Publish every remote tab's name. Renaming alone isn't enough: tabs named
