@@ -52,6 +52,13 @@
   </aside>
 
   <main id="term-wrap">
+    <!-- On a phone the list and the terminal are separate screens, so the
+         terminal carries its own way back. Hidden on desktop, where both
+         panes are visible at once and nothing needs navigating to. -->
+    <div id="term-header">
+      <button id="back-to-list" title="Back to sessions">&#8249;</button>
+      <span id="term-title"></span>
+    </div>
     <div id="term-empty">Select a tab to attach</div>
     <div id="terminal"></div>
     <!-- Touch devices compose here instead of typing into the terminal:

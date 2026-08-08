@@ -307,6 +307,8 @@
     current = name;
     localStorage.setItem("myghost_last_session", name);
     $("term-empty").classList.add("hidden");
+    $("term-title").textContent = sessionTitle(name);
+    showScreen("term");
     term.clear();
     fit.fit();
     renderTabs();
@@ -481,6 +483,8 @@
     current = null;
     localStorage.removeItem("myghost_last_session");
     $("term-empty").classList.remove("hidden");
+    // Nothing is attached any more, so the terminal screen has nothing to show.
+    showScreen("list");
     refreshState();
   };
 
@@ -611,6 +615,30 @@
 
   // ------------------------------------------------------------------ modes
 
+  /// Phone navigation. The stylesheet only acts on these classes under the
+  /// narrow layout, so both screens stay on a desktop and the class is simply
+  /// inert there — no branch needed at the call sites.
+  const PHONE = window.matchMedia("(max-width: 720px)");
+
+  function sessionTitle(name) {
+    const session = state.sessions.find((s) => s.name === name);
+    return (session && session.title) || name;
+  }
+
+  function showScreen(which) {
+    const app = $("app");
+    app.classList.toggle("nav-term", which === "term");
+    app.classList.toggle("nav-list", which !== "term");
+    // The terminal changed width, so tmux needs the new size.
+    if (term) setTimeout(() => {
+      fit.fit();
+      if (ws && ws.readyState === WebSocket.OPEN)
+        ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+    }, 60);
+  }
+
+  $("back-to-list").onclick = () => showScreen("list");
+
   function setCollapsed(collapsed) {
     $("sidebar").classList.toggle("collapsed", collapsed);
     $("expand-sidebar").classList.toggle("hidden", !collapsed);
@@ -623,7 +651,10 @@
   }
   $("collapse-sidebar").onclick = () => setCollapsed(true);
   $("expand-sidebar").onclick = () => setCollapsed(false);
-  if (localStorage.getItem("myghost_sidebar_collapsed") === "1") setCollapsed(true);
+  // A collapse stored from a desktop visit would hide the phone's whole list
+  // screen, leaving nothing to navigate from.
+  if (!PHONE.matches && localStorage.getItem("myghost_sidebar_collapsed") === "1")
+    setCollapsed(true);
 
   $("mode-term").onclick = () => setMode("term");
   $("mode-files").onclick = () => setMode("files");
@@ -644,23 +675,35 @@
   /// whatever was last attached from this browser. There is no blind "first
   /// session" fallback: attaching resizes the tmux window for every client, so
   /// it should only happen where it was asked for.
-  function preferredSession() {
+  /// A session named outright by `?tab=`, if it resolves to one.
+  function deepLinkedSession() {
     const want = new URL(location.href).searchParams.get("tab");
-    if (want) {
-      const needle = want.toLowerCase();
-      const match =
-        state.sessions.find((s) => s.name === want) ||
-        state.sessions.find((s) => (s.title || "").toLowerCase() === needle) ||
-        state.sessions.find((s) => (s.title || "").toLowerCase().includes(needle));
-      if (match) return match.name;
-    }
+    if (!want) return null;
+    const needle = want.toLowerCase();
+    return (
+      state.sessions.find((s) => s.name === want) ||
+      state.sessions.find((s) => (s.title || "").toLowerCase() === needle) ||
+      state.sessions.find((s) => (s.title || "").toLowerCase().includes(needle)) ||
+      null
+    );
+  }
+
+  function preferredSession() {
+    const deep = deepLinkedSession();
+    if (deep) return deep.name;
     const last = localStorage.getItem("myghost_last_session");
     return last && state.sessions.some((s) => s.name === last) ? last : null;
   }
 
   refreshState().then(() => {
     const target = preferredSession();
-    if (target) attach(target);
+    // A phone opens on the list, the way the sessions screen does in the app.
+    // `?tab=` still lands straight in its session, since that link is a Home
+    // Screen shortcut for one conversation and asks for it by name — the
+    // distinction matters because attaching resizes the tmux window for every
+    // client, so it should only happen where it was actually asked for.
+    if (target && (!PHONE.matches || deepLinkedSession())) attach(target);
+    else showScreen("list");
   });
   refreshAI();
   setInterval(refreshState, 5000);

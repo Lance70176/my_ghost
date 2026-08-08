@@ -43,7 +43,9 @@ body {
 .ai-row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
 .ai-label { width: 38px; font-size: 10px; color: #8a8fa3; }
 .ai-bar { flex: 1; height: 5px; background: #2c2f3b; border-radius: 3px; overflow: hidden; }
-.ai-fill { height: 100%; border-radius: 3px; }
+/* display: block is load-bearing — the fill is a <span>, and width/height do
+   not apply to an inline box, so the bar rendered as an empty track. */
+.ai-fill { display: block; height: 100%; border-radius: 3px; }
 .ai-pct { width: 34px; text-align: right; font-size: 10px; color: #8a8fa3;
   font-variant-numeric: tabular-nums; }
 .ai-reset { font-size: 10px; color: #8a8fa3; }
@@ -203,6 +205,41 @@ body {
 }
 #compose-send:active { background: #46689f; }
 
+/* --- phone navigation ---
+   A phone is too narrow to read two panes at once, so the list and the
+   terminal become separate full-screen screens: the list opens first, a tab
+   goes to the terminal, and the terminal's back button returns. Desktop keeps
+   the split, so every rule below is scoped to the narrow layout — the
+   nav-list / nav-term classes are set either way and are inert above it. */
+#term-header { display: none; }
+
 @media (max-width: 720px) {
-  #sidebar { width: 200px; min-width: 200px; }
+  #sidebar { width: 100%; min-width: 0; border-right: none; }
+  #app.nav-list #term-wrap { display: none; }
+  #app.nav-term #sidebar { display: none; }
+  /* The split-view collapse chrome has no meaning once each screen is full
+     width; the back button is the only navigation. */
+  #collapse-sidebar, #expand-sidebar { display: none !important; }
+
+  #app.nav-term #term-header {
+    display: flex; align-items: center; gap: 8px;
+    position: absolute; z-index: 7; left: 0; right: 0;
+    top: env(safe-area-inset-top); height: 44px; padding: 0 10px;
+    background: #171922; border-bottom: 1px solid #2c2f3b;
+  }
+  #back-to-list {
+    flex: none; width: 32px; height: 32px;
+    border: none; border-radius: 16px;
+    background: #232734; color: #d8dae2; font-size: 19px; line-height: 1;
+    cursor: pointer;
+  }
+  #back-to-list:active { background: #333849; }
+  #term-title {
+    flex: 1; text-align: center; font-size: 14px; font-weight: 600;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    /* Balances the back button so the title sits centred on screen. */
+    padding-right: 32px;
+  }
+  /* Start the terminal below the header rather than under it. */
+  #app.nav-term #terminal { top: calc(50px + env(safe-area-inset-top)); }
 }
