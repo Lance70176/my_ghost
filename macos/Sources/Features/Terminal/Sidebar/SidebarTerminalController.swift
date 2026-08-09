@@ -707,7 +707,8 @@ class SidebarTerminalController: BaseTerminalController {
 
         RemoteHostManager.shared.uploadClipboardImage(
             target: target,
-            options: entry.remoteSSHOptions
+            options: entry.remoteSSHOptions,
+            sessionName: entry.screenSessionName
         ) { [weak surfaceView, weak self] remotePath in
             guard let remotePath else {
                 NSSound.beep()
@@ -738,7 +739,8 @@ class SidebarTerminalController: BaseTerminalController {
         RemoteHostManager.shared.uploadFiles(
             urls,
             target: target,
-            options: entry.remoteSSHOptions
+            options: entry.remoteSSHOptions,
+            sessionName: entry.screenSessionName
         ) { [weak surfaceView, weak self] remotePaths in
             if remotePaths.count < urls.count {
                 NSSound.beep()

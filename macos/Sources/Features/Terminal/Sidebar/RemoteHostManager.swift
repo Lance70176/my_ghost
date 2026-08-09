@@ -249,6 +249,7 @@ class RemoteHostManager {
     func uploadClipboardImage(
         target: String,
         options: [String],
+        sessionName: String?,
         completion: @escaping (String?) -> Void
     ) {
         guard let png = clipboardPNGData() else {
@@ -256,7 +257,6 @@ class RemoteHostManager {
             return
         }
         let fileName = "myghost-paste-\(UUID().uuidString.prefix(8)).png"
-        let remotePath = "/tmp/\(fileName)"
         let localURL = fileManager.temporaryDirectory.appendingPathComponent(fileName)
         do {
             try png.write(to: localURL)
@@ -265,32 +265,27 @@ class RemoteHostManager {
             return
         }
 
-        DispatchQueue.global(qos: .userInitiated).async { [fileManager] in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            process.arguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
-                + options
-                + [target, "--", "cat > \(remotePath)"]
-            process.standardInput = FileHandle(forReadingAtPath: localURL.path)
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
-            var success = false
-            do {
-                try process.run()
-                process.waitUntilExit()
-                success = process.terminationStatus == 0
-            } catch {
-                success = false
-            }
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            let remotePath = uploadOne(
+                localURL,
+                target: target,
+                options: options,
+                sessionName: sessionName
+            )
             try? fileManager.removeItem(at: localURL)
-            DispatchQueue.main.async { completion(success ? remotePath : nil) }
+            DispatchQueue.main.async { completion(remotePath) }
         }
     }
 
-    /// Directory on the remote host that dropped/pasted files are copied into.
-    /// A stable location rather than /tmp, which the system prunes — an agent
-    /// reading the file later shouldn't find it gone.
-    static let uploadDirectory = "$HOME/myghost-uploads"
+    /// The folder, inside whatever directory the tab is sitting in, that
+    /// dropped/pasted files land in.
+    ///
+    /// It has to be *inside* that directory: Claude Code only hands the model
+    /// an image pasted as a path when the file lives in the workspace it was
+    /// started in — a path in /tmp or $HOME arrives as a bare reference the
+    /// model then can't read, and it answers that it can't find the image.
+    /// Hidden, and it ignores itself in git, so a repo stays clean.
+    static let uploadDirectoryName = ".myghost-uploads"
 
     /// Copy local files (or folders) to the remote host so remote programs can
     /// read them, calling `completion` on the main queue with the remote paths
@@ -303,11 +298,12 @@ class RemoteHostManager {
         _ localURLs: [URL],
         target: String,
         options: [String],
+        sessionName: String?,
         completion: @escaping ([String]) -> Void
     ) {
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             let paths = localURLs.compactMap {
-                uploadOne($0, target: target, options: options)
+                uploadOne($0, target: target, options: options, sessionName: sessionName)
             }
             DispatchQueue.main.async { completion(paths) }
         }
@@ -315,7 +311,12 @@ class RemoteHostManager {
 
     /// Upload one file or folder, returning the remote path it landed on.
     /// Runs synchronously — call it off the main thread.
-    private func uploadOne(_ localURL: URL, target: String, options: [String]) -> String? {
+    private func uploadOne(
+        _ localURL: URL,
+        target: String,
+        options: [String],
+        sessionName: String?
+    ) -> String? {
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: localURL.path, isDirectory: &isDirectory) else {
             return nil
@@ -327,7 +328,11 @@ class RemoteHostManager {
         ssh.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
         ssh.arguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
             + options
-            + [target, "--", Self.remoteReceiveCommand(name: name, isDirectory: isDirectory.boolValue)]
+            + [target, "--", Self.remoteReceiveCommand(
+                name: name,
+                isDirectory: isDirectory.boolValue,
+                sessionName: sessionName
+            )]
 
         let output = Pipe()
         ssh.standardOutput = output
@@ -374,17 +379,33 @@ class RemoteHostManager {
 
     /// The command run on the remote host to receive one upload.
     ///
+    /// The upload lands next to whatever the tab is working on: ask tmux where
+    /// the session's pane currently is and drop the file in a folder there, so
+    /// a program running in that directory can read it. Falls back to the home
+    /// directory when there's no session to ask.
+    ///
     /// The remote login shell may be fish, which can't parse POSIX syntax, so
     /// the script is base64'd and handed to `/bin/sh` — that also keeps the
     /// file name clear of any quoting. stdin stays free for the payload.
-    private static func remoteReceiveCommand(name: String, isDirectory: Bool) -> String {
+    private static func remoteReceiveCommand(
+        name: String,
+        isDirectory: Bool,
+        sessionName: String?
+    ) -> String {
         let receive = isDirectory
             ? #"mkdir -p "$p"; tar -xf - -C "$p" --strip-components 1"#
             : #"cat > "$p""#
         let script = """
+        d=
+        if [ -n "$MG_SESSION" ]; then
+          T=$(command -v tmux || echo /opt/homebrew/bin/tmux)
+          d=$("$T" display-message -p -t "$MG_SESSION" '#{pane_current_path}' 2>/dev/null)
+        fi
+        case "$d" in /*) ;; *) d=$HOME ;; esac
         set -e
-        d="\(uploadDirectory)"
+        d="$d/\(uploadDirectoryName)"
         mkdir -p "$d"
+        [ -e "$d/.gitignore" ] || printf '*\\n' > "$d/.gitignore"
         n=$MG_NAME
         p="$d/$n"
         i=1
@@ -394,7 +415,9 @@ class RemoteHostManager {
         """
         let scriptB64 = Data(script.utf8).base64EncodedString()
         let nameB64 = Data(name.utf8).base64EncodedString()
+        let sessionB64 = Data((sessionName ?? "").utf8).base64EncodedString()
         return "/bin/sh -c 'MG_NAME=$(printf %s \(nameB64) | base64 -d); "
+            + "MG_SESSION=$(printf %s \(sessionB64) | base64 -d); "
             + "eval \"$(printf %s \(scriptB64) | base64 -d)\"'"
     }
 
