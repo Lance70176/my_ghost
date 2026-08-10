@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
 
 /// A remote host that can be connected to via SSH with a persistent remote tmux session.
 struct RemoteHost: Codable, Hashable, Identifiable {
@@ -236,33 +237,34 @@ class RemoteHostManager {
         return parts.joined(separator: " ")
     }
 
-    // MARK: - Clipboard image upload
+    // MARK: - Clipboard upload
 
-    /// Copy the clipboard image to the remote host so its path can be pasted
-    /// into the terminal. Terminal paste is text-only, and remote programs
-    /// (e.g. Claude Code) read the *remote* clipboard on Ctrl+V, so the only
-    /// way an image reaches a remote CLI is as a file on that host.
+    /// Copy whatever the clipboard is carrying — a screenshot, a copied PDF
+    /// page, an archive — to the remote host so its path can be pasted into the
+    /// terminal. Terminal paste is text-only, and remote programs (e.g. Claude
+    /// Code) read the *remote* clipboard on Ctrl+V, so the only way clipboard
+    /// content reaches a remote CLI is as a file on that host.
     ///
-    /// The upload streams the PNG through ssh (`cat > path`) rather than scp,
-    /// so it reuses the exact ssh options the tab connected with. Calls
-    /// `completion` on the main queue with the remote path, or nil on failure.
-    func uploadClipboardImage(
+    /// Returns false, having done nothing, when the clipboard holds nothing
+    /// that can become a file — the caller then pastes it the ordinary way.
+    ///
+    /// The upload streams through ssh (`cat > path`) rather than scp, so it
+    /// reuses the exact ssh options the tab connected with. Calls `completion`
+    /// on the main queue with the remote path, or nil on failure.
+    func uploadClipboardFile(
         target: String,
         options: [String],
         sessionName: String?,
         completion: @escaping (String?) -> Void
-    ) {
-        guard let png = clipboardPNGData() else {
-            DispatchQueue.main.async { completion(nil) }
-            return
-        }
-        let fileName = "myghost-paste-\(UUID().uuidString.prefix(8)).png"
+    ) -> Bool {
+        guard let file = clipboardFile() else { return false }
+        let fileName = "myghost-paste-\(UUID().uuidString.prefix(8)).\(file.fileExtension)"
         let localURL = fileManager.temporaryDirectory.appendingPathComponent(fileName)
         do {
-            try png.write(to: localURL)
+            try file.data.write(to: localURL)
         } catch {
             DispatchQueue.main.async { completion(nil) }
-            return
+            return true
         }
 
         DispatchQueue.global(qos: .userInitiated).async { [self] in
@@ -275,6 +277,7 @@ class RemoteHostManager {
             try? fileManager.removeItem(at: localURL)
             DispatchQueue.main.async { completion(remotePath) }
         }
+        return true
     }
 
     /// The folder, inside whatever directory the tab is sitting in, that
@@ -421,16 +424,66 @@ class RemoteHostManager {
             + "eval \"$(printf %s \(scriptB64) | base64 -d)\"'"
     }
 
-    /// The clipboard image as PNG data: raw PNG if present, otherwise any
-    /// image representation (TIFF, copied file, …) converted via NSImage.
-    private func clipboardPNGData() -> Data? {
+    /// What the clipboard holds, as a file to upload: the bytes, and the
+    /// extension the file should land under.
+    ///
+    /// A PDF or an archive wins over any picture of it — a pasteboard routinely
+    /// carries a TIFF preview next to the real thing, and the remote side wants
+    /// the document. A screenshot has no such document type and takes the PNG
+    /// route below. Anything else that can stand on its own as a file (a Word
+    /// document, a spreadsheet) is used only when there is no image at all, so
+    /// copied artwork still arrives as a picture rather than as some app's
+    /// private document format.
+    private func clipboardFile() -> (data: Data, fileExtension: String)? {
         let pb = NSPasteboard.general
-        if let data = pb.data(forType: .png) { return data }
-        guard let image = NSImage(pasteboard: pb),
-              let tiff = image.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff)
-        else { return nil }
-        return rep.representation(using: .png, properties: [:])
+
+        if let document = Self.clipboardData(pb, where: {
+            $0.conforms(to: .pdf) || $0.conforms(to: .archive)
+        }) {
+            return document
+        }
+
+        if let png = pb.data(forType: .png), !png.isEmpty {
+            return (png, "png")
+        }
+        if let image = NSImage(pasteboard: pb),
+           let tiff = image.tiffRepresentation,
+           let rep = NSBitmapImageRep(data: tiff),
+           let png = rep.representation(using: .png, properties: [:]) {
+            return (png, "png")
+        }
+
+        return Self.clipboardData(pb, where: { _ in true })
+    }
+
+    /// The first pasteboard type matching `isWanted` that names a real file,
+    /// with the bytes to write and the extension to write them under.
+    ///
+    /// Text and urls are skipped — those paste as text. Images are skipped too,
+    /// so a screenshot lands as the PNG every program expects rather than a
+    /// .tiff. Dynamic types (`dyn.…`) stand for data macOS has no identifier
+    /// for, and `com.apple.pasteboard.…` types carry promises and metadata
+    /// rather than content, so neither can name a file either.
+    private static func clipboardData(
+        _ pb: NSPasteboard,
+        where isWanted: (UTType) -> Bool
+    ) -> (data: Data, fileExtension: String)? {
+        for type in pb.types ?? [] {
+            guard !type.rawValue.hasPrefix("com.apple.pasteboard."),
+                  let utType = UTType(type.rawValue),
+                  !utType.isDynamic,
+                  utType.conforms(to: .data),
+                  !utType.conforms(to: .text),
+                  !utType.conforms(to: .url),
+                  !utType.conforms(to: .image),
+                  isWanted(utType),
+                  let fileExtension = utType.preferredFilenameExtension,
+                  let data = pb.data(forType: type),
+                  !data.isEmpty
+            else { continue }
+            return (data, fileExtension)
+        }
+        return nil
     }
 
     /// Store a tab's placement on the remote tmux session itself, as the user

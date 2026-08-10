@@ -695,17 +695,19 @@ class SidebarTerminalController: BaseTerminalController {
         saveScreenSessionState()
     }
 
-    /// If `surfaceView` is the ssh surface of a remote tab, upload the
-    /// clipboard image to that host and paste the remote file path, so remote
-    /// CLIs (e.g. Claude Code) can read the image from disk. Returns true when
-    /// the paste was handled here. Only the tab's original surface runs ssh —
-    /// splits opened inside a remote tab are local shells and return false.
-    func pasteClipboardImageToRemote(from surfaceView: Ghostty.SurfaceView) -> Bool {
+    /// If `surfaceView` is the ssh surface of a remote tab, upload what the
+    /// clipboard holds to that host and paste the remote file path, so remote
+    /// CLIs (e.g. Claude Code) can read it from disk. Returns true when the
+    /// paste was handled here — false when this isn't a remote tab, or the
+    /// clipboard holds nothing that can become a file. Only the tab's original
+    /// surface runs ssh — splits opened inside a remote tab are local shells
+    /// and return false.
+    func pasteClipboardFileToRemote(from surfaceView: Ghostty.SurfaceView) -> Bool {
         guard let entry = remoteEntry(for: surfaceView), let target = entry.remoteTarget else {
             return false
         }
 
-        RemoteHostManager.shared.uploadClipboardImage(
+        return RemoteHostManager.shared.uploadClipboardFile(
             target: target,
             options: entry.remoteSSHOptions,
             sessionName: entry.screenSessionName
@@ -714,16 +716,15 @@ class SidebarTerminalController: BaseTerminalController {
                 NSSound.beep()
                 guard let window = self?.window else { return }
                 let alert = NSAlert()
-                alert.messageText = "Image paste failed"
+                alert.messageText = "Paste failed"
                 alert.informativeText =
-                    "Could not upload the clipboard image to \(target)."
+                    "Could not upload the clipboard contents to \(target)."
                 alert.alertStyle = .warning
                 alert.beginSheetModal(for: window)
                 return
             }
             surfaceView?.surfaceModel?.sendText(remotePath + " ")
         }
-        return true
     }
 
     /// If `surfaceView` is the ssh surface of a remote tab, copy `urls` to that

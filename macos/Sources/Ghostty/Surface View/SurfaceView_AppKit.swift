@@ -1551,16 +1551,16 @@ extension Ghostty {
 
         private func forwardImagePasteIfNeeded() -> Bool {
             let pb = NSPasteboard.general
-            guard pb.getOpinionatedStringContents() == nil,
-                  NSImage.canInit(with: pb) else { return false }
-            // Remote tabs: the image lives in the *macOS* clipboard, which a
-            // program on the remote host can't read. Upload it there and paste
-            // the remote file path instead.
+            guard pb.getOpinionatedStringContents() == nil else { return false }
+            // Remote tabs: the clipboard lives on *this* Mac, where a program
+            // on the remote host can't read it. Upload what it holds — an
+            // image, a copied PDF page, an archive — and paste the remote path
+            // instead.
             if let controller = self.window?.windowController as? SidebarTerminalController,
-               controller.pasteClipboardImageToRemote(from: self) {
+               controller.pasteClipboardFileToRemote(from: self) {
                 return true
             }
-            guard let surfaceModel else { return false }
+            guard NSImage.canInit(with: pb), let surfaceModel else { return false }
             let unshiftedV = UInt32(UnicodeScalar("v").value)
             surfaceModel.sendKeyEvent(.init(
                 key: .v,
