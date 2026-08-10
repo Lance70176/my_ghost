@@ -768,12 +768,29 @@ class SidebarTerminalController: BaseTerminalController {
         return true
     }
 
-    /// The tab entry whose ssh surface is `surfaceView`, if any. Only a tab's
-    /// original surface runs ssh — splits opened inside a remote tab are local
-    /// shells, so they don't match.
+    /// The tab entry whose ssh surface is `surfaceView`, if any.
+    ///
+    /// A tab's own surface is the one running ssh, so that is what's looked for
+    /// first. But a tab that has been grouped, ungrouped, or reshuffled can end
+    /// up showing a surface its entry no longer calls its original — and then a
+    /// paste in a plainly remote tab was answered by forwarding Ctrl+V to a
+    /// host whose clipboard is empty. So a remote tab holding a single surface
+    /// claims it: with one pane there is only one candidate for the ssh
+    /// connection. A tab that really was split keeps the strict rule, since the
+    /// extra panes are local shells and have no remote path to paste.
     private func remoteEntry(for surfaceView: Ghostty.SurfaceView) -> SidebarTabEntry? {
         for tab in tabs {
             for candidate in [tab] + tab.children where candidate.originalSurface === surfaceView {
+                return candidate
+            }
+        }
+        for tab in tabs {
+            for candidate in [tab] + tab.children {
+                guard candidate.remoteTarget != nil,
+                      let leaves = candidate.surfaceTree.root?.leaves(),
+                      leaves.count == 1,
+                      leaves[0] === surfaceView
+                else { continue }
                 return candidate
             }
         }
