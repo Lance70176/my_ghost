@@ -427,47 +427,50 @@ class RemoteHostManager {
     /// What the clipboard holds, as a file to upload: the bytes, and the
     /// extension the file should land under.
     ///
-    /// A PDF or an archive wins over any picture of it — a pasteboard routinely
-    /// carries a TIFF preview next to the real thing, and the remote side wants
-    /// the document. A screenshot has no such document type and takes the PNG
-    /// route below. Anything else that can stand on its own as a file (a Word
-    /// document, a spreadsheet) is used only when there is no image at all, so
-    /// copied artwork still arrives as a picture rather than as some app's
-    /// private document format.
+    /// A picture goes as a picture. Apps routinely put a `com.adobe.pdf` copy
+    /// beside an image they place on the pasteboard — Preview, Safari, and
+    /// Keynote all do — so anything that prefers the document type turns a
+    /// pasted screenshot into a PDF the program on the other end no longer
+    /// reads as an image. Only a clipboard carrying no picture at all falls
+    /// through to whatever else can stand on its own as a file: a copied PDF
+    /// page, an archive, a document.
     private func clipboardFile() -> (data: Data, fileExtension: String)? {
         let pb = NSPasteboard.general
-
-        if let document = Self.clipboardData(pb, where: {
-            $0.conforms(to: .pdf) || $0.conforms(to: .archive)
-        }) {
-            return document
-        }
 
         if let png = pb.data(forType: .png), !png.isEmpty {
             return (png, "png")
         }
-        if let image = NSImage(pasteboard: pb),
-           let tiff = image.tiffRepresentation,
-           let rep = NSBitmapImageRep(data: tiff),
-           let png = rep.representation(using: .png, properties: [:]) {
+        if pb.data(forType: .tiff) != nil, let png = Self.clipboardPNG(pb) {
             return (png, "png")
         }
 
-        return Self.clipboardData(pb, where: { _ in true })
+        if let document = Self.clipboardData(pb) { return document }
+
+        // Some other image encoding on its own (a lone JPEG, an icns): still an
+        // image, so it takes the PNG route too.
+        guard let png = Self.clipboardPNG(pb) else { return nil }
+        return (png, "png")
     }
 
-    /// The first pasteboard type matching `isWanted` that names a real file,
-    /// with the bytes to write and the extension to write them under.
+    /// The clipboard's image re-encoded as PNG — the format every program that
+    /// reads a pasted path expects, whatever the source app happened to offer.
+    private static func clipboardPNG(_ pb: NSPasteboard) -> Data? {
+        guard let image = NSImage(pasteboard: pb),
+              let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff)
+        else { return nil }
+        return rep.representation(using: .png, properties: [:])
+    }
+
+    /// The first pasteboard type that names a real file, with the bytes to
+    /// write and the extension to write them under.
     ///
     /// Text and urls are skipped — those paste as text. Images are skipped too,
-    /// so a screenshot lands as the PNG every program expects rather than a
-    /// .tiff. Dynamic types (`dyn.…`) stand for data macOS has no identifier
-    /// for, and `com.apple.pasteboard.…` types carry promises and metadata
-    /// rather than content, so neither can name a file either.
-    private static func clipboardData(
-        _ pb: NSPasteboard,
-        where isWanted: (UTType) -> Bool
-    ) -> (data: Data, fileExtension: String)? {
+    /// so they take the PNG route above rather than landing as a .tiff no
+    /// program expects. Dynamic types (`dyn.…`) stand for data macOS has no
+    /// identifier for, and `com.apple.pasteboard.…` types carry promises and
+    /// metadata rather than content, so neither can name a file either.
+    private static func clipboardData(_ pb: NSPasteboard) -> (data: Data, fileExtension: String)? {
         for type in pb.types ?? [] {
             guard !type.rawValue.hasPrefix("com.apple.pasteboard."),
                   let utType = UTType(type.rawValue),
@@ -476,7 +479,6 @@ class RemoteHostManager {
                   !utType.conforms(to: .text),
                   !utType.conforms(to: .url),
                   !utType.conforms(to: .image),
-                  isWanted(utType),
                   let fileExtension = utType.preferredFilenameExtension,
                   let data = pb.data(forType: type),
                   !data.isEmpty
