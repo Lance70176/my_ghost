@@ -295,12 +295,17 @@ enum ChatGPTUsageFetcher {
         }
     }
 
+    /// Names a window after the period it actually covers. The free plan's
+    /// single window is a month long, so anything past a week can't just be
+    /// called "Week" — that read as a weekly limit resetting 25 days out.
     private static func label(forMinutes minutes: Int?, index: Int) -> String {
         guard let minutes else { return index == 0 ? "5h" : "Week" }
         if minutes <= 360 { return "5h" }
-        if minutes >= 10000 { return "Week" }
-        let hours = minutes / 60
-        return hours >= 48 ? "\(hours / 24)d" : "\(hours)h"
+        let days = minutes / 1440
+        if (6...8).contains(days) { return "Week" }
+        if (27...32).contains(days) { return "Month" }
+        if days >= 2 { return "\(days)d" }
+        return "\(minutes / 60)h"
     }
 
     private static func resolveCredential(

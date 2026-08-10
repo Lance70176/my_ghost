@@ -155,7 +155,10 @@ private struct AIQuotaAccountRow: View {
             }
 
             if !visibleWindows.isEmpty {
-                ForEach(visibleWindows, id: \.label) { window in
+                // Keyed by position, not by label: two windows the API reports
+                // under the same name would otherwise collapse into one row,
+                // silently dropping the second window's usage.
+                ForEach(Array(visibleWindows.enumerated()), id: \.offset) { _, window in
                     HStack(spacing: 4) {
                         Text(window.label)
                             .font(.system(size: 9))

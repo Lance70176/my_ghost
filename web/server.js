@@ -369,11 +369,17 @@ async function chatgptUsage() {
     const minutes =
       w.window_minutes ||
       (w.limit_window_seconds ? Math.round(w.limit_window_seconds / 60) : null);
+    // Name the window after the period it actually covers. The free plan's
+    // single window is a month long, so anything past a week can't just be
+    // called "Week" — that read as a weekly limit resetting 25 days out.
     let label = fallbackLabel;
     if (minutes) {
+      const days = Math.floor(minutes / 1440);
       if (minutes <= 360) label = "5h";
-      else if (minutes >= 10000) label = "Week";
-      else label = Math.round(minutes / 60) + "h";
+      else if (days >= 6 && days <= 8) label = "Week";
+      else if (days >= 27 && days <= 32) label = "Month";
+      else if (days >= 2) label = days + "d";
+      else label = Math.floor(minutes / 60) + "h";
     }
     let resetsAt = null;
     if (typeof w.reset_at === "number") resetsAt = new Date(w.reset_at * 1000).toISOString();
