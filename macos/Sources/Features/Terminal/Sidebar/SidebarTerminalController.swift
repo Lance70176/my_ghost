@@ -770,23 +770,30 @@ class SidebarTerminalController: BaseTerminalController {
 
     /// The tab entry whose ssh surface is `surfaceView`, if any.
     ///
-    /// A tab's own surface is the one running ssh, so that is what's looked for
-    /// first. But a tab that has been grouped, ungrouped, or reshuffled can end
-    /// up showing a surface its entry no longer calls its original — and then a
-    /// paste in a plainly remote tab was answered by forwarding Ctrl+V to a
-    /// host whose clipboard is empty. So a remote tab holding a single surface
-    /// claims it: with one pane there is only one candidate for the ssh
-    /// connection. A tab that really was split keeps the strict rule, since the
-    /// extra panes are local shells and have no remote path to paste.
+    /// Group entries are skipped, and that is the whole point: a group holds no
+    /// ssh connection of its own — the remote host lives on each child — yet it
+    /// starts with no original surface and adopts the first focused one that
+    /// belongs to its tree (`SidebarTabEntry.updateFocusedSurface`). In full
+    /// mode that tree is the active child's surface, so the group ends up
+    /// answering to a child's surface, and searching parents first meant a
+    /// paste inside a group found the group, read no remote target, and
+    /// forwarded Ctrl+V to a host whose clipboard is empty.
+    ///
+    /// Failing that, a remote tab holding a single surface claims it: with one
+    /// pane there is only one candidate for the ssh connection. A tab that
+    /// really was split keeps the strict rule, since the extra panes are local
+    /// shells and have no remote path to paste.
     private func remoteEntry(for surfaceView: Ghostty.SurfaceView) -> SidebarTabEntry? {
         for tab in tabs {
-            for candidate in [tab] + tab.children where candidate.originalSurface === surfaceView {
+            for candidate in [tab] + tab.children
+            where !candidate.isGroup && candidate.originalSurface === surfaceView {
                 return candidate
             }
         }
         for tab in tabs {
             for candidate in [tab] + tab.children {
-                guard candidate.remoteTarget != nil,
+                guard !candidate.isGroup,
+                      candidate.remoteTarget != nil,
                       let leaves = candidate.surfaceTree.root?.leaves(),
                       leaves.count == 1,
                       leaves[0] === surfaceView
