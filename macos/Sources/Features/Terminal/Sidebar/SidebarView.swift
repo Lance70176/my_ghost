@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import OSLog
 
 /// Sidebar display mode.
 enum SidebarMode {
@@ -56,6 +57,10 @@ private final class DragHintTracker {
 /// drives the tail hint) and, on release, reports the drop position as a
 /// fraction of the row height so the sidebar can place the tab accordingly.
 private struct TabDropDelegate: DropDelegate {
+    /// Types a dragged row may arrive as. `draggable(String)` publishes UTF-8
+    /// plain text, but the drop side stays tolerant of the plain-text family.
+    static let dragTypes: [UTType] = [.plainText, .utf8PlainText, .text]
+
     let targetTabID: UUID
     let rowHeight: CGFloat
     let tracker: DragHintTracker
@@ -65,7 +70,7 @@ private struct TabDropDelegate: DropDelegate {
     let perform: (_ providers: [NSItemProvider], _ fraction: CGFloat) -> Bool
 
     func validateDrop(info: DropInfo) -> Bool {
-        info.hasItemsConforming(to: [.plainText])
+        info.hasItemsConforming(to: Self.dragTypes)
     }
 
     func dropEntered(info: DropInfo) {
@@ -88,7 +93,7 @@ private struct TabDropDelegate: DropDelegate {
 
     func performDrop(info: DropInfo) -> Bool {
         let fraction = rowHeight > 0 ? min(max(info.location.y / rowHeight, 0), 1) : 0.5
-        return perform(info.itemProviders(for: [.plainText]), fraction)
+        return perform(info.itemProviders(for: Self.dragTypes), fraction)
     }
 }
 
@@ -112,6 +117,11 @@ private struct TabDragDropModifier: ViewModifier {
 
     @State private var rowHeight: CGFloat = 0
 
+    fileprivate static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier!,
+        category: "SidebarDrag"
+    )
+
     func body(content: Content) -> some View {
         content
             // Open up the vertical gap between tabs (~1.3x the default row
@@ -123,13 +133,12 @@ private struct TabDragDropModifier: ViewModifier {
                     .onChange(of: geo.size.height) { rowHeight = $0 }
             })
             .overlay(hintBadge, alignment: .trailing)
-            .onDrag {
-                // Record what is being dragged so hover logic can tell whether
-                // a join is possible before the payload is readable.
-                tracker.draggedID = id
-                return NSItemProvider(object: id.uuidString as NSString)
-            }
-            .onDrop(of: [.plainText], delegate: TabDropDelegate(
+            // `draggable`, not `onDrag`: macOS 27 releases the item provider
+            // `onDrag` hands back before the drag session opens, so pressing a
+            // row and moving did nothing at all. The payload is still plain
+            // text, which the drop delegate below already accepts.
+            .draggable(dragPayload())
+            .onDrop(of: TabDropDelegate.dragTypes, delegate: TabDropDelegate(
                 targetTabID: id,
                 rowHeight: rowHeight,
                 tracker: tracker,
@@ -138,6 +147,16 @@ private struct TabDragDropModifier: ViewModifier {
                 onExited: onExited,
                 perform: onDrop
             ))
+    }
+
+    /// The dragged row's identity, evaluated lazily when a drag actually
+    /// starts (`draggable` takes an autoclosure).
+    private func dragPayload() -> String {
+        // Record what is being dragged so hover logic can tell whether a join
+        // is possible before the payload is readable.
+        tracker.draggedID = id
+        Self.logger.debug("sidebar drag started: \(id.uuidString, privacy: .public)")
+        return id.uuidString
     }
 
     /// Small badge at the row's tail: ↑/↓ while the drag is moving (reorder),
@@ -485,8 +504,11 @@ struct SidebarView: View {
         dragTracker.lastRowID = nil
         dragTracker.draggedID = nil
         guard let provider = providers.first else { return false }
-        provider.loadItem(forTypeIdentifier: UTType.plainText.identifier, options: nil) { data, _ in
-            guard let data = data as? Data, let uuidString = String(data: data, encoding: .utf8),
+        // loadObject rather than loadItem(forTypeIdentifier:): the payload may
+        // be registered as any member of the plain-text family, and only the
+        // class-based load resolves those by conformance.
+        provider.loadObject(ofClass: NSString.self) { object, _ in
+            guard let uuidString = object as? String,
                   let draggedID = UUID(uuidString: uuidString) else { return }
             DispatchQueue.main.async {
                 performDrop(draggedID: draggedID, targetTabID: targetTabID, fraction: fraction)
@@ -790,7 +812,9 @@ private struct SidebarStandaloneTabRow: View {
             }
         }
         .contentShape(Rectangle())
-        .onTapGesture {
+        // Simultaneous so the row's drag source still wins the mouse-down: an
+        // exclusive tap gesture swallows it and drag-to-reorder never starts.
+        .simultaneousGesture(TapGesture().onEnded {
             selection = tab.id
             controller.selectTab(tab)
             if let surface = tab.originalSurface {
@@ -798,7 +822,7 @@ private struct SidebarStandaloneTabRow: View {
                     Ghostty.moveFocus(to: surface)
                 }
             }
-        }
+        })
         .onHover { isHovering = $0 }
         .contextMenu {
             Button("Rename Tab…") {
@@ -885,10 +909,10 @@ private struct SidebarGroupHeaderRow: View {
             }
         }
         .contentShape(Rectangle())
-        .onTapGesture {
+        .simultaneousGesture(TapGesture().onEnded {
             selection = group.id
             controller.selectTab(group)
-        }
+        })
         .onHover { isHovering = $0 }
         .contextMenu {
             Button("Rename…") {
@@ -1010,7 +1034,7 @@ private struct SidebarGroupChildRow: View {
         }
         .padding(.leading, 12)
         .contentShape(Rectangle())
-        .onTapGesture {
+        .simultaneousGesture(TapGesture().onEnded {
             selection = child.id
             if group.id != controller.selectedTabID {
                 controller.selectTab(group)
@@ -1022,7 +1046,7 @@ private struct SidebarGroupChildRow: View {
                     Ghostty.moveFocus(to: surface)
                 }
             }
-        }
+        })
         .onHover { isHovering = $0 }
         .contextMenu {
             Button("Rename Tab…") {
