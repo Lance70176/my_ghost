@@ -503,7 +503,8 @@ class RemoteHostManager {
         sessionName: String,
         title: String?,
         group: String? = nil,
-        order: Int? = nil
+        order: Int? = nil,
+        completion: ((Bool) -> Void)? = nil
     ) {
         // A remote login shell may be fish, which can't parse POSIX syntax, so
         // run through /bin/sh; text rides along base64'd to keep it clear of
@@ -537,8 +538,14 @@ class RemoteHostManager {
                 + [target, "--", "/bin/sh -c '\(script)'"]
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
-            try? process.run()
+            do {
+                try process.run()
+            } catch {
+                completion?(false)
+                return
+            }
             process.waitUntilExit()
+            completion?(process.terminationStatus == 0)
         }
     }
 

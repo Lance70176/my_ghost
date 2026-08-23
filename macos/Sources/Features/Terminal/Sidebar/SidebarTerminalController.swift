@@ -18,6 +18,11 @@ class SidebarTerminalController: BaseTerminalController {
     /// Picks up tab reordering done in MyGhost Web.
     private let webOrderSync = WebOrderSync()
 
+    /// Re-affirms remote tab names on their hosts even while this window sits
+    /// idle — a host that rebooted overnight loses its stamps, and no save
+    /// would otherwise run until the user next touches the app.
+    private var remoteTitleRefreshTimer: Timer?
+
     /// The ID of the currently selected tab (top-level tab or group).
     @Published var selectedTabID: UUID?
 
@@ -122,6 +127,13 @@ class SidebarTerminalController: BaseTerminalController {
             self?.applyWebGroups(groups)
         }
         webOrderSync.start()
+
+        remoteTitleRefreshTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.remoteTitleRefreshInterval,
+            repeats: true
+        ) { [weak self] _ in
+            self?.publishAllRemoteTitles()
+        }
     }
 
     required init?(coder: NSCoder) {
@@ -132,6 +144,7 @@ class SidebarTerminalController: BaseTerminalController {
         NotificationCenter.default.removeObserver(self)
         Self.allControllers.remove(self)
         webOrderSync.stop()
+        remoteTitleRefreshTimer?.invalidate()
     }
 
     // MARK: - Web ordering
@@ -168,9 +181,21 @@ class SidebarTerminalController: BaseTerminalController {
         saveScreenSessionState()
     }
 
-    /// Placements already pushed to remote hosts, so a session is only written
-    /// when something about it changed. Shared across windows: the sessions are.
-    private static var publishedRemoteTitles: [String: String] = [:]
+    /// Placements confirmed on remote hosts, so a session is only written when
+    /// something about it changed. Shared across windows: the sessions are.
+    ///
+    /// Entries expire: the stamp lives in the remote tmux server's memory, so
+    /// that host rebooting wipes it while this app keeps running with no way
+    /// to notice — its web sidebar then shows bare session ids. Pushing again
+    /// once an entry ages out heals the names within minutes.
+    private static var publishedRemoteTitles: [String: (stamp: String, at: Date)] = [:]
+
+    /// How long a confirmed stamp is trusted before it is pushed again.
+    static let remoteTitleRefreshInterval: TimeInterval = 10 * 60
+
+    /// Sessions with a publish on the wire, so a burst of saves doesn't stack
+    /// duplicate ssh processes for the same session.
+    private static var remoteTitlePublishesInFlight = Set<String>()
 
     /// Where a tab sits in this window's sidebar: its group, if any, and its
     /// position in the flattened list. Both travel to the host with the name.
@@ -200,15 +225,27 @@ class SidebarTerminalController: BaseTerminalController {
         // Group and position are part of the stamp, so regrouping or dragging a
         // tab republishes it just as renaming does.
         let stamp = "\(title)\u{1}\(place.group ?? "")\u{1}\(place.order)"
-        guard Self.publishedRemoteTitles[session] != stamp else { return }
-        Self.publishedRemoteTitles[session] = stamp
+        if let published = Self.publishedRemoteTitles[session],
+           published.stamp == stamp,
+           Date().timeIntervalSince(published.at) < Self.remoteTitleRefreshInterval {
+            return
+        }
+        guard Self.remoteTitlePublishesInFlight.insert(session).inserted else { return }
         RemoteHostManager.shared.setRemoteTitle(
             target: target,
             options: tab.remoteSSHOptions,
             sessionName: session,
             title: title,
             group: place.group,
-            order: place.order)
+            order: place.order) { ok in
+            DispatchQueue.main.async {
+                Self.remoteTitlePublishesInFlight.remove(session)
+                // Only a stamp that reached the host counts as published — a
+                // failed ssh (host asleep, network out) leaves no entry, so
+                // the next save retries instead of going quiet forever.
+                if ok { Self.publishedRemoteTitles[session] = (stamp, Date()) }
+            }
+        }
     }
 
     /// Publish every remote tab's name. Renaming alone isn't enough: tabs named
