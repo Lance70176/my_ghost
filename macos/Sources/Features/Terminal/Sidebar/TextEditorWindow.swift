@@ -79,12 +79,48 @@ class TextEditorManager {
         return doc
     }
 
+    /// Cmd+O — picks a file and opens it in the editor.
+    func promptForFileToOpen() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.title = "Open in Editor"
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls { openDocument(url: url) }
+    }
+
+    /// Ctrl+G — jumps the caret to a line number.
+    func promptForLineNumber() {
+        guard let doc = state.activeDocument else { return }
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+        field.placeholderString = "Line number"
+
+        let alert = NSAlert()
+        alert.messageText = "Go to Line"
+        alert.informativeText = "Enter a line number in \(doc.name)."
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Go")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+
+        guard alert.runModal() == .alertFirstButtonReturn,
+              let line = Int(field.stringValue.trimmingCharacters(in: .whitespaces)),
+              line > 0 else { return }
+        doc.goToLine(line)
+    }
+
+    /// Cmd+E — takes the selection as the search term without opening the bar.
+    func useSelectionForFind() {
+        guard let doc = state.activeDocument else { return }
+        let selection = doc.textView.selectedRange()
+        guard selection.length > 0 else { return }
+        state.findText = (doc.textView.string as NSString).substring(with: selection)
+        updateMatchStatus()
+    }
+
     /// Wires a freshly built document up and makes it the active tab.
     private func adopt(_ doc: EditorDocument) {
-        doc.textView.onCloseTab = { [weak self, weak doc] in
-            guard let doc = doc else { return }
-            self?.closeDocument(doc)
-        }
         state.documents.append(doc)
         state.activeID = doc.id
     }
@@ -294,10 +330,39 @@ class EditorDocument: NSObject, ObservableObject, Identifiable, NSTextViewDelega
     @Published var url: URL?
     @Published var isDirty = false
 
+    /// "Line 3, Column 12" for the status bar, refreshed as the caret moves.
+    @Published var caretDescription = "Line 1, Column 1"
+
     /// Placeholder name shown while the document has no file on disk.
     private let untitledName: String
 
+    /// Line-number gutter — also the cheapest source of line/column lookups.
+    private var ruler: LineNumberRulerView?
+
     var name: String { url?.lastPathComponent ?? untitledName }
+
+    /// Line-comment marker for Cmd+/, chosen from the file extension.
+    var commentToken: String {
+        switch url?.pathExtension.lowercased() ?? "" {
+        case "swift", "c", "h", "cc", "cpp", "hpp", "m", "mm", "js", "mjs", "cjs",
+             "ts", "tsx", "jsx", "go", "rs", "java", "kt", "kts", "zig", "cs",
+             "php", "scala", "dart", "proto", "gradle", "groovy", "less", "scss":
+            return "//"
+        case "lua", "sql", "hs", "elm", "ada":
+            return "--"
+        case "el", "lisp", "clj", "cljs", "scm", "asm", "ini":
+            return ";"
+        case "vim", "vimrc":
+            return "\""
+        case "html", "htm", "xml", "svg", "css", "md", "markdown":
+            // Line comments don't exist here; leave the text alone.
+            return ""
+        default:
+            // Shell, Python, Ruby, YAML, TOML, Dockerfiles, conf files, and
+            // plain scratch buffers all take "#".
+            return "#"
+        }
+    }
 
     init(url: URL?, text: String, untitledName: String = "untitled") {
         self.url = url
@@ -342,7 +407,6 @@ class EditorDocument: NSObject, ObservableObject, Identifiable, NSTextViewDelega
 
         textView.string = text
         textView.delegate = self
-        textView.onSave = { [weak self] in _ = self?.save() }
 
         scrollView.documentView = textView
 
@@ -350,6 +414,18 @@ class EditorDocument: NSObject, ObservableObject, Identifiable, NSTextViewDelega
         scrollView.verticalRulerView = ruler
         scrollView.hasVerticalRuler = true
         scrollView.rulersVisible = true
+        self.ruler = ruler
+    }
+
+    /// Ctrl+G — moves the caret to the start of `line` and shows it.
+    func goToLine(_ line: Int) {
+        guard let start = ruler?.characterIndex(forLine: line) else { return }
+        let lineRange = (textView.string as NSString)
+            .lineRange(for: NSRange(location: start, length: 0))
+        textView.setSelectedRange(NSRange(location: start, length: 0))
+        textView.scrollRangeToVisible(lineRange)
+        textView.showFindIndicator(for: lineRange)
+        textView.window?.makeFirstResponder(textView)
     }
 
     /// Writes the document out, asking for a location first if it never had
@@ -393,10 +469,26 @@ class EditorDocument: NSObject, ObservableObject, Identifiable, NSTextViewDelega
 
     func textDidChange(_ notification: Notification) {
         isDirty = true
+        refreshCaretDescription()
         // Keep the find counter honest while the document is being edited.
         if TextEditorManager.shared.state.isFindBarVisible {
             TextEditorManager.shared.updateMatchStatus()
         }
+    }
+
+    func textViewDidChangeSelection(_ notification: Notification) {
+        refreshCaretDescription()
+    }
+
+    private func refreshCaretDescription() {
+        let selection = textView.selectedRange()
+        let position = ruler?.position(forCharacterIndex: selection.location) ?? (line: 1, column: 1)
+        var description = "Line \(position.line), Column \(position.column)"
+        if selection.length > 0 {
+            description += "  ·  \(selection.length) selected"
+        }
+        guard description != caretDescription else { return }
+        caretDescription = description
     }
 }
 
@@ -439,25 +531,13 @@ struct EditorMainPane: View {
             EditorPathBar(state: state)
             Divider().overlay(Color.black.opacity(0.4))
             if state.documents.isEmpty {
-                VStack(spacing: 4) {
-                    Spacer()
-                    Text("No open files")
-                        .font(.system(size: 13))
-                        .foregroundColor(EditorTheme.dimText)
-                    Text("Right-click a file in the file browser and choose \"Edit\"")
-                        .font(.system(size: 11))
-                        .foregroundColor(EditorTheme.dimText.opacity(0.7))
-                    Text("…or press + above the sidebar's open-files list for a new file")
-                        .font(.system(size: 11))
-                        .foregroundColor(EditorTheme.dimText.opacity(0.7))
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity)
+                EditorEmptyState()
             } else {
                 EditorAreaView(state: state)
                 if state.isFindBarVisible {
                     EditorFindBar(state: state)
                 }
+                EditorStatusBar(state: state)
             }
         }
         .background(Color(nsColor: EditorTheme.background))
@@ -684,6 +764,108 @@ private struct EditorPathLabel: View {
     }
 }
 
+// MARK: - Empty state
+
+/// Shown when nothing is open. Doubles as the shortcut cheat sheet, since
+/// there is nowhere else in the app that lists them.
+private struct EditorEmptyState: View {
+    private let shortcuts: [(String, String)] = [
+        ("⌘N / ⌘O", "New file / open file"),
+        ("⌘S / ⇧⌘S", "Save / save as"),
+        ("⌘F / ⌥⌘F", "Find / find & replace"),
+        ("⌘G / ⇧⌘G", "Find next / previous"),
+        ("⌘E", "Use selection for find"),
+        ("⌃G", "Go to line"),
+        ("⌘L", "Select line"),
+        ("⇧⌘K", "Delete line"),
+        ("⇧⌘D", "Duplicate line or selection"),
+        ("⌃⌘↑ / ⌃⌘↓", "Move line up / down"),
+        ("⌘] / ⌘[", "Indent / outdent"),
+        ("⌘/", "Toggle comment"),
+        ("⌘⏎ / ⇧⌘⏎", "New line below / above"),
+        ("⌘= / ⌘- / ⌘0", "Zoom in / out / reset"),
+    ]
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Spacer()
+            Text("No open files")
+                .font(.system(size: 13))
+                .foregroundColor(EditorTheme.dimText)
+            Text("Press + above the sidebar's open-files list, or right-click a "
+                 + "file in the file browser and choose \"Edit\"")
+                .font(.system(size: 11))
+                .foregroundColor(EditorTheme.dimText.opacity(0.7))
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 380)
+
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(shortcuts, id: \.0) { keys, label in
+                    HStack(spacing: 10) {
+                        Text(keys)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(EditorTheme.dimText)
+                            .frame(width: 108, alignment: .trailing)
+                        Text(label)
+                            .font(.system(size: 11))
+                            .foregroundColor(EditorTheme.dimText.opacity(0.75))
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+            .padding(.top, 18)
+            .frame(width: 340)
+
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+// MARK: - Status bar
+
+/// Thin strip along the very bottom: caret position on the left, indent width
+/// and dirty state on the right.
+private struct EditorStatusBar: View {
+    @ObservedObject var state: EditorPanelState
+
+    var body: some View {
+        HStack(spacing: 0) {
+            if let doc = state.activeDocument {
+                EditorCaretLabel(doc: doc)
+            }
+            Spacer(minLength: 12)
+            Text("Spaces: \(EditorKeyCommands.indentUnit.count)")
+                .font(.system(size: 10))
+                .foregroundColor(EditorTheme.dimText)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 20)
+        .background(Color(nsColor: EditorTheme.tabBarBackground))
+        .overlay(alignment: .top) {
+            Rectangle().fill(Color.black.opacity(0.3)).frame(height: 1)
+        }
+    }
+}
+
+private struct EditorCaretLabel: View {
+    @ObservedObject var doc: EditorDocument
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(doc.caretDescription)
+                .font(.system(size: 10))
+                .foregroundColor(EditorTheme.dimText)
+            if doc.isDirty {
+                Text("Unsaved")
+                    .font(.system(size: 10))
+                    .foregroundColor(EditorTheme.accent)
+            }
+        }
+        .lineLimit(1)
+    }
+}
+
 // MARK: - Find & replace bar
 
 /// Sublime-style find/replace strip pinned to the bottom of the editor pane.
@@ -824,62 +1006,144 @@ private struct EditorAreaView: NSViewRepresentable {
     }
 }
 
-/// NSTextView that handles Cmd+S (save), Cmd+W (close tab) and the
-/// find/replace shortcuts.
-class EditorTextView: NSTextView {
-    var onSave: (() -> Void)?
-    var onCloseTab: (() -> Void)?
+/// Every keyboard shortcut the editor pane answers to.
+///
+/// This lives outside the text view because the terminal surface sits *earlier*
+/// in the window's view hierarchy: anything Ghostty binds (Cmd+C, Cmd+A, Cmd+V,
+/// Cmd+Z …) is claimed there or by the terminal's own menu items long before the
+/// text view is offered the event. `SidebarTerminalWindow` therefore calls this
+/// first whenever the editor pane is the one on screen.
+enum EditorKeyCommands {
+    /// One indent step. Matches the ruler and status bar's "Spaces: 4".
+    static let indentUnit = "    "
 
-    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+    /// Handles `event` if it is an editor shortcut. Returns true when consumed.
+    @discardableResult
+    static func handle(_ event: NSEvent) -> Bool {
+        guard event.type == .keyDown else { return false }
+        let manager = TextEditorManager.shared
+        guard let doc = manager.state.activeDocument else { return false }
+
+        let textView = doc.textView
+        // While the find field has the keyboard, clipboard keys belong to it —
+        // only the document-wide commands stay with the document.
+        let responder = textView.window?.firstResponder as? NSTextView
+        let isEditingText = responder === textView
+
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        let chars = event.charactersIgnoringModifiers?.lowercased()
-        if flags == .command {
+        let chars = event.charactersIgnoringModifiers?.lowercased() ?? ""
+
+        switch flags {
+        case [.command]:
             switch chars {
-            case "s":
-                onSave?()
-                return true
-            case "f":
-                TextEditorManager.shared.showFindBar(withReplace: false)
-                return true
-            case "g":
-                TextEditorManager.shared.findNext()
-                return true
-            case "w":
-                if let onCloseTab = onCloseTab {
-                    onCloseTab()
-                    return true
-                }
-            case "=", "+":
-                TextEditorManager.shared.adjustFontSize(by: 1)
-                return true
-            case "-":
-                TextEditorManager.shared.adjustFontSize(by: -1)
-                return true
-            case "0":
-                TextEditorManager.shared.resetFontSize()
-                return true
-            default:
-                break
+            // Files
+            case "s": doc.save(); return true
+            case "w": manager.closeDocument(doc); return true
+            case "n": manager.newDocument(); return true
+            case "o": manager.promptForFileToOpen(); return true
+
+            // Find
+            case "f": manager.showFindBar(withReplace: false); return true
+            case "g": manager.findNext(); return true
+            case "e": manager.useSelectionForFind(); return true
+
+            // Clipboard and undo — routed down the responder chain so they land
+            // on whichever field actually has the keyboard.
+            case "a", "c", "x", "v": return sendStandardAction(for: chars)
+            case "z": return applyUndo(to: responder, redo: false)
+
+            // Zoom
+            case "=", "+": manager.adjustFontSize(by: 1); return true
+            case "-": manager.adjustFontSize(by: -1); return true
+            case "0": manager.resetFontSize(); return true
+
+            // Line editing
+            case "l": guard isEditingText else { return false }
+                      textView.selectCurrentLines(); return true
+            case "]": guard isEditingText else { return false }
+                      textView.shiftSelectedLines(by: 1); return true
+            case "[": guard isEditingText else { return false }
+                      textView.shiftSelectedLines(by: -1); return true
+            case "/": guard isEditingText else { return false }
+                      textView.toggleComment(using: doc.commentToken); return true
+            case "\r": guard isEditingText else { return false }
+                       textView.insertBlankLine(below: true); return true
+            default: return false
             }
-        } else if flags == [.command, .shift] {
+
+        case [.command, .shift]:
+            switch chars {
+            case "s": doc.saveAs(); return true
+            case "z": return applyUndo(to: responder, redo: true)
+            case "g": manager.findNext(reverse: true); return true
             // Cmd+Shift+= is "+" on US layouts; treat like zoom in.
-            switch chars {
-            case "=", "+":
-                TextEditorManager.shared.adjustFontSize(by: 1)
-                return true
-            case "-", "_":
-                TextEditorManager.shared.adjustFontSize(by: -1)
-                return true
-            case "g":
-                TextEditorManager.shared.findNext(reverse: true)
-                return true
-            default:
-                break
+            case "=", "+": manager.adjustFontSize(by: 1); return true
+            case "-", "_": manager.adjustFontSize(by: -1); return true
+            case "k": guard isEditingText else { return false }
+                      textView.deleteCurrentLines(); return true
+            case "d": guard isEditingText else { return false }
+                      textView.duplicateSelection(); return true
+            case "\r": guard isEditingText else { return false }
+                       textView.insertBlankLine(below: false); return true
+            default: return false
             }
-        } else if flags == [.command, .option], chars == "f" {
-            TextEditorManager.shared.showFindBar(withReplace: true)
+
+        case [.command, .option]:
+            guard chars == "f" else { return false }
+            manager.showFindBar(withReplace: true)
             return true
+
+        case [.command, .control]:
+            guard isEditingText else { return false }
+            switch event.specialKey {
+            case .upArrow: textView.moveCurrentLines(by: -1); return true
+            case .downArrow: textView.moveCurrentLines(by: 1); return true
+            default: return false
+            }
+
+        case [.control]:
+            guard chars == "g" else { return false }
+            manager.promptForLineNumber()
+            return true
+
+        default:
+            return false
         }
+    }
+
+    /// Dispatches select-all/copy/cut/paste through the responder chain.
+    private static func sendStandardAction(for character: String) -> Bool {
+        let selector: Selector
+        switch character {
+        case "a": selector = #selector(NSText.selectAll(_:))
+        case "c": selector = #selector(NSText.copy(_:))
+        case "x": selector = #selector(NSText.cut(_:))
+        case "v": selector = #selector(NSText.paste(_:))
+        default: return false
+        }
+        return NSApp.sendAction(selector, to: nil, from: nil)
+    }
+
+    /// Undo has to be aimed at the focused text view's own undo manager —
+    /// letting it reach the menu would run Ghostty's "undo close tab" instead.
+    private static func applyUndo(to textView: NSTextView?, redo: Bool) -> Bool {
+        guard let undoManager = textView?.undoManager else { return false }
+        if redo {
+            if undoManager.canRedo { undoManager.redo() }
+        } else {
+            if undoManager.canUndo { undoManager.undo() }
+        }
+        return true
+    }
+}
+
+/// NSTextView for the editor pane. Handles the shortcuts that reach it
+/// directly, plus the plain-key behaviours (Tab, Return, Esc).
+class EditorTextView: NSTextView {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // The window normally gets here first; this covers window kinds that
+        // don't route through SidebarTerminalWindow.
+        if EditorKeyCommands.handle(event) { return true }
         return super.performKeyEquivalent(with: event)
     }
 
@@ -890,6 +1154,255 @@ class EditorTextView: NSTextView {
             return
         }
         super.cancelOperation(sender)
+    }
+
+    // MARK: Plain-key editing behaviour
+
+    /// Tab indents the whole block when the selection spans lines.
+    override func insertTab(_ sender: Any?) {
+        if selectionSpansMultipleLines {
+            shiftSelectedLines(by: 1)
+            return
+        }
+        super.insertTab(sender)
+    }
+
+    /// Shift+Tab always outdents, selection or not.
+    override func insertBacktab(_ sender: Any?) {
+        shiftSelectedLines(by: -1)
+    }
+
+    /// Return carries the current line's indentation onto the new line.
+    override func insertNewline(_ sender: Any?) {
+        let text = string as NSString
+        let caret = selectedRange().location
+        let lineRange = text.lineRange(for: NSRange(location: caret, length: 0))
+        let line = text.substring(with: lineRange)
+        let indent = String(line.prefix { $0 == " " || $0 == "\t" })
+        // Only carry indentation the caret actually sits behind, so pressing
+        // Return from inside the leading whitespace doesn't double it up.
+        let available = max(0, min(indent.utf16.count, caret - lineRange.location))
+        super.insertNewline(sender)
+        guard available > 0 else { return }
+        insertText(String(indent.prefix(available)), replacementRange: selectedRange())
+    }
+}
+
+// MARK: - Line-oriented editing commands
+
+extension EditorTextView {
+    /// Full range of every line the selection touches.
+    private var currentLinesRange: NSRange {
+        (string as NSString).lineRange(for: selectedRange())
+    }
+
+    fileprivate var selectionSpansMultipleLines: Bool {
+        let selection = selectedRange()
+        guard selection.length > 0 else { return false }
+        return (string as NSString).substring(with: selection).contains("\n")
+    }
+
+    /// Applies one undoable edit and leaves the selection somewhere sensible.
+    /// An edit that changes nothing is skipped so it neither dirties the file
+    /// nor lands on the undo stack.
+    private func applyEdit(_ range: NSRange, _ replacement: String, select: NSRange) {
+        let unchanged = (string as NSString).substring(with: range) == replacement
+        if !unchanged {
+            guard shouldChangeText(in: range, replacementString: replacement) else { return }
+            textStorage?.replaceCharacters(
+                in: range,
+                with: NSAttributedString(string: replacement, attributes: typingAttributes))
+            didChangeText()
+        }
+
+        let limit = (string as NSString).length
+        let location = min(max(0, select.location), limit)
+        setSelectedRange(NSRange(location: location,
+                                 length: min(max(0, select.length), limit - location)))
+        scrollRangeToVisible(selectedRange())
+    }
+
+    /// Splits a block of text into its lines, remembering the trailing newline.
+    private func lines(in range: NSRange) -> (lines: [String], endsWithNewline: Bool) {
+        let block = (string as NSString).substring(with: range)
+        var pieces = block.components(separatedBy: "\n")
+        let trailing = block.hasSuffix("\n")
+        if trailing { pieces.removeLast() }
+        return (pieces, trailing)
+    }
+
+    func selectCurrentLines() {
+        setSelectedRange(currentLinesRange)
+        scrollRangeToVisible(selectedRange())
+    }
+
+    func deleteCurrentLines() {
+        let range = currentLinesRange
+        guard range.length > 0 else { return }
+        applyEdit(range, "", select: NSRange(location: range.location, length: 0))
+    }
+
+    func duplicateSelection() {
+        let text = string as NSString
+        let selection = selectedRange()
+
+        if selection.length > 0 {
+            let chunk = text.substring(with: selection)
+            let insertAt = NSMaxRange(selection)
+            applyEdit(NSRange(location: insertAt, length: 0), chunk,
+                      select: NSRange(location: insertAt, length: (chunk as NSString).length))
+            return
+        }
+
+        let lineRange = text.lineRange(for: selection)
+        let line = text.substring(with: lineRange)
+        let column = selection.location - lineRange.location
+        let insertAt = NSMaxRange(lineRange)
+        // The final line of a file has no newline to copy along with it.
+        let insertion = line.hasSuffix("\n") ? line : "\n" + line
+        let caretShift = line.hasSuffix("\n") ? 0 : 1
+        applyEdit(NSRange(location: insertAt, length: 0), insertion,
+                  select: NSRange(location: insertAt + caretShift + column, length: 0))
+    }
+
+    /// Indents (`direction > 0`) or outdents every line in the selection.
+    func shiftSelectedLines(by direction: Int) {
+        let lineRange = currentLinesRange
+        guard lineRange.length > 0 else { return }
+        let unit = EditorKeyCommands.indentUnit
+        let (pieces, endsWithNewline) = lines(in: lineRange)
+        guard !pieces.isEmpty else { return }
+
+        let updated = pieces.map { line -> String in
+            if direction > 0 {
+                return line.isEmpty ? line : unit + line
+            }
+            if line.hasPrefix("\t") { return String(line.dropFirst()) }
+            var rest = Substring(line)
+            var removed = 0
+            while removed < unit.count, rest.first == " " {
+                rest = rest.dropFirst()
+                removed += 1
+            }
+            return String(rest)
+        }
+
+        var replacement = updated.joined(separator: "\n")
+        if endsWithNewline { replacement += "\n" }
+
+        let selection = selectedRange()
+        let select: NSRange
+        if selection.length > 0 {
+            // Keep the block selected so the shortcut can be repeated.
+            select = NSRange(location: lineRange.location,
+                             length: (replacement as NSString).length)
+        } else {
+            let delta = updated[0].utf16.count - pieces[0].utf16.count
+            select = NSRange(location: max(lineRange.location, selection.location + delta),
+                             length: 0)
+        }
+        applyEdit(lineRange, replacement, select: select)
+    }
+
+    /// Swaps the selected line block with the one above or below it.
+    func moveCurrentLines(by direction: Int) {
+        let text = string as NSString
+        let lineRange = currentLinesRange
+        let selection = selectedRange()
+        let offsetInBlock = selection.location - lineRange.location
+
+        if direction < 0 {
+            guard lineRange.location > 0 else { return }
+            let above = text.lineRange(for: NSRange(location: lineRange.location - 1, length: 0))
+            var block = text.substring(with: lineRange)
+            var previous = text.substring(with: above)
+            // Moving the file's last (newline-less) line up shifts where the
+            // missing newline has to sit.
+            if !block.hasSuffix("\n") {
+                block += "\n"
+                previous = String(previous.dropLast())
+            }
+            let combined = NSRange(location: above.location, length: above.length + lineRange.length)
+            applyEdit(combined, block + previous,
+                      select: NSRange(location: above.location + offsetInBlock,
+                                      length: selection.length))
+        } else {
+            guard NSMaxRange(lineRange) < text.length else { return }
+            let below = text.lineRange(for: NSRange(location: NSMaxRange(lineRange), length: 0))
+            var block = text.substring(with: lineRange)
+            var next = text.substring(with: below)
+            if !next.hasSuffix("\n") {
+                next += "\n"
+                block = String(block.dropLast())
+            }
+            let combined = NSRange(location: lineRange.location,
+                                   length: lineRange.length + below.length)
+            applyEdit(combined, next + block,
+                      select: NSRange(location: lineRange.location + next.utf16.count + offsetInBlock,
+                                      length: selection.length))
+        }
+    }
+
+    /// Comments the selected lines, or uncomments them if they all already are.
+    func toggleComment(using token: String) {
+        guard !token.isEmpty else { return }
+        let lineRange = currentLinesRange
+        guard lineRange.length > 0 else { return }
+        let (pieces, endsWithNewline) = lines(in: lineRange)
+
+        let meaningful = pieces.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        guard !meaningful.isEmpty else { return }
+
+        let allCommented = meaningful.allSatisfy {
+            $0.trimmingCharacters(in: .whitespaces).hasPrefix(token)
+        }
+        // Comment markers line up at the shallowest indentation in the block.
+        let indent = meaningful
+            .map { $0.prefix { $0 == " " || $0 == "\t" }.count }
+            .min() ?? 0
+
+        let updated = pieces.map { line -> String in
+            guard !line.trimmingCharacters(in: .whitespaces).isEmpty else { return line }
+            if allCommented {
+                guard let marker = line.range(of: token + " ") ?? line.range(of: token) else {
+                    return line
+                }
+                var copy = line
+                copy.removeSubrange(marker)
+                return copy
+            }
+            let split = line.index(line.startIndex, offsetBy: min(indent, line.count))
+            return String(line[..<split]) + token + " " + String(line[split...])
+        }
+
+        var replacement = updated.joined(separator: "\n")
+        if endsWithNewline { replacement += "\n" }
+        applyEdit(lineRange, replacement,
+                  select: NSRange(location: lineRange.location,
+                                  length: (replacement as NSString).length))
+    }
+
+    /// Opens a fresh line under (or over) the current one and goes there.
+    func insertBlankLine(below: Bool) {
+        let text = string as NSString
+        let lineRange = text.lineRange(for: selectedRange())
+        let line = text.substring(with: lineRange)
+        let indent = String(line.prefix { $0 == " " || $0 == "\t" })
+
+        if below {
+            if line.hasSuffix("\n") {
+                let insertAt = NSMaxRange(lineRange)
+                applyEdit(NSRange(location: insertAt, length: 0), indent + "\n",
+                          select: NSRange(location: insertAt + indent.utf16.count, length: 0))
+            } else {
+                let insertAt = text.length
+                applyEdit(NSRange(location: insertAt, length: 0), "\n" + indent,
+                          select: NSRange(location: insertAt + 1 + indent.utf16.count, length: 0))
+            }
+        } else {
+            applyEdit(NSRange(location: lineRange.location, length: 0), indent + "\n",
+                      select: NSRange(location: lineRange.location + indent.utf16.count, length: 0))
+        }
     }
 }
 
@@ -945,6 +1458,26 @@ class LineNumberRulerView: NSRulerView {
         let digits = max(3, String(starts.count).count)
         let charWidth = ("8" as NSString).size(withAttributes: [.font: EditorTheme.gutterFont]).width
         ruleThickness = CGFloat(digits) * charWidth + 16
+    }
+
+    /// 1-based line and column for a character index, for the status bar.
+    func position(forCharacterIndex index: Int) -> (line: Int, column: Int) {
+        guard let text = textView?.string as NSString? else { return (1, 1) }
+        let clamped = max(0, min(index, text.length))
+        var line = lineNumber(forCharacterIndex: clamped)
+        // The index table keeps a trailing entry at the very end of the text.
+        // That is a real (empty) line only when the file ends with a newline.
+        if line > 1, line == lineStarts.count, clamped == text.length,
+           text.length > 0, !text.hasSuffix("\n") {
+            line -= 1
+        }
+        let start = lineStarts[min(line - 1, lineStarts.count - 1)]
+        return (line, clamped - start + 1)
+    }
+
+    /// Character index where a 1-based line begins, clamped to the document.
+    func characterIndex(forLine line: Int) -> Int {
+        lineStarts[min(max(line, 1), lineStarts.count) - 1]
     }
 
     /// 1-based line number containing the given character index.

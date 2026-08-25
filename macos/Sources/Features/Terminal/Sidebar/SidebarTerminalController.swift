@@ -2484,6 +2484,16 @@ class SidebarTerminalWindow: NSWindow {
         // sends a real Ctrl+V key event. Intercepting here with sendText would
         // deliver the control character as a bracketed paste and paste blank.
 
+        // While the editor pane is the one on screen, it gets first refusal on
+        // every shortcut. It has to happen here rather than in the text view:
+        // the terminal surface sits earlier in the view hierarchy, and the
+        // terminal's menu items own Cmd+C/Cmd+A/Cmd+Z, so those would never
+        // reach the editor on their own.
+        if sidebarController?.sidebarUIState.sidebarMode == .editor,
+           EditorKeyCommands.handle(event) {
+            return true
+        }
+
         return super.performKeyEquivalent(with: event)
     }
 }
