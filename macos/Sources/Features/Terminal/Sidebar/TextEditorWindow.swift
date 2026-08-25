@@ -37,6 +37,9 @@ class TextEditorManager {
     /// Maximum file size we attempt to edit in-app (5 MB).
     private static let maxEditableSize = 5 * 1024 * 1024
 
+    /// Numbering for the scratch buffers created by "New File".
+    private var untitledCounter = 0
+
     /// Opens a file in the built-in editor. Returns true on success; returns
     /// false when the file is not editable text (then it is handed to the
     /// system default application instead).
@@ -58,18 +61,37 @@ class TextEditorManager {
             return false
         }
 
-        let doc = EditorDocument(url: fileURL, text: text)
+        adopt(EditorDocument(url: fileURL, text: text))
+        return true
+    }
+
+    /// Creates an empty scratch buffer that has no file on disk yet. It only
+    /// gets a path the first time it is saved (Cmd+S, or when closing it).
+    @discardableResult
+    func newDocument() -> EditorDocument {
+        untitledCounter += 1
+        let doc = EditorDocument(url: nil, text: "",
+                                 untitledName: "untitled-\(untitledCounter)")
+        adopt(doc)
+        DispatchQueue.main.async {
+            doc.textView.window?.makeFirstResponder(doc.textView)
+        }
+        return doc
+    }
+
+    /// Wires a freshly built document up and makes it the active tab.
+    private func adopt(_ doc: EditorDocument) {
         doc.textView.onCloseTab = { [weak self, weak doc] in
             guard let doc = doc else { return }
             self?.closeDocument(doc)
         }
         state.documents.append(doc)
         state.activeID = doc.id
-        return true
     }
 
     func select(_ doc: EditorDocument) {
         state.activeID = doc.id
+        if state.isFindBarVisible { updateMatchStatus() }
         DispatchQueue.main.async {
             doc.textView.window?.makeFirstResponder(doc.textView)
         }
@@ -111,22 +133,152 @@ class TextEditorManager {
 
     /// Prompts to save a dirty document. Returns false if the user cancels.
     private func confirmCloseIfDirty(_ doc: EditorDocument) -> Bool {
+        // An untouched scratch buffer has nothing worth asking about.
         guard doc.isDirty else { return true }
         let alert = NSAlert()
         alert.messageText = "Save changes to \"\(doc.name)\"?"
-        alert.informativeText = "Your changes will be lost if you don't save them."
+        alert.informativeText = doc.url == nil
+            ? "This file has never been saved. Choose where to keep it, or discard it."
+            : "Your changes will be lost if you don't save them."
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: doc.url == nil ? "Save As…" : "Save")
         alert.addButton(withTitle: "Don't Save")
         alert.addButton(withTitle: "Cancel")
         switch alert.runModal() {
         case .alertFirstButtonReturn:
-            doc.save()
-            return !doc.isDirty
+            // Backing out of the save panel aborts the close too.
+            return doc.save()
         case .alertSecondButtonReturn:
             return true
         default:
             return false
+        }
+    }
+
+    // MARK: Find & replace (Cmd+F / Cmd+Opt+F)
+
+    /// Reveals the find bar, optionally with the replace row, and seeds the
+    /// search field from the current selection like Sublime does.
+    func showFindBar(withReplace: Bool) {
+        if let doc = state.activeDocument {
+            let selection = doc.textView.selectedRange()
+            if selection.length > 0, selection.length < 200 {
+                let selected = (doc.textView.string as NSString).substring(with: selection)
+                if !selected.contains("\n") { state.findText = selected }
+            }
+        }
+        if withReplace { state.showsReplaceField = true }
+        state.isFindBarVisible = true
+        updateMatchStatus()
+        // Bumping the token re-focuses the field even if the bar was already up.
+        state.findFocusToken += 1
+    }
+
+    func hideFindBar() {
+        state.isFindBarVisible = false
+        state.showsReplaceField = false
+        if let doc = state.activeDocument {
+            doc.textView.window?.makeFirstResponder(doc.textView)
+        }
+    }
+
+    /// Selects the next (or previous) match, wrapping around the document.
+    func findNext(reverse: Bool = false) {
+        guard let doc = state.activeDocument, !state.findText.isEmpty else {
+            updateMatchStatus()
+            return
+        }
+        let textView = doc.textView
+        let haystack = textView.string as NSString
+        let needle = state.findText as NSString
+        guard haystack.length > 0, needle.length > 0 else {
+            updateMatchStatus()
+            return
+        }
+
+        var options: NSString.CompareOptions = state.matchCase ? [] : [.caseInsensitive]
+        if reverse { options.insert(.backwards) }
+
+        let selection = textView.selectedRange()
+        let scoped: NSRange = reverse
+            ? NSRange(location: 0, length: selection.location)
+            : NSRange(location: NSMaxRange(selection),
+                      length: haystack.length - NSMaxRange(selection))
+
+        var found = scoped.length > 0
+            ? haystack.range(of: needle as String, options: options, range: scoped)
+            : NSRange(location: NSNotFound, length: 0)
+        if found.location == NSNotFound {
+            // Wrap around.
+            found = haystack.range(of: needle as String, options: options,
+                                   range: NSRange(location: 0, length: haystack.length))
+        }
+        guard found.location != NSNotFound else {
+            updateMatchStatus()
+            NSSound.beep()
+            return
+        }
+
+        textView.setSelectedRange(found)
+        textView.scrollRangeToVisible(found)
+        textView.showFindIndicator(for: found)
+        updateMatchStatus()
+    }
+
+    /// Replaces the currently selected match, then moves on to the next one.
+    func replaceCurrent() {
+        guard let doc = state.activeDocument, !state.findText.isEmpty else { return }
+        let textView = doc.textView
+        let selection = textView.selectedRange()
+        let options: NSString.CompareOptions = state.matchCase ? [] : [.caseInsensitive]
+
+        // Only replace when the selection really is the match we searched for;
+        // otherwise this click just means "find the first one".
+        if selection.length > 0 {
+            let selected = (textView.string as NSString).substring(with: selection)
+            if selected.compare(state.findText, options: options) == .orderedSame,
+               textView.shouldChangeText(in: selection, replacementString: state.replaceText) {
+                let styled = NSAttributedString(string: state.replaceText,
+                                                attributes: textView.typingAttributes)
+                textView.textStorage?.replaceCharacters(in: selection, with: styled)
+                textView.didChangeText()
+                textView.setSelectedRange(
+                    NSRange(location: selection.location,
+                            length: (state.replaceText as NSString).length))
+            }
+        }
+        findNext()
+    }
+
+    /// Recomputes the "3 / 12" counter next to the find field.
+    func updateMatchStatus() {
+        guard let doc = state.activeDocument, !state.findText.isEmpty else {
+            state.findStatus = ""
+            return
+        }
+        let haystack = doc.textView.string as NSString
+        let options: NSString.CompareOptions = state.matchCase ? [] : [.caseInsensitive]
+        let selection = doc.textView.selectedRange()
+
+        var total = 0
+        var current = 0
+        var cursor = 0
+        while cursor < haystack.length {
+            let hit = haystack.range(of: state.findText, options: options,
+                                     range: NSRange(location: cursor,
+                                                    length: haystack.length - cursor))
+            guard hit.location != NSNotFound else { break }
+            total += 1
+            if NSEqualRanges(hit, selection) { current = total }
+            cursor = hit.location + max(1, hit.length)
+        }
+
+        if total == 0 {
+            state.findStatus = "No results"
+        } else if current > 0 {
+            state.findStatus = "\(current) / \(total)"
+        } else {
+            state.findStatus = "\(total) found"
         }
     }
 }
@@ -135,16 +287,21 @@ class TextEditorManager {
 /// scroll position, and dirty state survive tab switches.
 class EditorDocument: NSObject, ObservableObject, Identifiable, NSTextViewDelegate {
     let id = UUID()
-    let url: URL
     let scrollView = NSScrollView()
     let textView: EditorTextView
 
+    /// Nil until a scratch buffer is saved somewhere for the first time.
+    @Published var url: URL?
     @Published var isDirty = false
 
-    var name: String { url.lastPathComponent }
+    /// Placeholder name shown while the document has no file on disk.
+    private let untitledName: String
 
-    init(url: URL, text: String) {
+    var name: String { url?.lastPathComponent ?? untitledName }
+
+    init(url: URL?, text: String, untitledName: String = "untitled") {
         self.url = url
+        self.untitledName = untitledName
         self.textView = EditorTextView(frame: NSRect(x: 0, y: 0, width: 800, height: 0))
         super.init()
 
@@ -163,7 +320,9 @@ class EditorDocument: NSObject, ObservableObject, Identifiable, NSTextViewDelega
         textView.textContainerInset = NSSize(width: 6, height: 8)
 
         textView.isRichText = false
-        textView.usesFindBar = true
+        // We ship our own Sublime-style find bar along the bottom, so the
+        // system one must stay out of the way of Cmd+F.
+        textView.usesFindBar = false
         textView.allowsUndo = true
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
@@ -183,7 +342,7 @@ class EditorDocument: NSObject, ObservableObject, Identifiable, NSTextViewDelega
 
         textView.string = text
         textView.delegate = self
-        textView.onSave = { [weak self] in self?.save() }
+        textView.onSave = { [weak self] in _ = self?.save() }
 
         scrollView.documentView = textView
 
@@ -193,13 +352,40 @@ class EditorDocument: NSObject, ObservableObject, Identifiable, NSTextViewDelega
         scrollView.rulersVisible = true
     }
 
-    func save() {
+    /// Writes the document out, asking for a location first if it never had
+    /// one. Returns false when the write failed or the user backed out.
+    @discardableResult
+    func save() -> Bool {
+        guard let url = url else { return saveAs() }
+        return write(to: url)
+    }
+
+    /// Asks for a destination and saves there, adopting it as the file's path.
+    @discardableResult
+    func saveAs() -> Bool {
+        let panel = NSSavePanel()
+        panel.title = "Save \(name)"
+        panel.nameFieldStringValue = url?.lastPathComponent ?? "\(untitledName).txt"
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        if let directory = url?.deletingLastPathComponent() {
+            panel.directoryURL = directory
+        }
+        guard panel.runModal() == .OK, let target = panel.url else { return false }
+        guard write(to: target) else { return false }
+        url = target
+        return true
+    }
+
+    private func write(to target: URL) -> Bool {
         do {
-            try textView.string.write(to: url, atomically: true, encoding: .utf8)
+            try textView.string.write(to: target, atomically: true, encoding: .utf8)
             isDirty = false
+            return true
         } catch {
             let alert = NSAlert(error: error)
             alert.runModal()
+            return false
         }
     }
 
@@ -207,6 +393,10 @@ class EditorDocument: NSObject, ObservableObject, Identifiable, NSTextViewDelega
 
     func textDidChange(_ notification: Notification) {
         isDirty = true
+        // Keep the find counter honest while the document is being edited.
+        if TextEditorManager.shared.state.isFindBarVisible {
+            TextEditorManager.shared.updateMatchStatus()
+        }
     }
 }
 
@@ -214,6 +404,18 @@ class EditorDocument: NSObject, ObservableObject, Identifiable, NSTextViewDelega
 class EditorPanelState: ObservableObject {
     @Published var documents: [EditorDocument] = []
     @Published var activeID: UUID?
+
+    // Find & replace bar, shown along the bottom of the editor pane.
+    @Published var isFindBarVisible = false
+    @Published var showsReplaceField = false
+    @Published var findText = ""
+    @Published var replaceText = ""
+    @Published var matchCase = false
+    @Published var findStatus = ""
+
+    /// Incremented every time Cmd+F is pressed so the field takes focus again
+    /// even when the bar is already on screen.
+    @Published var findFocusToken = 0
 
     var activeDocument: EditorDocument? {
         documents.first { $0.id == activeID }
@@ -237,7 +439,7 @@ struct EditorMainPane: View {
             EditorPathBar(state: state)
             Divider().overlay(Color.black.opacity(0.4))
             if state.documents.isEmpty {
-                VStack {
+                VStack(spacing: 4) {
                     Spacer()
                     Text("No open files")
                         .font(.system(size: 13))
@@ -245,11 +447,17 @@ struct EditorMainPane: View {
                     Text("Right-click a file in the file browser and choose \"Edit\"")
                         .font(.system(size: 11))
                         .foregroundColor(EditorTheme.dimText.opacity(0.7))
+                    Text("…or press + above the sidebar's open-files list for a new file")
+                        .font(.system(size: 11))
+                        .foregroundColor(EditorTheme.dimText.opacity(0.7))
                     Spacer()
                 }
                 .frame(maxWidth: .infinity)
             } else {
                 EditorAreaView(state: state)
+                if state.isFindBarVisible {
+                    EditorFindBar(state: state)
+                }
             }
         }
         .background(Color(nsColor: EditorTheme.background))
@@ -264,17 +472,29 @@ struct EditorSidebarList: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("OPEN FILES")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(.secondary)
-                .padding(.horizontal, 14)
-                .padding(.top, 10)
-                .padding(.bottom, 6)
+            HStack(spacing: 6) {
+                Text("OPEN FILES")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.secondary)
+                Spacer(minLength: 0)
+                Button {
+                    TextEditorManager.shared.newDocument()
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .buttonStyle(.borderless)
+                .help("New file — a scratch buffer you pick a path for when saving")
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
 
             if state.documents.isEmpty {
-                Text("No open files")
+                Text("No open files — press + for a new one")
                     .font(.system(size: 12))
                     .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 14)
                     .padding(.top, 4)
             }
@@ -339,9 +559,13 @@ private struct EditorSidebarRow: View {
         .onTapGesture(perform: onSelect)
         .onHover { isHovering = $0 }
         .contextMenu {
+            Button("Save") { _ = doc.save() }
+            Button("Save As…") { _ = doc.saveAs() }
             Button("Close") { onClose() }
-            Button("Reveal in Finder") {
-                NSWorkspace.shared.activateFileViewerSelecting([doc.url])
+            if let url = doc.url {
+                Button("Reveal in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
             }
         }
     }
@@ -435,16 +659,140 @@ private struct EditorPathBar: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            Text(state.activeDocument?.url.path ?? "")
-                .font(.system(size: 11))
-                .foregroundColor(EditorTheme.dimText)
-                .lineLimit(1)
-                .truncationMode(.middle)
+            if let doc = state.activeDocument {
+                EditorPathLabel(doc: doc)
+            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 12)
         .frame(height: 22)
         .background(Color(nsColor: EditorTheme.background))
+    }
+}
+
+/// Observes the document itself so the path appears the moment an untitled
+/// buffer is saved somewhere.
+private struct EditorPathLabel: View {
+    @ObservedObject var doc: EditorDocument
+
+    var body: some View {
+        Text(doc.url?.path ?? "\(doc.name) — not saved yet")
+            .font(.system(size: 11))
+            .foregroundColor(EditorTheme.dimText)
+            .lineLimit(1)
+            .truncationMode(.middle)
+    }
+}
+
+// MARK: - Find & replace bar
+
+/// Sublime-style find/replace strip pinned to the bottom of the editor pane.
+/// Cmd+F shows just the find row; Cmd+Opt+F adds the replace row.
+private struct EditorFindBar: View {
+    @ObservedObject var state: EditorPanelState
+
+    @FocusState private var focusedField: Field?
+
+    private enum Field: Hashable { case find, replace }
+
+    private let labelWidth: CGFloat = 56
+    private let buttonWidth: CGFloat = 86
+
+    var body: some View {
+        VStack(spacing: 5) {
+            HStack(spacing: 8) {
+                caseToggle
+                Text("Find:")
+                    .font(.system(size: 11))
+                    .foregroundColor(EditorTheme.dimText)
+                    .frame(width: labelWidth, alignment: .trailing)
+                TextField("", text: $state.findText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12))
+                    .focused($focusedField, equals: .find)
+                    .onSubmit { TextEditorManager.shared.findNext() }
+                    .onChange(of: state.findText) { _ in
+                        TextEditorManager.shared.updateMatchStatus()
+                    }
+                Text(state.findStatus)
+                    .font(.system(size: 10))
+                    .foregroundColor(EditorTheme.dimText)
+                    .frame(width: 64, alignment: .trailing)
+                Button("Find") { TextEditorManager.shared.findNext() }
+                    .frame(width: buttonWidth)
+                closeButton
+            }
+
+            if state.showsReplaceField {
+                HStack(spacing: 8) {
+                    Color.clear.frame(width: 22, height: 1)
+                    Text("Replace:")
+                        .font(.system(size: 11))
+                        .foregroundColor(EditorTheme.dimText)
+                        .frame(width: labelWidth, alignment: .trailing)
+                    TextField("", text: $state.replaceText)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12))
+                        .focused($focusedField, equals: .replace)
+                        .onSubmit { TextEditorManager.shared.replaceCurrent() }
+                    Color.clear.frame(width: 64, height: 1)
+                    Button("Replace") { TextEditorManager.shared.replaceCurrent() }
+                        .frame(width: buttonWidth)
+                    // Keeps the two rows' fields aligned under the close button.
+                    Color.clear.frame(width: 18, height: 1)
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Color(nsColor: EditorTheme.tabBarBackground))
+        .overlay(alignment: .top) {
+            Rectangle().fill(Color.black.opacity(0.4)).frame(height: 1)
+        }
+        .onAppear { focusFindField() }
+        // Forcing a nil transition first makes Cmd+F pull focus back out of
+        // the text view even when the bar was already on screen.
+        .onChange(of: state.findFocusToken) { _ in
+            focusedField = nil
+            focusFindField()
+        }
+        .onExitCommand { TextEditorManager.shared.hideFindBar() }
+    }
+
+    private func focusFindField() {
+        DispatchQueue.main.async { focusedField = .find }
+    }
+
+    private var caseToggle: some View {
+        Button {
+            state.matchCase.toggle()
+            TextEditorManager.shared.updateMatchStatus()
+        } label: {
+            Text("Aa")
+                .font(.system(size: 10, weight: .semibold))
+                .frame(width: 22, height: 18)
+                .background(
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(state.matchCase
+                              ? Color.accentColor.opacity(0.35) : Color.white.opacity(0.06))
+                )
+                .foregroundColor(state.matchCase ? EditorTheme.brightText : EditorTheme.dimText)
+        }
+        .buttonStyle(.plain)
+        .help("Match case")
+    }
+
+    private var closeButton: some View {
+        Button {
+            TextEditorManager.shared.hideFindBar()
+        } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundColor(EditorTheme.dimText)
+                .frame(width: 18, height: 18)
+        }
+        .buttonStyle(.plain)
+        .help("Close find bar (Esc)")
     }
 }
 
@@ -476,7 +824,8 @@ private struct EditorAreaView: NSViewRepresentable {
     }
 }
 
-/// NSTextView that handles Cmd+S (save) and Cmd+W (close tab).
+/// NSTextView that handles Cmd+S (save), Cmd+W (close tab) and the
+/// find/replace shortcuts.
 class EditorTextView: NSTextView {
     var onSave: (() -> Void)?
     var onCloseTab: (() -> Void)?
@@ -488,6 +837,12 @@ class EditorTextView: NSTextView {
             switch chars {
             case "s":
                 onSave?()
+                return true
+            case "f":
+                TextEditorManager.shared.showFindBar(withReplace: false)
+                return true
+            case "g":
+                TextEditorManager.shared.findNext()
                 return true
             case "w":
                 if let onCloseTab = onCloseTab {
@@ -515,11 +870,26 @@ class EditorTextView: NSTextView {
             case "-", "_":
                 TextEditorManager.shared.adjustFontSize(by: -1)
                 return true
+            case "g":
+                TextEditorManager.shared.findNext(reverse: true)
+                return true
             default:
                 break
             }
+        } else if flags == [.command, .option], chars == "f" {
+            TextEditorManager.shared.showFindBar(withReplace: true)
+            return true
         }
         return super.performKeyEquivalent(with: event)
+    }
+
+    /// Esc closes the find bar rather than running text completion.
+    override func cancelOperation(_ sender: Any?) {
+        if TextEditorManager.shared.state.isFindBarVisible {
+            TextEditorManager.shared.hideFindBar()
+            return
+        }
+        super.cancelOperation(sender)
     }
 }
 
