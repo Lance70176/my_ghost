@@ -163,7 +163,10 @@ private struct AIQuotaAccountRow: View {
                         Text(window.label)
                             .font(.system(size: 9))
                             .foregroundColor(.secondary)
-                            .frame(width: 36, alignment: .leading)
+                            // Wide enough for the longest name the APIs hand
+                            // back ("Reserve"), so a window isn't labelled
+                            // with a truncated word.
+                            .frame(width: 44, alignment: .leading)
 
                         GeometryReader { geo in
                             ZStack(alignment: .leading) {

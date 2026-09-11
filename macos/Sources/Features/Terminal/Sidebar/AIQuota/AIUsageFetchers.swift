@@ -250,15 +250,25 @@ enum ChatGPTUsageFetcher {
         // Look for rate-limit windows anywhere in the response: objects with a
         // used_percent field, optionally window_minutes / resets_in_seconds.
         var windows: [AIUsageWindow] = []
-        collectWindows(from: json, into: &windows)
+        collectWindows(from: json, into: &windows, name: nil)
         guard !windows.isEmpty else {
             throw AIUsageFetchError.badResponse("No usage windows in response")
         }
         return windows
     }
 
-    private static func collectWindows(from json: Any, into windows: inout [AIUsageWindow]) {
+    /// Walks the response for rate-limit windows, carrying down the name of
+    /// the group each one turned up in so that windows of the same length
+    /// still get labels that tell them apart.
+    private static func collectWindows(
+        from json: Any,
+        into windows: inout [AIUsageWindow],
+        name: String?
+    ) {
         if let dict = json as? [String: Any] {
+            // An additional_rate_limits entry names itself; windows nested
+            // inside it inherit that name.
+            let name = (dict["limit_name"] as? String) ?? name
             if let used = dict["used_percent"] as? NSNumber {
                 // Window length and reset fields vary by schema version:
                 // window_minutes / resets_in_seconds / resets_at (older) vs
@@ -279,26 +289,50 @@ enum ChatGPTUsageFetcher {
                     resetsAt = Date().addingTimeInterval(seconds)
                 }
                 windows.append(AIUsageWindow(
-                    label: label(forMinutes: minutes, index: windows.count),
+                    label: label(forMinutes: minutes, name: name, index: windows.count),
                     usedPercent: min(max(used.doubleValue, 0), 100),
                     resetsAt: resetsAt))
                 return
             }
-            // Visit primary before secondary so the 5h window lists first.
-            for key in dict.keys.sorted() {
-                collectWindows(from: dict[key]!, into: &windows)
+            // Visit primary before secondary so the 5h window lists first, and
+            // the account's own limit before any add-on one — sorting the keys
+            // plainly would lead with additional_rate_limits.
+            for key in dict.keys.sorted(by: precedes) {
+                collectWindows(
+                    from: dict[key]!, into: &windows, name: groupName(for: key) ?? name)
             }
         } else if let array = json as? [Any] {
             for element in array {
-                collectWindows(from: element, into: &windows)
+                collectWindows(from: element, into: &windows, name: name)
             }
         }
     }
 
-    /// Names a window after the period it actually covers. The free plan's
-    /// single window is a month long, so anything past a week can't just be
-    /// called "Week" — that read as a weekly limit resetting 25 days out.
-    private static func label(forMinutes minutes: Int?, index: Int) -> String {
+    private static let keyOrder = [
+        "rate_limit", "code_review_rate_limit", "additional_rate_limits",
+    ]
+
+    private static func precedes(_ a: String, _ b: String) -> Bool {
+        let ia = keyOrder.firstIndex(of: a) ?? keyOrder.count
+        let ib = keyOrder.firstIndex(of: b) ?? keyOrder.count
+        return ia == ib ? a < b : ia < ib
+    }
+
+    /// Names the groups that carry no limit_name of their own but would still
+    /// produce a window the same length as the account's main one.
+    private static func groupName(for key: String) -> String? {
+        key == "code_review_rate_limit" ? "Review" : nil
+    }
+
+    /// Names a window after the group it belongs to when it has one: the
+    /// account's own limit and an add-on like gpt-reserve are both a week
+    /// long, so naming both after their period left two rows reading "Week".
+    /// A window with no group falls back to the period it covers. The free
+    /// plan's single window is a month long, so anything past a week can't
+    /// just be called "Week" — that read as a weekly limit resetting 25 days
+    /// out.
+    private static func label(forMinutes minutes: Int?, name: String?, index: Int) -> String {
+        if let name = shortName(name) { return name }
         guard let minutes else { return index == 0 ? "5h" : "Week" }
         if minutes <= 360 { return "5h" }
         let days = minutes / 1440
@@ -306,6 +340,20 @@ enum ChatGPTUsageFetcher {
         if (27...32).contains(days) { return "Month" }
         if days >= 2 { return "\(days)d" }
         return "\(minutes / 60)h"
+    }
+
+    /// Shortens an API limit name to something the label column can hold, the
+    /// way the Claude side names its per-model windows: the trailing word,
+    /// capitalized ("gpt-reserve" → "Reserve"). A tail that is a bare number
+    /// or a letter or two doesn't read on its own, so those keep every word.
+    private static func shortName(_ name: String?) -> String? {
+        guard let name else { return nil }
+        let parts = name.split(whereSeparator: { $0 == "-" || $0 == "_" || $0 == " " })
+        guard let tail = parts.last else { return nil }
+        if parts.count > 1, tail.count >= 3, tail.contains(where: { $0.isLetter }) {
+            return tail.capitalized
+        }
+        return parts.map { $0.capitalized }.joined(separator: " ")
     }
 
     private static func resolveCredential(
