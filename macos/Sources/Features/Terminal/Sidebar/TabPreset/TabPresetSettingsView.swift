@@ -16,6 +16,13 @@ struct TabPresetSettingsView: View {
     @State private var isAddingNew = false
     /// The name being typed for a new tag.
     @State private var newTagName = ""
+    /// The tag the preset list is filtered by. nil shows every preset.
+    @State private var filterTagID: UUID?
+
+    /// The presets shown under the current filter.
+    private var visiblePresets: [TabPreset] {
+        manager.presets(taggedWith: filterTagID)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -30,15 +37,24 @@ struct TabPresetSettingsView: View {
 
             Divider()
 
+            if !manager.tags.isEmpty {
+                TabPresetTagFilterBar(manager: manager, selection: $filterTagID)
+            }
+
             if manager.presets.isEmpty {
                 Text(L("No presets yet."))
+                    .font(.callout)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 60)
+            } else if visiblePresets.isEmpty {
+                Text(L("No presets under this tag."))
                     .font(.callout)
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 60)
             } else {
                 ScrollView {
                     VStack(spacing: 2) {
-                        ForEach(manager.presets) { preset in
+                        ForEach(visiblePresets) { preset in
                             presetRow(preset)
                         }
                     }
@@ -51,7 +67,7 @@ struct TabPresetSettingsView: View {
                 // A new preset starts out under the tag being browsed.
                 editingPreset = TabPreset(
                     name: "",
-                    tagIDs: manager.selectedTagID.map { [$0] } ?? [])
+                    tagIDs: filterTagID.map { [$0] } ?? [])
             } label: {
                 Label(L("Add Preset…"), systemImage: "plus")
             }
@@ -72,6 +88,14 @@ struct TabPresetSettingsView: View {
         }
         .padding(20)
         .frame(width: 480)
+        // Open on the tag the + picker was last browsing.
+        .onAppear { filterTagID = manager.selectedTagID }
+        // A tag deleted while it was the filter leaves nothing to filter by.
+        .onChange(of: manager.tags) { tags in
+            if let id = filterTagID, !tags.contains(where: { $0.id == id }) {
+                filterTagID = nil
+            }
+        }
         .sheet(item: $editingPreset) { preset in
             TabPresetForm(
                 manager: manager,
@@ -87,14 +111,22 @@ struct TabPresetSettingsView: View {
     private func presetRow(_ preset: TabPreset) -> some View {
         let tags = manager.tags(of: preset)
         let lines = preset.commandLines
+        let visible = visiblePresets
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {
                     Text(preset.name)
                         .font(.body)
                         .lineLimit(1)
+                    // Clicking a tag filters the list by it.
                     ForEach(tags) { tag in
-                        TabPresetTagBadge(name: tag.name)
+                        Button {
+                            filterTagID = tag.id
+                        } label: {
+                            TabPresetTagBadge(name: tag.name)
+                        }
+                        .buttonStyle(.plain)
+                        .help(L("Show only presets tagged “%@”", tag.name))
                     }
                 }
                 Text(lines.isEmpty ? L("Names the tab only") : lines.joined(separator: " ; "))
@@ -107,21 +139,21 @@ struct TabPresetSettingsView: View {
             Spacer(minLength: 0)
 
             Button {
-                manager.move(preset, by: -1)
+                manager.move(preset, by: -1, among: visible)
             } label: {
                 Image(systemName: "arrow.up")
             }
             .buttonStyle(.borderless)
-            .disabled(manager.presets.first?.id == preset.id)
+            .disabled(visible.first?.id == preset.id)
             .help(L("Move up"))
 
             Button {
-                manager.move(preset, by: 1)
+                manager.move(preset, by: 1, among: visible)
             } label: {
                 Image(systemName: "arrow.down")
             }
             .buttonStyle(.borderless)
-            .disabled(manager.presets.last?.id == preset.id)
+            .disabled(visible.last?.id == preset.id)
             .help(L("Move down"))
 
             Button {
@@ -207,6 +239,64 @@ struct TabPresetSettingsView: View {
                 guard let index = manager.tags.firstIndex(where: { $0.id == id }) else { return }
                 manager.tags[index].name = newValue
             })
+    }
+}
+
+/// A row of tag chips — "All" first, then every tag — that picks the tag a
+/// preset list is filtered by. Shared by the + picker and the settings sheet.
+struct TabPresetTagFilterBar: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
+    @ObservedObject var manager: TabPresetManager
+
+    /// The tag filtered by. nil is "All".
+    @Binding var selection: UUID?
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    chip(title: L("All"), tagID: nil)
+                    ForEach(manager.tags) { tag in
+                        chip(title: tag.name, tagID: tag.id)
+                    }
+                }
+            }
+            .onChange(of: selection) { selected in
+                withAnimation { proxy.scrollTo(Self.chipID(selected)) }
+            }
+            .onAppear {
+                proxy.scrollTo(Self.chipID(selection))
+            }
+        }
+    }
+
+    private static func chipID(_ tagID: UUID?) -> String {
+        tagID?.uuidString ?? "all"
+    }
+
+    private func chip(title: String, tagID: UUID?) -> some View {
+        let isSelected = selection == tagID
+        let count = manager.presets(taggedWith: tagID).count
+        return Button(action: { selection = tagID }) {
+            HStack(spacing: 4) {
+                Text(title)
+                    .lineLimit(1)
+                Text("\(count)")
+                    .foregroundColor(.secondary)
+            }
+            .font(.caption)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(
+                Capsule().fill(isSelected
+                    ? Color.accentColor.opacity(0.3)
+                    : Color.secondary.opacity(0.12)))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .id(Self.chipID(tagID))
     }
 }
 

@@ -131,12 +131,16 @@ class TabPresetManager: ObservableObject {
         }
     }
 
-    /// Move a preset one place up or down the list.
-    func move(_ preset: TabPreset, by offset: Int) {
-        guard let index = presets.firstIndex(where: { $0.id == preset.id }) else { return }
-        let target = index + offset
-        guard presets.indices.contains(target) else { return }
-        presets.swapAt(index, target)
+    /// Move a preset one place up or down among `visible` — the list as it
+    /// is being shown, which a tag filter may have thinned out. It trades
+    /// places with the neighbour on screen, not with a hidden one in between.
+    func move(_ preset: TabPreset, by offset: Int, among visible: [TabPreset]) {
+        guard let position = visible.firstIndex(where: { $0.id == preset.id }),
+              visible.indices.contains(position + offset),
+              let from = presets.firstIndex(where: { $0.id == preset.id }),
+              let to = presets.firstIndex(where: { $0.id == visible[position + offset].id })
+        else { return }
+        presets.swapAt(from, to)
     }
 
     // MARK: - Persistence

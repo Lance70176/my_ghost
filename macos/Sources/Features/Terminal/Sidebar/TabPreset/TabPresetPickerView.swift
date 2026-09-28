@@ -165,46 +165,13 @@ struct TabPresetPickerView: View {
     }
 
     private var tagBar: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    tagChip(title: L("All"), tagID: nil)
-                    ForEach(manager.tags) { tag in
-                        tagChip(title: tag.name, tagID: tag.id)
-                    }
-                }
-                .padding(.horizontal, 12)
-            }
+        TabPresetTagFilterBar(
+            manager: manager,
+            selection: Binding(
+                get: { manager.selectedTagID },
+                set: { model.select(tag: $0) }))
+            .padding(.horizontal, 12)
             .padding(.bottom, 8)
-            .onChange(of: manager.selectedTagID) { selected in
-                proxy.scrollTo(Self.chipID(selected))
-            }
-            .onAppear {
-                proxy.scrollTo(Self.chipID(manager.selectedTagID))
-            }
-        }
-    }
-
-    private static func chipID(_ tagID: UUID?) -> String {
-        tagID?.uuidString ?? "all"
-    }
-
-    private func tagChip(title: String, tagID: UUID?) -> some View {
-        let isSelected = manager.selectedTagID == tagID
-        return Button(action: { model.select(tag: tagID) }) {
-            Text(title)
-                .font(.caption)
-                .lineLimit(1)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(
-                    Capsule().fill(isSelected
-                        ? Color.accentColor.opacity(0.3)
-                        : Color.secondary.opacity(0.12)))
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .id(Self.chipID(tagID))
     }
 
     private var rowList: some View {
