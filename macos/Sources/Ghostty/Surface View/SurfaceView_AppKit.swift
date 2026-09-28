@@ -13,6 +13,10 @@ extension Ghostty {
         /// Unique ID per surface
         let id: UUID
 
+        // MyGhost: the name the sidebar gives this surface's tab, shown in the
+        // pane title bar in place of `title`. nil outside the sidebar window.
+        @Published var sidebarTitle: String?
+
         // The current title of the surface as defined by the pty. This can be
         // changed with escape codes. This is public because the callbacks go
         // to the app level and it is set from there.

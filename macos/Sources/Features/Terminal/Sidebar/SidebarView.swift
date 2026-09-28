@@ -793,10 +793,8 @@ private enum TabRenameHelper {
     }
 
     private static func afterChange(_ tab: SidebarTabEntry, controller: SidebarTerminalController) {
+        // The window title follows the rename on its own.
         controller.publishRemoteTitle(for: tab)
-        if controller.selectedTabID == tab.id {
-            controller.window?.title = tab.displayTitle
-        }
         controller.saveScreenSessionState()
     }
 }

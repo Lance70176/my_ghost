@@ -23,6 +23,12 @@ class SidebarTerminalController: BaseTerminalController {
     /// would otherwise run until the user next touches the app.
     private var remoteTitleRefreshTimer: Timer?
 
+    /// Keeps the window title on the selected tab's sidebar name.
+    private var windowTitleCancellables = Set<AnyCancellable>()
+
+    /// Watches the tab (and focused group child) the window title names.
+    private var currentTabTitleCancellables = Set<AnyCancellable>()
+
     /// The ID of the currently selected tab (top-level tab or group).
     @Published var selectedTabID: UUID?
 
@@ -119,6 +125,8 @@ class SidebarTerminalController: BaseTerminalController {
             selector: #selector(ghosttyConfigDidChange(_:)),
             name: .ghosttyConfigDidChange,
             object: nil)
+
+        observeWindowTitle()
 
         webOrderSync.onOrderChanged = { [weak self] order in
             self?.applyWebOrder(order)
@@ -662,14 +670,57 @@ class SidebarTerminalController: BaseTerminalController {
         guard !name.isEmpty else { return }
         newTab.customTitle = name
         publishRemoteTitle(for: newTab)
-        if selectedTabID == newTab.id {
-            if let host = currentHost, !host.isLocal {
-                window?.title = "\(host.name) — \(name)"
-            } else {
-                window?.title = name
+        saveScreenSessionState()
+    }
+
+    // MARK: - Window Title
+
+    /// The window title names the selected sidebar tab — prefixed by the host
+    /// when remote — rather than whatever the focused terminal calls itself.
+    ///
+    /// Left to Ghostty, the title follows the focused surface, and a surface
+    /// no program has named falls back to 👻 after half a second. A remote tab
+    /// is exactly that: its tmux runs on the other host and never forwards a
+    /// title, so the window sat on 👻 no matter what the tab was called.
+    private func observeWindowTitle() {
+        Publishers.CombineLatest3($selectedTabID, $highlightedItemID, $selectedHostID)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.rebindWindowTitle() }
+            .store(in: &windowTitleCancellables)
+    }
+
+    /// Follow renames of the tab now selected, and of the group child in focus.
+    private func rebindWindowTitle() {
+        currentTabTitleCancellables.removeAll()
+        if let tab = currentTab {
+            var watched = [tab]
+            if let child = tab.children.first(where: { $0.id == highlightedItemID }) {
+                watched.append(child)
+            }
+            for entry in watched {
+                // objectWillChange fires before the change lands; hopping to
+                // the next main-queue turn reads the new value.
+                entry.objectWillChange
+                    .receive(on: DispatchQueue.main)
+                    .sink { [weak self] _ in self?.refreshWindowTitle() }
+                    .store(in: &currentTabTitleCancellables)
             }
         }
-        saveScreenSessionState()
+        refreshWindowTitle()
+    }
+
+    private func refreshWindowTitle() {
+        guard let tab = currentTab else { return }
+        var name = tab.displayTitle
+        if tab.isGroup, let child = tab.children.first(where: { $0.id == highlightedItemID }) {
+            name = "\(tab.displayTitle) — \(child.displayTitle)"
+        }
+        if let host = currentHost, !host.isLocal {
+            name = "\(host.name) — \(name)"
+        }
+        // The override outranks the focused surface's title in Ghostty's own
+        // title handling, so a 👻 arriving later can't replace it.
+        if titleOverride != name { titleOverride = name }
     }
 
     // MARK: - Tab Management
@@ -702,13 +753,6 @@ class SidebarTerminalController: BaseTerminalController {
         selectedTabID = tab.id
         highlightedItemID = tab.id
         surfaceTree = tab.surfaceTree
-
-        // Update window title to current tab, prefixed by the host when remote
-        if let host = currentHost, !host.isLocal {
-            window?.title = "\(host.name) — \(tab.displayTitle)"
-        } else {
-            window?.title = tab.displayTitle
-        }
 
         // Restore focus
         if let savedFocus = tab.focusedSurface {

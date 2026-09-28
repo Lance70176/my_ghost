@@ -300,7 +300,9 @@ struct SplitPaneTitleBar: View {
                 .font(.system(size: 10))
                 .foregroundColor(.secondary.opacity(isHovering ? 1 : 0.5))
 
-            Text(surfaceView.title)
+            // The sidebar's name for the pane when it has one: a remote pane's
+            // own title is only ever Ghostty's 👻 placeholder.
+            Text(surfaceView.sidebarTitle ?? surfaceView.title)
                 .font(.callout)
                 .lineLimit(1)
                 .truncationMode(.tail)

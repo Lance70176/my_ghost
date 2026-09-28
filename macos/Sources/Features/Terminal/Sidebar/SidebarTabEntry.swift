@@ -82,6 +82,13 @@ class SidebarTabEntry: ObservableObject, Identifiable {
 
     private var cancellables = Set<AnyCancellable>()
 
+    /// Pushes this tab's sidebar name onto its surface's pane title bar.
+    private var nameCancellable: AnyCancellable?
+
+    /// What Ghostty names a surface no program has named — a remote tab's
+    /// surface always, since its tmux runs on the other host and sends none.
+    static let placeholderTitle = "👻"
+
     init(surfaceTree: SplitTree<Ghostty.SurfaceView>, focusedSurface: Ghostty.SurfaceView? = nil) {
         self.id = UUID()
         self.surfaceTree = surfaceTree
@@ -91,6 +98,7 @@ class SidebarTabEntry: ObservableObject, Identifiable {
         if let surface = focusedSurface {
             subscribeTo(surface: surface)
         }
+        publishName()
     }
 
     /// Create a group entry that contains multiple child tabs sharing a split tree.
@@ -111,6 +119,9 @@ class SidebarTabEntry: ObservableObject, Identifiable {
         surface.$title
             .receive(on: DispatchQueue.main)
             .sink { [weak self] newTitle in
+                // Keep what the tab already had (a remote tab starts out named
+                // after its host) over Ghostty's "nobody named me" ghost.
+                guard !newTitle.isEmpty, newTitle != Self.placeholderTitle else { return }
                 self?.defaultTitle = newTitle
             }
             .store(in: &cancellables)
@@ -138,10 +149,26 @@ class SidebarTabEntry: ObservableObject, Identifiable {
             guard surfaceTree.root?.leaves().contains(where: { $0 === surface }) ?? false else { return }
             originalSurface = surface
             subscribeTo(surface: surface)
+            publishName()
         } else if surface === originalSurface {
             // Re-subscribe in case the subscription was lost
             subscribeTo(surface: surface)
         }
         // If surface is a child's surface, do NOT re-subscribe — keep our own title
+    }
+
+    /// Show this tab's sidebar name — custom, or the terminal's own — in the
+    /// title bar above its pane, so the pane reads the same as the sidebar.
+    private func publishName() {
+        guard !isGroup, let surface = originalSurface else {
+            nameCancellable = nil
+            return
+        }
+        nameCancellable = $customTitle
+            .combineLatest($defaultTitle)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak surface] custom, fallback in
+                surface?.sidebarTitle = custom ?? fallback
+            }
     }
 }
