@@ -85,6 +85,7 @@ enum L10nStrings {
         "Names the tab only": t("只設定分頁名稱", "只设置标签页名称", "タブ名のみ"),
         "Manage Presets…": t("管理預設…", "管理预设…", "プリセットを管理…"),
         "↑↓ select  ⏎ open": t("↑↓ 選擇  ⏎ 開啟", "↑↓ 选择  ⏎ 打开", "↑↓ 選択  ⏎ 開く"),
+        "esc close": t("esc 關閉", "esc 关闭", "esc 閉じる"),
         "↑↓ select  ←→ tag  ⏎ open": t("↑↓ 選擇  ←→ 標籤  ⏎ 開啟", "↑↓ 选择  ←→ 标签  ⏎ 打开", "↑↓ 選択  ←→ タグ  ⏎ 開く"),
         "New Tab Presets": t("新分頁預設", "新标签页预设", "新規タブのプリセット"),
         "Pick a preset from the + button to open a tab named after it, with its commands typed in for you.":

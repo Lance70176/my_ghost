@@ -10,6 +10,7 @@ private final class TabPresetPickerModel: ObservableObject {
 
     let manager: TabPresetManager
     var onOpen: (TabPreset?) -> Void = { _ in }
+    var onCancel: () -> Void = {}
 
     private var monitor: Any?
 
@@ -39,7 +40,7 @@ private final class TabPresetPickerModel: ObservableObject {
 
     // MARK: Keyboard
 
-    /// The terminal keeps first responder while the popover is up, so keys
+    /// The terminal keeps first responder while the picker is up, so keys
     /// are picked off before they reach it rather than through focus.
     func startMonitoringKeys() {
         guard monitor == nil else { return }
@@ -54,10 +55,13 @@ private final class TabPresetPickerModel: ObservableObject {
         monitor = nil
     }
 
-    /// Returns true when the key was one of ours.
+    /// Returns true when the key was one of ours. Every plain key is — the
+    /// picker sits over the terminal, and what is typed at it must not land
+    /// in the shell underneath. Cmd shortcuts still go through.
     private func handle(_ event: NSEvent) -> Bool {
-        let modifiers = event.modifierFlags.intersection([.command, .control, .option])
-        guard modifiers.isEmpty else { return false }
+        guard !event.modifierFlags.contains(.command) else { return false }
+        let modifiers = event.modifierFlags.intersection([.control, .option])
+        guard modifiers.isEmpty else { return true }
 
         switch event.keyCode {
         case 126: // up
@@ -70,8 +74,10 @@ private final class TabPresetPickerModel: ObservableObject {
             stepTag(by: 1)
         case 36, 76: // return, keypad enter
             openHighlighted()
+        case 53: // escape
+            onCancel()
         default:
-            return false
+            break
         }
         return true
     }
@@ -86,7 +92,7 @@ private final class TabPresetPickerModel: ObservableObject {
     }
 }
 
-/// The popover behind the sidebar's "+": pick a saved preset to open a tab
+/// The picker behind the sidebar's "+" and Cmd+T: pick a saved preset to open a tab
 /// named after it with its commands already running, or "None" — highlighted
 /// to begin with, so Return alone opens a plain new tab.
 struct TabPresetPickerView: View {
@@ -104,18 +110,23 @@ struct TabPresetPickerView: View {
     /// Called to open the preset settings.
     let onManage: () -> Void
 
+    /// Called when the picker is dismissed without choosing (Esc).
+    let onCancel: () -> Void
+
     @StateObject private var model: TabPresetPickerModel
 
     init(
         manager: TabPresetManager,
         hostName: String?,
         onOpen: @escaping (TabPreset?) -> Void,
-        onManage: @escaping () -> Void
+        onManage: @escaping () -> Void,
+        onCancel: @escaping () -> Void
     ) {
         self.manager = manager
         self.hostName = hostName
         self.onOpen = onOpen
         self.onManage = onManage
+        self.onCancel = onCancel
         _model = StateObject(wrappedValue: TabPresetPickerModel(manager: manager))
     }
 
@@ -139,6 +150,7 @@ struct TabPresetPickerView: View {
         .onAppear {
             manager.reload()
             model.onOpen = onOpen
+            model.onCancel = onCancel
             model.index = 0
             model.startMonitoringKeys()
         }
@@ -263,11 +275,48 @@ struct TabPresetPickerView: View {
 
             Spacer()
 
-            Text(manager.tags.isEmpty ? L("↑↓ select  ⏎ open") : L("↑↓ select  ←→ tag  ⏎ open"))
+            Text((manager.tags.isEmpty ? L("↑↓ select  ⏎ open") : L("↑↓ select  ←→ tag  ⏎ open"))
+                + "  " + L("esc close"))
                 .font(.caption2)
                 .foregroundColor(.secondary)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+}
+
+/// Puts the new-tab picker in the middle of the window over a dimmed
+/// backdrop — clicking the backdrop dismisses it — and hosts the preset
+/// settings sheet it leads to. Renders nothing while neither is up.
+struct NewTabPickerLayer: View {
+    @ObservedObject var controller: SidebarTerminalController
+    @ObservedObject private var manager = TabPresetManager.shared
+
+    var body: some View {
+        ZStack {
+            if controller.isNewTabPickerVisible {
+                Color.black.opacity(0.28)
+                    .contentShape(Rectangle())
+                    .onTapGesture { controller.dismissNewTabPrompt() }
+
+                TabPresetPickerView(
+                    manager: manager,
+                    hostName: controller.currentHost.flatMap { $0.isLocal ? nil : $0.name },
+                    onOpen: { controller.finishNewTabPrompt(with: $0) },
+                    onManage: { controller.managePresetsFromNewTabPrompt() },
+                    onCancel: { controller.dismissNewTabPrompt() })
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color(nsColor: .windowBackgroundColor)))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.secondary.opacity(0.25), lineWidth: 1))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .shadow(color: .black.opacity(0.35), radius: 24, y: 8)
+            }
+        }
+        .sheet(isPresented: $controller.isPresetSettingsVisible) {
+            TabPresetSettingsView(manager: manager)
+        }
     }
 }

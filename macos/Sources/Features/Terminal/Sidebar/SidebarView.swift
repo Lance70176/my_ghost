@@ -241,15 +241,6 @@ struct SidebarView: View {
     /// Whether the AI usage settings sheet is visible.
     @State private var showAIQuotaSettings = false
 
-    /// Saved new-tab presets, offered by the "+" button.
-    @ObservedObject private var presetManager = TabPresetManager.shared
-
-    /// Whether the "+" button's preset picker is visible.
-    @State private var showPresetPicker = false
-
-    /// Whether the preset settings sheet is visible.
-    @State private var showPresetSettings = false
-
     /// A mapping from tab/child ID to its Cmd+Number shortcut index (1-based), using the flat activatable list.
     private var shortcutIndexMap: [UUID: Int] {
         var map: [UUID: Int] = [:]
@@ -328,32 +319,13 @@ struct SidebarView: View {
             // Row 2: Action buttons (sub-menu style)
             if sidebarMode == .terminal {
                 HStack(spacing: 10) {
-                    // "+" asks which preset to open. "None" is highlighted to
-                    // begin with, so Return alone still opens a plain tab.
-                    Button(action: { showPresetPicker = true }) {
+                    // "+" asks which preset to open, like Cmd+T. "None" is
+                    // highlighted to begin with, so Return alone still opens a
+                    // plain tab.
+                    Button(action: { controller.promptNewTab() }) {
                         SidebarActionIcon(systemName: "plus")
                     }
                     .buttonStyle(.borderless)
-                    .popover(isPresented: $showPresetPicker, arrowEdge: .bottom) {
-                        TabPresetPickerView(
-                            manager: presetManager,
-                            hostName: controller.currentHost.flatMap { $0.isLocal ? nil : $0.name },
-                            onOpen: { preset in
-                                showPresetPicker = false
-                                if let preset {
-                                    controller.addTabForCurrentHost(preset: preset)
-                                } else {
-                                    controller.addTabForCurrentHost()
-                                }
-                            },
-                            onManage: {
-                                showPresetPicker = false
-                                showPresetSettings = true
-                            })
-                    }
-                    .sheet(isPresented: $showPresetSettings) {
-                        TabPresetSettingsView(manager: presetManager)
-                    }
 
                     Button(action: {
                         if let sel = selection {

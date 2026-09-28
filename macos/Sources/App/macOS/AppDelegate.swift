@@ -975,7 +975,7 @@ class AppDelegate: NSObject,
         // there — on the host tab that is currently selected, so Cmd+T inside
         // a remote host stays on that host instead of dropping back to local.
         if let sidebarController = window.windowController as? SidebarTerminalController {
-            sidebarController.addTabForCurrentHost(baseConfig: config)
+            sidebarController.promptNewTab(baseConfig: config)
             return
         }
 
@@ -1219,7 +1219,7 @@ class AppDelegate: NSObject,
         // If the key window is a SidebarTerminalController, add a tab there —
         // on the currently selected host, not always the local one.
         if let sidebarController = NSApp.keyWindow?.windowController as? SidebarTerminalController {
-            sidebarController.addTabForCurrentHost()
+            sidebarController.promptNewTab()
             return
         }
         _ = TerminalController.newTab(

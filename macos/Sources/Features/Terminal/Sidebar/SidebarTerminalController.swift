@@ -37,6 +37,16 @@ class SidebarTerminalController: BaseTerminalController {
     /// it tracks which child is focused.
     @Published var highlightedItemID: UUID?
 
+    /// Whether the new-tab picker is up in the middle of the window.
+    @Published var isNewTabPickerVisible = false
+
+    /// Whether the preset settings sheet is up.
+    @Published var isPresetSettingsVisible = false
+
+    /// The configuration the pending new tab was asked for with (an
+    /// inherited working directory, say), used when "None" is picked.
+    private var pendingNewTabConfig: Ghostty.SurfaceConfiguration?
+
     /// Host tabs shown in the top host tab bar. The first entry is always the
     /// local machine; remote hosts are opened via the computer menu.
     @Published var hostTabs: [SidebarHostEntry] = []
@@ -626,6 +636,38 @@ class SidebarTerminalController: BaseTerminalController {
         } else {
             addNewTab(baseConfig: baseConfig)
         }
+    }
+
+    /// Ask which preset the new tab should open with: the "+" button and
+    /// Cmd+T both land here. The picker opens on "None", so Return alone
+    /// still gives the plain tab they used to open straight away.
+    func promptNewTab(baseConfig: Ghostty.SurfaceConfiguration? = nil) {
+        guard !isNewTabPickerVisible else { return }
+        pendingNewTabConfig = baseConfig
+        isNewTabPickerVisible = true
+    }
+
+    /// Open the tab the picker settled on: a preset, or nil for a plain tab.
+    func finishNewTabPrompt(with preset: TabPreset?) {
+        let config = pendingNewTabConfig
+        dismissNewTabPrompt()
+        if let preset {
+            addTabForCurrentHost(preset: preset)
+        } else {
+            addTabForCurrentHost(baseConfig: config)
+        }
+    }
+
+    /// Close the picker without opening anything.
+    func dismissNewTabPrompt() {
+        pendingNewTabConfig = nil
+        isNewTabPickerVisible = false
+    }
+
+    /// Leave the picker for the preset settings sheet.
+    func managePresetsFromNewTabPrompt() {
+        dismissNewTabPrompt()
+        isPresetSettingsVisible = true
     }
 
     /// Add a new tab on the currently selected host from a saved preset: the
@@ -2501,6 +2543,7 @@ private struct SidebarRootView: View {
             Divider()
             splitContent
         }
+        .overlay(NewTabPickerLayer(controller: controller))
     }
 
     private var splitContent: some View {
