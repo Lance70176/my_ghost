@@ -122,13 +122,32 @@ class TabPresetManager: ObservableObject {
         if selectedTagID == tag.id { selectedTagID = nil }
     }
 
-    /// Replace the preset with the same id, or append it as a new one.
-    func upsert(_ preset: TabPreset) {
+    /// Replace the preset with the same id, or add it as a new one — right
+    /// after the preset `after` names when given, otherwise at the end.
+    func upsert(_ preset: TabPreset, after anchorID: UUID? = nil) {
         if let index = presets.firstIndex(where: { $0.id == preset.id }) {
             presets[index] = preset
+        } else if let anchorID, let anchor = presets.firstIndex(where: { $0.id == anchorID }) {
+            presets.insert(preset, at: anchor + 1)
         } else {
             presets.append(preset)
         }
+    }
+
+    /// A copy of `preset` under a new id, not yet saved: same commands and
+    /// tags, named "<name> copy" (numbered if that is taken too).
+    func duplicateDraft(of preset: TabPreset) -> TabPreset {
+        let taken = Set(presets.map(\.name))
+        var name = L("%@ copy", preset.name)
+        var number = 2
+        while taken.contains(name) {
+            name = L("%@ copy %d", preset.name, number)
+            number += 1
+        }
+        var copy = preset
+        copy.id = UUID()
+        copy.name = name
+        return copy
     }
 
     /// Move a preset one place up or down among `visible` — the list as it

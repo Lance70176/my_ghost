@@ -135,7 +135,7 @@ struct TabPresetPickerView: View {
 
             footer
         }
-        .frame(width: 300)
+        .frame(width: 390)
         .onAppear {
             manager.reload()
             model.onOpen = onOpen
@@ -198,7 +198,7 @@ struct TabPresetPickerView: View {
                 }
                 .padding(6)
             }
-            .frame(maxHeight: 300)
+            .frame(maxHeight: 390)
             .onChange(of: model.index) { index in
                 proxy.scrollTo(index)
             }

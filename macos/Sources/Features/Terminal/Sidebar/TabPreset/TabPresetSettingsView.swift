@@ -18,6 +18,8 @@ struct TabPresetSettingsView: View {
     @State private var newTagName = ""
     /// The tag the preset list is filtered by. nil shows every preset.
     @State private var filterTagID: UUID?
+    /// The preset being duplicated, so the copy lands right after it.
+    @State private var duplicateSourceID: UUID?
 
     /// The presets shown under the current filter.
     private var visiblePresets: [TabPreset] {
@@ -52,18 +54,18 @@ struct TabPresetSettingsView: View {
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 60)
             } else {
-                ScrollView {
+                FittedScrollView(maxHeight: 360) {
                     VStack(spacing: 2) {
                         ForEach(visiblePresets) { preset in
                             presetRow(preset)
                         }
                     }
                 }
-                .frame(minHeight: 60, maxHeight: 240)
             }
 
             Button {
                 isAddingNew = true
+                duplicateSourceID = nil
                 // A new preset starts out under the tag being browsed.
                 editingPreset = TabPreset(
                     name: "",
@@ -86,8 +88,8 @@ struct TabPresetSettingsView: View {
                     .keyboardShortcut(.cancelAction)
             }
         }
-        .padding(20)
-        .frame(width: 480)
+        .padding(24)
+        .frame(width: 624)
         // Open on the tag the + picker was last browsing.
         .onAppear { filterTagID = manager.selectedTagID }
         // A tag deleted while it was the filter leaves nothing to filter by.
@@ -101,7 +103,7 @@ struct TabPresetSettingsView: View {
                 manager: manager,
                 preset: preset,
                 isNew: isAddingNew,
-                onSave: { manager.upsert($0) })
+                onSave: { manager.upsert($0, after: duplicateSourceID) })
         }
     }
 
@@ -166,6 +168,17 @@ struct TabPresetSettingsView: View {
             .help(L("Edit preset"))
 
             Button {
+                // The copy opens in the form unsaved: Cancel leaves no trace.
+                isAddingNew = true
+                duplicateSourceID = preset.id
+                editingPreset = manager.duplicateDraft(of: preset)
+            } label: {
+                Image(systemName: "plus.square.on.square")
+            }
+            .buttonStyle(.borderless)
+            .help(L("Duplicate preset"))
+
+            Button {
                 manager.presets.removeAll { $0.id == preset.id }
             } label: {
                 Image(systemName: "trash")
@@ -173,8 +186,8 @@ struct TabPresetSettingsView: View {
             .buttonStyle(.borderless)
             .help(L("Delete preset"))
         }
-        .padding(.vertical, 4)
-        .padding(.horizontal, 6)
+        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
         .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.06)))
     }
 
@@ -183,27 +196,11 @@ struct TabPresetSettingsView: View {
     @ViewBuilder
     private var tagList: some View {
         VStack(spacing: 4) {
-            ForEach(manager.tags) { tag in
-                HStack(spacing: 8) {
-                    Image(systemName: "tag")
-                        .foregroundColor(.secondary)
-                        .frame(width: 16)
-
-                    TextField(L("Tag name"), text: nameBinding(for: tag.id))
-                        .textFieldStyle(.roundedBorder)
-
-                    Text(usage(of: tag))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .frame(width: 70, alignment: .trailing)
-
-                    Button {
-                        manager.deleteTag(tag)
-                    } label: {
-                        Image(systemName: "trash")
+            FittedScrollView(maxHeight: 200) {
+                VStack(spacing: 4) {
+                    ForEach(manager.tags) { tag in
+                        tagRow(tag)
                     }
-                    .buttonStyle(.borderless)
-                    .help(L("Delete tag (its presets are kept)"))
                 }
             }
 
@@ -219,6 +216,30 @@ struct TabPresetSettingsView: View {
                 Button(L("Add Tag"), action: addTag)
                     .disabled(newTagName.trimmingCharacters(in: .whitespaces).isEmpty)
             }
+        }
+    }
+
+    private func tagRow(_ tag: TabPresetTag) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "tag")
+                .foregroundColor(.secondary)
+                .frame(width: 16)
+
+            TextField(L("Tag name"), text: nameBinding(for: tag.id))
+                .textFieldStyle(.roundedBorder)
+
+            Text(usage(of: tag))
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .frame(width: 70, alignment: .trailing)
+
+            Button {
+                manager.deleteTag(tag)
+            } label: {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.borderless)
+            .help(L("Delete tag (its presets are kept)"))
         }
     }
 
@@ -239,6 +260,28 @@ struct TabPresetSettingsView: View {
                 guard let index = manager.tags.firstIndex(where: { $0.id == id }) else { return }
                 manager.tags[index].name = newValue
             })
+    }
+}
+
+/// A vertical scroll view as tall as its content, up to `maxHeight` — past
+/// that it scrolls. A plain ScrollView takes all the height it is offered,
+/// which left a gap under a short list and pushed the rest of the sheet down.
+struct FittedScrollView<Content: View>: View {
+    let maxHeight: CGFloat
+    @ViewBuilder let content: () -> Content
+
+    @State private var contentHeight: CGFloat = 0
+
+    var body: some View {
+        ScrollView {
+            content()
+                .background(GeometryReader { geo in
+                    Color.clear
+                        .onAppear { contentHeight = geo.size.height }
+                        .onChange(of: geo.size.height) { contentHeight = $0 }
+                })
+        }
+        .frame(height: min(max(contentHeight, 1), maxHeight))
     }
 }
 
@@ -350,7 +393,7 @@ private struct TabPresetForm: View {
                 Text(L("Commands"))
                     .font(.subheadline)
                 TabPresetCommandEditor(text: $preset.commands)
-                    .frame(height: 130)
+                    .frame(height: 170)
                     .overlay(
                         RoundedRectangle(cornerRadius: 5)
                             .stroke(Color.secondary.opacity(0.3), lineWidth: 1))
@@ -407,8 +450,8 @@ private struct TabPresetForm: View {
                 .disabled(preset.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
-        .padding(20)
-        .frame(width: 460)
+        .padding(24)
+        .frame(width: 600)
     }
 
     /// Create the typed tag and file this preset under it.
