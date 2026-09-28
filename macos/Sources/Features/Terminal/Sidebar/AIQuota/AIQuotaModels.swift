@@ -35,8 +35,8 @@ enum AIQuotaAuthMode: String, Codable, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .localLogin: return "Local login"
-        case .manualToken: return "Manual token"
+        case .localLogin: return L("Local login")
+        case .manualToken: return L("Manual token")
         }
     }
 }

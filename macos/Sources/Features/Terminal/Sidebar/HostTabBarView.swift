@@ -48,9 +48,13 @@ class SidebarHostEntry: ObservableObject, Identifiable {
 // MARK: - Host tab bar
 
 /// The horizontal host tab bar at the top of the window. The first tab is
-/// always the local machine; the globe menu on the right opens a saved remote
-/// host in a new host tab. The sidebar tab list follows the selected host.
+/// always the local machine. At the right end, the globe picks the interface
+/// language and the computer opens a saved remote host in a new host tab. The
+/// sidebar tab list follows the selected host.
 struct HostTabBarView: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     @ObservedObject var controller: SidebarTerminalController
 
     /// Whether the "Add Remote Host" sheet is visible.
@@ -75,8 +79,11 @@ struct HostTabBarView: View {
 
             Spacer(minLength: 0)
 
-            remoteHostMenu
-                .padding(.trailing, 10)
+            HStack(spacing: 2) {
+                languageMenu
+                remoteHostMenu
+            }
+            .padding(.trailing, 10)
         }
         .frame(height: 34)
         .background(Color(nsColor: .controlBackgroundColor))
@@ -88,6 +95,30 @@ struct HostTabBarView: View {
         }
     }
 
+    /// Menu for the interface language: follow the system, or one of the
+    /// languages MyGhost is translated into. Each is listed in its own
+    /// language, so the way back is readable whatever is showing now.
+    private var languageMenu: some View {
+        Menu {
+            Picker(L("Language"), selection: $lang.choice) {
+                Text(L("System (%@)", AppLanguage.system.nativeName))
+                    .tag(AppLanguage?.none)
+                Divider()
+                ForEach(AppLanguage.allCases) { language in
+                    Text(language.nativeName).tag(AppLanguage?.some(language))
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        } label: {
+            SidebarActionIcon(systemName: "globe")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(L("Language"))
+    }
+
     /// Menu for opening a host tab. "Add Remote Host…" and the manually saved
     /// hosts come first — the ~/.ssh/config list can be very long, and putting
     /// them at the bottom meant scrolling through it every time.
@@ -96,12 +127,12 @@ struct HostTabBarView: View {
             let configHosts = RemoteHostManager.shared.sshConfigHosts()
             let manualHosts = RemoteHostManager.shared.manualHosts()
 
-            Button("Add Remote Host…") {
+            Button(L("Add Remote Host…")) {
                 showAddRemoteHostSheet = true
             }
 
             if !manualHosts.isEmpty {
-                Menu("Remove Saved Host") {
+                Menu(L("Remove Saved Host")) {
                     ForEach(manualHosts) { host in
                         Button(host.name) {
                             RemoteHostManager.shared.removeManualHost(host)
@@ -134,18 +165,21 @@ struct HostTabBarView: View {
                 }
             }
         } label: {
-            SidebarActionIcon(systemName: "network")
+            SidebarActionIcon(systemName: "desktopcomputer")
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("Connect to a remote host (SSH + tmux)")
+        .help(L("Connect to a remote host (SSH + tmux)"))
     }
 }
 
 // MARK: - Host tab item
 
 private struct HostTabItem: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     @ObservedObject var host: SidebarHostEntry
     let isSelected: Bool
     let onSelect: () -> Void
@@ -172,7 +206,7 @@ private struct HostTabItem: View {
                 }
                 .buttonStyle(.borderless)
                 .opacity(isHovering || isSelected ? 1 : 0)
-                .help("Close host tab (remote sessions keep running)")
+                .help(L("Close host tab (remote sessions keep running)"))
             }
         }
         .padding(.horizontal, 10)

@@ -172,7 +172,7 @@ private struct TabDragDropModifier: ViewModifier {
                     Image(systemName: "arrow.down")
                 case .join:
                     Image(systemName: "arrow.triangle.merge")
-                    Text("Join")
+                    Text(L("Join"))
                 }
             }
             .font(.caption2.weight(.bold))
@@ -188,8 +188,11 @@ private struct TabDragDropModifier: ViewModifier {
 
 /// An action-row icon styled to match the mode switcher above it: same icon
 /// size/color, with a hover highlight for interaction feedback.
-/// Also used by the host tab bar's globe menu.
+/// Also used by the host tab bar's language and host menus.
 struct SidebarActionIcon: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     let systemName: String
 
     @State private var isHovering = false
@@ -209,6 +212,9 @@ struct SidebarActionIcon: View {
 /// The sidebar view showing a list of tabs. Supports selection, right-click
 /// context menu (close / join), drag-to-reorder / drag-to-join, and +/- buttons.
 struct SidebarView: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     @ObservedObject var controller: SidebarTerminalController
 
     /// Local selection state for the List.
@@ -386,7 +392,7 @@ struct SidebarView: View {
                         SidebarActionIcon(systemName: "gauge")
                     }
                     .buttonStyle(.borderless)
-                    .help("AI usage accounts & display settings")
+                    .help(L("AI usage accounts & display settings"))
 
                     Spacer()
                 }
@@ -761,11 +767,11 @@ private enum TabRenameHelper {
     /// terminal-derived title until reset.
     static func rename(_ tab: SidebarTabEntry, controller: SidebarTerminalController) {
         let alert = NSAlert()
-        alert.messageText = "Rename Tab"
-        alert.informativeText = "Enter a new name:"
+        alert.messageText = L("Rename Tab")
+        alert.informativeText = L("Enter a new name:")
         alert.alertStyle = .informational
-        alert.addButton(withTitle: "Rename")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: L("Rename"))
+        alert.addButton(withTitle: L("Cancel"))
 
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         field.stringValue = tab.displayTitle
@@ -798,6 +804,9 @@ private enum TabRenameHelper {
 // MARK: - Standalone tab row (not in a group)
 
 private struct SidebarStandaloneTabRow: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     @ObservedObject var tab: SidebarTabEntry
     let shortcutIndex: Int?
     let controller: SidebarTerminalController
@@ -811,7 +820,7 @@ private struct SidebarStandaloneTabRow: View {
                 Image(systemName: "antenna.radiowaves.left.and.right")
                     .font(.caption2)
                     .foregroundColor(.cyan)
-                    .help("Remote: \(tab.remoteTarget ?? "")")
+                    .help(L("Remote: %@", tab.remoteTarget ?? ""))
             }
 
             Text(tab.displayTitle)
@@ -856,11 +865,11 @@ private struct SidebarStandaloneTabRow: View {
         })
         .onHover { isHovering = $0 }
         .contextMenu {
-            Button("Rename Tab…") {
+            Button(L("Rename Tab…")) {
                 TabRenameHelper.rename(tab, controller: controller)
             }
             if tab.customTitle != nil {
-                Button("Reset Name") {
+                Button(L("Reset Name")) {
                     TabRenameHelper.resetName(tab, controller: controller)
                 }
             }
@@ -873,7 +882,7 @@ private struct SidebarStandaloneTabRow: View {
                 $0.id != tab.id
             }
             if !joinableTargets.isEmpty {
-                Menu("Join to…") {
+                Menu(L("Join to…")) {
                     ForEach(joinableTargets) { target in
                         Button(target.displayTitle) {
                             controller.joinTab(tab, into: target)
@@ -883,7 +892,7 @@ private struct SidebarStandaloneTabRow: View {
             }
 
             Divider()
-            Button("Close Tab") {
+            Button(L("Close Tab")) {
                 controller.closeTab(tab)
             }
         }
@@ -893,6 +902,9 @@ private struct SidebarStandaloneTabRow: View {
 // MARK: - Group header row (Tab Area)
 
 private struct SidebarGroupHeaderRow: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     @ObservedObject var group: SidebarTabEntry
     let controller: SidebarTerminalController
     @Binding var selection: UUID?
@@ -946,25 +958,25 @@ private struct SidebarGroupHeaderRow: View {
         })
         .onHover { isHovering = $0 }
         .contextMenu {
-            Button("Rename…") {
+            Button(L("Rename…")) {
                 renameGroup()
             }
 
             Divider()
 
             if group.isFullMode {
-                Button("All Unfull") {
+                Button(L("All Unfull")) {
                     controller.exitFullMode(for: group)
                 }
             } else {
-                Button("All Full") {
+                Button(L("All Full")) {
                     controller.enterFullMode(for: group)
                 }
             }
 
             Divider()
 
-            Button("Close Tab Area") {
+            Button(L("Close Tab Area")) {
                 closeGroup()
             }
         }
@@ -972,14 +984,14 @@ private struct SidebarGroupHeaderRow: View {
 
     private func renameGroup() {
         let alert = NSAlert()
-        alert.messageText = "Rename Tab Area"
-        alert.informativeText = "Enter a new name:"
+        alert.messageText = L("Rename Tab Area")
+        alert.informativeText = L("Enter a new name:")
         alert.alertStyle = .informational
-        alert.addButton(withTitle: "Rename")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: L("Rename"))
+        alert.addButton(withTitle: L("Cancel"))
 
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        field.stringValue = group.groupName ?? "New Tab Area"
+        field.stringValue = group.groupName ?? L("New Tab Area")
         alert.accessoryView = field
         alert.window.initialFirstResponder = field
 
@@ -1001,6 +1013,9 @@ private struct SidebarGroupHeaderRow: View {
 // MARK: - Group child row (split pane within a group)
 
 private struct SidebarGroupChildRow: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     @ObservedObject var child: SidebarTabEntry
     @ObservedObject var group: SidebarTabEntry
     let shortcutIndex: Int?
@@ -1080,24 +1095,24 @@ private struct SidebarGroupChildRow: View {
         })
         .onHover { isHovering = $0 }
         .contextMenu {
-            Button("Rename Tab…") {
+            Button(L("Rename Tab…")) {
                 TabRenameHelper.rename(child, controller: controller)
             }
             if child.customTitle != nil {
-                Button("Reset Name") {
+                Button(L("Reset Name")) {
                     TabRenameHelper.resetName(child, controller: controller)
                 }
             }
 
             Divider()
 
-            Button("Unjoin") {
+            Button(L("Unjoin")) {
                 controller.unjoinTab(child, from: group)
             }
 
             Divider()
 
-            Button("Close Tab") {
+            Button(L("Close Tab")) {
                 controller.closeChildTab(child, from: group)
             }
         }
@@ -1108,8 +1123,11 @@ private struct SidebarGroupChildRow: View {
 
 /// Form for adding a remote SSH host manually (IP or hostname).
 /// The host is saved and a host tab is opened immediately.
-/// Presented from the host tab bar's globe menu.
+/// Presented from the host tab bar's host (computer) menu.
 struct AddRemoteHostSheet: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     @Environment(\.dismiss) private var dismiss
 
     /// Called with the new host when the user confirms.
@@ -1127,27 +1145,27 @@ struct AddRemoteHostSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Add Remote Host")
+            Text(L("Add Remote Host"))
                 .font(.headline)
 
             Form {
-                TextField("Host / IP:", text: $host, prompt: Text("192.168.1.10 or my-server"))
-                TextField("User:", text: $user, prompt: Text("optional"))
-                TextField("Port:", text: $port, prompt: Text("22"))
-                TextField("Identity file:", text: $identityFile, prompt: Text("~/.ssh/id_rsa (optional)"))
-                TextField("Display name:", text: $name, prompt: Text("optional"))
+                TextField(L("Host / IP:"), text: $host, prompt: Text(L("192.168.1.10 or my-server")))
+                TextField(L("User:"), text: $user, prompt: Text(L("optional")))
+                TextField(L("Port:"), text: $port, prompt: Text("22"))
+                TextField(L("Identity file:"), text: $identityFile, prompt: Text(L("~/.ssh/id_rsa (optional)")))
+                TextField(L("Display name:"), text: $name, prompt: Text(L("optional")))
             }
 
-            Text("The remote shell runs inside tmux on the host, so the session survives disconnects and reconnects automatically.")
+            Text(L("The remote shell runs inside tmux on the host, so the session survives disconnects and reconnects automatically."))
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
+                Button(L("Cancel")) { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("Save & Connect") {
+                Button(L("Save & Connect")) {
                     let trimmedName = name.trimmingCharacters(in: .whitespaces)
                     let remoteHost = RemoteHost(
                         name: trimmedName.isEmpty ? trimmedHost : trimmedName,

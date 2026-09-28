@@ -4,6 +4,9 @@ import SwiftUI
 /// Settings sheet for new-tab presets: the saved presets (add, edit, reorder,
 /// delete) and the tags they are filed under.
 struct TabPresetSettingsView: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var manager: TabPresetManager
 
@@ -16,11 +19,11 @@ struct TabPresetSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("New Tab Presets")
+            Text(L("New Tab Presets"))
                 .font(.headline)
 
-            Text("Pick a preset from the + button to open a tab named after it, "
-                + "with its commands typed in for you.")
+            Text(L("Pick a preset from the + button to open a tab named after it, "
+                + "with its commands typed in for you."))
                 .font(.callout)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -28,7 +31,7 @@ struct TabPresetSettingsView: View {
             Divider()
 
             if manager.presets.isEmpty {
-                Text("No presets yet.")
+                Text(L("No presets yet."))
                     .font(.callout)
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 60)
@@ -50,12 +53,12 @@ struct TabPresetSettingsView: View {
                     name: "",
                     tagIDs: manager.selectedTagID.map { [$0] } ?? [])
             } label: {
-                Label("Add Preset…", systemImage: "plus")
+                Label(L("Add Preset…"), systemImage: "plus")
             }
 
             Divider()
 
-            Text("Tags")
+            Text(L("Tags"))
                 .font(.subheadline.weight(.semibold))
 
             tagList
@@ -63,7 +66,7 @@ struct TabPresetSettingsView: View {
             HStack {
                 Spacer()
                 // Not the default action: Return belongs to the tag fields.
-                Button("Done") { dismiss() }
+                Button(L("Done")) { dismiss() }
                     .keyboardShortcut(.cancelAction)
             }
         }
@@ -94,7 +97,7 @@ struct TabPresetSettingsView: View {
                         TabPresetTagBadge(name: tag.name)
                     }
                 }
-                Text(lines.isEmpty ? "Names the tab only" : lines.joined(separator: " ; "))
+                Text(lines.isEmpty ? L("Names the tab only") : lines.joined(separator: " ; "))
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
@@ -110,7 +113,7 @@ struct TabPresetSettingsView: View {
             }
             .buttonStyle(.borderless)
             .disabled(manager.presets.first?.id == preset.id)
-            .help("Move up")
+            .help(L("Move up"))
 
             Button {
                 manager.move(preset, by: 1)
@@ -119,7 +122,7 @@ struct TabPresetSettingsView: View {
             }
             .buttonStyle(.borderless)
             .disabled(manager.presets.last?.id == preset.id)
-            .help("Move down")
+            .help(L("Move down"))
 
             Button {
                 isAddingNew = false
@@ -128,7 +131,7 @@ struct TabPresetSettingsView: View {
                 Image(systemName: "pencil")
             }
             .buttonStyle(.borderless)
-            .help("Edit preset")
+            .help(L("Edit preset"))
 
             Button {
                 manager.presets.removeAll { $0.id == preset.id }
@@ -136,7 +139,7 @@ struct TabPresetSettingsView: View {
                 Image(systemName: "trash")
             }
             .buttonStyle(.borderless)
-            .help("Delete preset")
+            .help(L("Delete preset"))
         }
         .padding(.vertical, 4)
         .padding(.horizontal, 6)
@@ -154,7 +157,7 @@ struct TabPresetSettingsView: View {
                         .foregroundColor(.secondary)
                         .frame(width: 16)
 
-                    TextField("Tag name", text: nameBinding(for: tag.id))
+                    TextField(L("Tag name"), text: nameBinding(for: tag.id))
                         .textFieldStyle(.roundedBorder)
 
                     Text(usage(of: tag))
@@ -168,7 +171,7 @@ struct TabPresetSettingsView: View {
                         Image(systemName: "trash")
                     }
                     .buttonStyle(.borderless)
-                    .help("Delete tag (its presets are kept)")
+                    .help(L("Delete tag (its presets are kept)"))
                 }
             }
 
@@ -177,11 +180,11 @@ struct TabPresetSettingsView: View {
                     .foregroundColor(.secondary)
                     .frame(width: 16)
 
-                TextField("New tag, e.g. the name of a Mac or a project", text: $newTagName)
+                TextField(L("New tag, e.g. the name of a Mac or a project"), text: $newTagName)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit(addTag)
 
-                Button("Add Tag", action: addTag)
+                Button(L("Add Tag"), action: addTag)
                     .disabled(newTagName.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
@@ -194,7 +197,7 @@ struct TabPresetSettingsView: View {
 
     private func usage(of tag: TabPresetTag) -> String {
         let count = manager.presets(taggedWith: tag.id).count
-        return count == 1 ? "1 preset" : "\(count) presets"
+        return count == 1 ? L("1 preset") : L("%d presets", count)
     }
 
     private func nameBinding(for id: UUID) -> Binding<String> {
@@ -209,6 +212,9 @@ struct TabPresetSettingsView: View {
 
 /// A tag shown as a small capsule beside a preset's name.
 struct TabPresetTagBadge: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     let name: String
 
     var body: some View {
@@ -225,6 +231,9 @@ struct TabPresetTagBadge: View {
 
 /// Form for one preset: its name, its commands, and the tags it is filed under.
 private struct TabPresetForm: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var manager: TabPresetManager
 
@@ -237,33 +246,33 @@ private struct TabPresetForm: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(isNew ? "Add Preset" : "Edit Preset")
+            Text(isNew ? L("Add Preset") : L("Edit Preset"))
                 .font(.headline)
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Name")
+                Text(L("Name"))
                     .font(.subheadline)
-                TextField("", text: $preset.name, prompt: Text("e.g. FQ — also names the tab"))
+                TextField("", text: $preset.name, prompt: Text(L("e.g. FQ — also names the tab")))
                     .textFieldStyle(.roundedBorder)
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Commands")
+                Text(L("Commands"))
                     .font(.subheadline)
                 TabPresetCommandEditor(text: $preset.commands)
                     .frame(height: 130)
                     .overlay(
                         RoundedRectangle(cornerRadius: 5)
                             .stroke(Color.secondary.opacity(0.3), lineWidth: 1))
-                Text("One command per line. They are typed into the new tab in order, "
-                    + "so a line can start a shell or a program that the next lines then run in.")
+                Text(L("One command per line. They are typed into the new tab in order, "
+                    + "so a line can start a shell or a program that the next lines then run in."))
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Tags")
+                Text(L("Tags"))
                     .font(.subheadline)
 
                 if !manager.tags.isEmpty {
@@ -280,21 +289,21 @@ private struct TabPresetForm: View {
                 }
 
                 HStack(spacing: 8) {
-                    TextField("New tag", text: $newTagName)
+                    TextField(L("New tag"), text: $newTagName)
                         .textFieldStyle(.roundedBorder)
                         .onSubmit(addTag)
-                    Button("Add Tag", action: addTag)
+                    Button(L("Add Tag"), action: addTag)
                         .disabled(newTagName.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
 
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
+                Button(L("Cancel")) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 // Not the default action: Return belongs to the commands
                 // and the tag field.
-                Button(isNew ? "Add" : "Save") {
+                Button(isNew ? L("Add") : L("Save")) {
                     var saved = preset
                     saved.name = saved.name.trimmingCharacters(in: .whitespacesAndNewlines)
                     // Tags deleted while the form was open are dropped.

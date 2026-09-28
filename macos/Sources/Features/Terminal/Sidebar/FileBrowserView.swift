@@ -258,6 +258,9 @@ struct FileEntry: Identifiable {
 
 /// A file browser view that displays directory contents as an expandable tree.
 struct FileBrowserView: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     @ObservedObject var state: FileBrowserState
     @State private var selectedNodeID: UUID?
     @State private var refreshTimer: Timer?
@@ -380,6 +383,9 @@ struct FileBrowserView: View {
 // MARK: - Tree node row
 
 private struct TreeRowContent: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     @ObservedObject var node: FileNode
     @ObservedObject var state: FileBrowserState
     @Binding var selectedNodeID: UUID?
@@ -451,46 +457,46 @@ private struct TreeRowContent: View {
         }
         .contextMenu {
             if node.isDirectory {
-                Button("cd to Directory") {
+                Button(L("cd to Directory")) {
                     let escapedPath = node.url.path.replacingOccurrences(of: "'", with: "'\\''")
                     state.onSendText?("cd '\(escapedPath)'\n")
                 }
-                Button("Open in New Tab") {
+                Button(L("Open in New Tab")) {
                     state.onOpenInNewTab?(node.url.path)
                 }
                 Divider()
             }
             if !node.isDirectory {
-                Button("Open") {
+                Button(L("Open")) {
                     NSWorkspace.shared.open(node.url)
                 }
-                Button("Edit") {
+                Button(L("Edit")) {
                     state.focusedPath = node.url.path
                     state.onEditFile?(node.url)
                 }
                 Divider()
             }
-            Button("New File") {
+            Button(L("New File")) {
                 FileBrowserActions.newFile(in: state)
             }
-            Button("Reveal in Finder") {
+            Button(L("Reveal in Finder")) {
                 NSWorkspace.shared.activateFileViewerSelecting([node.url])
             }
             Divider()
-            Button("Rename") {
+            Button(L("Rename")) {
                 let entry = FileEntry(name: node.name, url: node.url, isDirectory: node.isDirectory)
                 FileBrowserActions.rename(entry: entry, state: state)
             }
-            Button("Delete") {
+            Button(L("Delete")) {
                 let entry = FileEntry(name: node.name, url: node.url, isDirectory: node.isDirectory)
                 FileBrowserActions.delete(entry: entry, state: state)
             }
             Divider()
-            Button("Copy Path") {
+            Button(L("Copy Path")) {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(node.url.path, forType: .string)
             }
-            Button("Copy Relative Path") {
+            Button(L("Copy Relative Path")) {
                 let basePath = state.currentPath.path
                 var relativePath = node.url.path
                 if relativePath.hasPrefix(basePath) {
@@ -626,11 +632,11 @@ enum FileBrowserActions {
 
     static func newFile(in state: FileBrowserState) {
         let alert = NSAlert()
-        alert.messageText = "New File"
-        alert.informativeText = "Enter a name for the new file:"
+        alert.messageText = L("New File")
+        alert.informativeText = L("Enter a name for the new file:")
         alert.alertStyle = .informational
-        alert.addButton(withTitle: "Create")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: L("Create"))
+        alert.addButton(withTitle: L("Cancel"))
 
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         field.stringValue = "untitled"
@@ -644,7 +650,7 @@ enum FileBrowserActions {
             let newURL = state.currentPath.appendingPathComponent(name)
             if FileManager.default.fileExists(atPath: newURL.path) {
                 let errAlert = NSAlert()
-                errAlert.messageText = "A file named \"\(name)\" already exists."
+                errAlert.messageText = L("A file named \"%@\" already exists.", name)
                 errAlert.runModal()
                 return
             }
@@ -653,7 +659,7 @@ enum FileBrowserActions {
                 state.loadEntries(force: true)
             } else {
                 let errAlert = NSAlert()
-                errAlert.messageText = "Failed to create file \"\(name)\"."
+                errAlert.messageText = L("Failed to create file \"%@\".", name)
                 errAlert.runModal()
             }
         }
@@ -661,11 +667,11 @@ enum FileBrowserActions {
 
     static func rename(entry: FileEntry, state: FileBrowserState) {
         let alert = NSAlert()
-        alert.messageText = "Rename \"\(entry.name)\""
-        alert.informativeText = "Enter a new name:"
+        alert.messageText = L("Rename \"%@\"", entry.name)
+        alert.informativeText = L("Enter a new name:")
         alert.alertStyle = .informational
-        alert.addButton(withTitle: "Rename")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: L("Rename"))
+        alert.addButton(withTitle: L("Cancel"))
 
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
         field.stringValue = entry.name
@@ -689,11 +695,11 @@ enum FileBrowserActions {
 
     static func delete(entry: FileEntry, state: FileBrowserState) {
         let alert = NSAlert()
-        alert.messageText = "Move \"\(entry.name)\" to Trash?"
-        alert.informativeText = "You can restore this item from the Trash."
+        alert.messageText = L("Move \"%@\" to Trash?", entry.name)
+        alert.informativeText = L("You can restore this item from the Trash.")
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "Move to Trash")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: L("Move to Trash"))
+        alert.addButton(withTitle: L("Cancel"))
 
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {

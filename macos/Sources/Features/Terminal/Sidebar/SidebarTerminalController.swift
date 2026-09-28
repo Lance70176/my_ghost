@@ -32,7 +32,7 @@ class SidebarTerminalController: BaseTerminalController {
     @Published var highlightedItemID: UUID?
 
     /// Host tabs shown in the top host tab bar. The first entry is always the
-    /// local machine; remote hosts are opened via the globe menu.
+    /// local machine; remote hosts are opened via the computer menu.
     @Published var hostTabs: [SidebarHostEntry] = []
 
     /// The ID of the currently selected host tab.
@@ -809,9 +809,9 @@ class SidebarTerminalController: BaseTerminalController {
                 NSSound.beep()
                 guard let window = self?.window else { return }
                 let alert = NSAlert()
-                alert.messageText = "Paste failed"
+                alert.messageText = L("Paste failed")
                 alert.informativeText =
-                    "Could not upload the clipboard contents to \(target)."
+                    L("Could not upload the clipboard contents to %@.", target)
                 alert.alertStyle = .warning
                 alert.beginSheetModal(for: window)
                 return
@@ -842,10 +842,10 @@ class SidebarTerminalController: BaseTerminalController {
                     let failed = urls.count - remotePaths.count
                     let alert = NSAlert()
                     alert.messageText = failed == urls.count
-                        ? "Upload failed"
-                        : "Some files were not uploaded"
+                        ? L("Upload failed")
+                        : L("Some files were not uploaded")
                     alert.informativeText =
-                        "Could not copy \(failed) of \(urls.count) item(s) to \(target)."
+                        L("Could not copy %d of %d item(s) to %@.", failed, urls.count, target)
                     alert.alertStyle = .warning
                     alert.beginSheetModal(for: window)
                 }
@@ -1100,8 +1100,8 @@ class SidebarTerminalController: BaseTerminalController {
 
         if needsConfirm {
             confirmClose(
-                messageText: "Close Tab?",
-                informativeText: "The tab still has a running process. If you close the tab the process will be killed."
+                messageText: L("Close Tab?"),
+                informativeText: L("The tab still has a running process. If you close the tab the process will be killed.")
             ) { [weak self] in
                 self?.closeTabImmediately(tab)
             }
@@ -1240,7 +1240,7 @@ class SidebarTerminalController: BaseTerminalController {
             // Target is a standalone tab — create a new group
             isNewGroup = true
             group = SidebarTabEntry(
-                groupName: "New Tab Area",
+                groupName: L("New Tab Area"),
                 surfaceTree: target.surfaceTree,
                 children: [target]
             )
@@ -1375,9 +1375,9 @@ class SidebarTerminalController: BaseTerminalController {
         guard let window else { return }
 
         let alert = NSAlert()
-        alert.messageText = "This tab area is full"
-        alert.informativeText = "A tab area can hold at most \(paneCount) windows. Remove one before adding another."
-        alert.addButton(withTitle: "OK")
+        alert.messageText = L("This tab area is full")
+        alert.informativeText = L("A tab area can hold at most %d windows. Remove one before adding another.", paneCount)
+        alert.addButton(withTitle: L("OK"))
         alert.alertStyle = .warning
         alert.beginSheetModal(for: window) { _ in
             self.alert = nil
@@ -2429,6 +2429,9 @@ class SidebarUIState: ObservableObject {
 // MARK: - Root SwiftUI View (observes SidebarUIState for mode switching)
 
 private struct SidebarRootView: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     let controller: SidebarTerminalController
     @ObservedObject var uiState: SidebarUIState
     @ObservedObject var editorState = TextEditorManager.shared.state
@@ -2446,7 +2449,7 @@ private struct SidebarRootView: View {
                         .font(.system(size: 12))
                 }
                 .buttonStyle(.borderless)
-                .help(uiState.isSidebarCollapsed ? "Show sidebar" : "Hide sidebar")
+                .help(uiState.isSidebarCollapsed ? L("Show sidebar") : L("Hide sidebar"))
                 .padding(.leading, 8)
 
                 HostTabBarView(controller: controller)

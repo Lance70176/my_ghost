@@ -90,6 +90,9 @@ private final class TabPresetPickerModel: ObservableObject {
 /// named after it with its commands already running, or "None" — highlighted
 /// to begin with, so Return alone opens a plain new tab.
 struct TabPresetPickerView: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     @ObservedObject var manager: TabPresetManager
 
     /// The remote host the tab will open on. nil for this Mac.
@@ -146,10 +149,10 @@ struct TabPresetPickerView: View {
 
     private var header: some View {
         HStack(spacing: 4) {
-            Text("New Tab")
+            Text(L("New Tab"))
                 .font(.headline)
             if let hostName {
-                Text("on \(hostName)")
+                Text(L("on %@", hostName))
                     .font(.subheadline)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
@@ -165,7 +168,7 @@ struct TabPresetPickerView: View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
-                    tagChip(title: "All", tagID: nil)
+                    tagChip(title: L("All"), tagID: nil)
                     ForEach(manager.tags) { tag in
                         tagChip(title: tag.name, tagID: tag.id)
                     }
@@ -216,8 +219,8 @@ struct TabPresetPickerView: View {
 
                     if rows.count == 1 {
                         Text(manager.presets.isEmpty
-                            ? "No presets yet. Add one to open a tab with its commands already running."
-                            : "No presets under this tag.")
+                            ? L("No presets yet. Add one to open a tab with its commands already running.")
+                            : L("No presets under this tag."))
                             .font(.caption)
                             .foregroundColor(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -247,7 +250,7 @@ struct TabPresetPickerView: View {
                     .foregroundColor(.secondary)
 
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(preset?.name ?? "None")
+                    Text(preset?.name ?? L("None"))
                         .font(.body)
                         .lineLimit(1)
                     Text(Self.summary(of: preset))
@@ -278,22 +281,22 @@ struct TabPresetPickerView: View {
     }
 
     private static func summary(of preset: TabPreset?) -> String {
-        guard let preset else { return "A plain new tab" }
+        guard let preset else { return L("A plain new tab") }
         let lines = preset.commandLines
-        return lines.isEmpty ? "Names the tab only" : lines.joined(separator: " ; ")
+        return lines.isEmpty ? L("Names the tab only") : lines.joined(separator: " ; ")
     }
 
     private var footer: some View {
         HStack {
             Button(action: onManage) {
-                Label("Manage Presets…", systemImage: "slider.horizontal.3")
+                Label(L("Manage Presets…"), systemImage: "slider.horizontal.3")
                     .font(.caption)
             }
             .buttonStyle(.borderless)
 
             Spacer()
 
-            Text(manager.tags.isEmpty ? "↑↓ select  ⏎ open" : "↑↓ select  ←→ tag  ⏎ open")
+            Text(manager.tags.isEmpty ? L("↑↓ select  ⏎ open") : L("↑↓ select  ←→ tag  ⏎ open"))
                 .font(.caption2)
                 .foregroundColor(.secondary)
         }

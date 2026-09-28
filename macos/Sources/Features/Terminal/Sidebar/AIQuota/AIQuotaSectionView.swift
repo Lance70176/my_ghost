@@ -4,6 +4,9 @@ import SwiftUI
 /// visible account with a usage bar per rate-limit window. Clicking a row
 /// queries that account's quota; the arrow button refreshes all of them.
 struct AIQuotaSectionView: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     @ObservedObject var manager: AIQuotaManager
 
     /// Opens the account settings sheet (owned by the sidebar).
@@ -12,7 +15,7 @@ struct AIQuotaSectionView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Text("AI Usage")
+                Text(L("AI Usage"))
                     .font(.caption.weight(.semibold))
                     .foregroundColor(.secondary)
 
@@ -23,14 +26,14 @@ struct AIQuotaSectionView: View {
                         .font(.system(size: 10))
                 }
                 .buttonStyle(.borderless)
-                .help("Refresh all accounts")
+                .help(L("Refresh all accounts"))
 
                 Button(action: onOpenSettings) {
                     Image(systemName: "gearshape")
                         .font(.system(size: 10))
                 }
                 .buttonStyle(.borderless)
-                .help("AI usage settings")
+                .help(L("AI usage settings"))
             }
 
             ForEach(manager.visibleAccounts) { account in
@@ -51,21 +54,21 @@ struct AIQuotaSectionView: View {
 enum AIQuotaTooltip {
     static func lines(for snapshot: AIUsageSnapshot?, dim: NSColor) -> [FastTooltipLine] {
         guard let snapshot else {
-            return [FastTooltipLine("  Click to check quota", color: dim)]
+            return [FastTooltipLine("  " + L("Click to check quota"), color: dim)]
         }
         if let error = snapshot.errorMessage {
             return [FastTooltipLine("  \(error)", color: .systemOrange)]
         }
         guard !snapshot.windows.isEmpty else {
-            return [FastTooltipLine("  No usage windows reported", color: dim)]
+            return [FastTooltipLine("  " + L("No usage windows reported"), color: dim)]
         }
 
         // Pad labels so the time columns line up across windows. The bars
         // already show usage, so the tooltip is only about reset timing.
-        let labelWidth = snapshot.windows.map(\.label.count).max() ?? 0
+        let labelWidth = snapshot.windows.map { L($0.label).count }.max() ?? 0
         var lines: [FastTooltipLine] = []
         for window in snapshot.windows {
-            let label = window.label.padding(
+            let label = L(window.label).padding(
                 toLength: labelWidth, withPad: " ", startingAt: 0)
             var spans = [FastTooltipSpan("  \(label)", bold: true)]
             if let resetsAt = window.resetsAt {
@@ -74,7 +77,7 @@ enum AIQuotaTooltip {
                 spans.append(FastTooltipSpan("   ", color: dim))
                 spans.append(FastTooltipSpan(remaining(until: resetsAt), color: .systemYellow))
             } else {
-                spans.append(FastTooltipSpan("   reset time unavailable", color: dim))
+                spans.append(FastTooltipSpan("   " + L("reset time unavailable"), color: dim))
             }
             lines.append(FastTooltipLine(spans))
         }
@@ -91,13 +94,13 @@ enum AIQuotaTooltip {
     /// Human-readable time remaining, e.g. "in 2d 14h" / "in 1h 05m".
     static func remaining(until date: Date) -> String {
         let seconds = Int(date.timeIntervalSinceNow)
-        guard seconds > 0 else { return "resetting now" }
+        guard seconds > 0 else { return L("resetting now") }
         let days = seconds / 86400
         let hours = (seconds % 86400) / 3600
         let minutes = (seconds % 3600) / 60
-        if days > 0 { return "in \(days)d \(hours)h" }
-        if hours > 0 { return String(format: "in %dh %02dm", hours, minutes) }
-        return "in \(minutes)m"
+        if days > 0 { return L("in %dd %dh", days, hours) }
+        if hours > 0 { return L("in %dh %02dm", hours, minutes) }
+        return L("in %dm", minutes)
     }
 
     static let dateTimeFormatter: DateFormatter = {
@@ -117,6 +120,9 @@ enum AIQuotaTooltip {
 
 /// One account's row: provider icon + name, then a compact bar per window.
 private struct AIQuotaAccountRow: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     let account: AIQuotaAccount
     let snapshot: AIUsageSnapshot?
     let isRefreshing: Bool
@@ -148,7 +154,7 @@ private struct AIQuotaAccountRow: View {
                         .foregroundColor(.yellow)
                         .help(snapshot?.errorMessage ?? "")
                 } else if snapshot == nil {
-                    Text("Tap to check")
+                    Text(L("Tap to check"))
                         .font(.system(size: 9))
                         .foregroundColor(.secondary)
                 }
@@ -160,7 +166,7 @@ private struct AIQuotaAccountRow: View {
                 // silently dropping the second window's usage.
                 ForEach(Array(visibleWindows.enumerated()), id: \.offset) { _, window in
                     HStack(spacing: 4) {
-                        Text(window.label)
+                        Text(L(window.label))
                             .font(.system(size: 9))
                             .foregroundColor(.secondary)
                             // Wide enough for the longest name the APIs hand

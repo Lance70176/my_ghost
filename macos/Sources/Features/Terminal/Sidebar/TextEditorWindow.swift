@@ -85,7 +85,7 @@ class TextEditorManager {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = true
-        panel.title = "Open in Editor"
+        panel.title = L("Open in Editor")
         guard panel.runModal() == .OK else { return }
         for url in panel.urls { openDocument(url: url) }
     }
@@ -94,14 +94,14 @@ class TextEditorManager {
     func promptForLineNumber() {
         guard let doc = state.activeDocument else { return }
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
-        field.placeholderString = "Line number"
+        field.placeholderString = L("Line number")
 
         let alert = NSAlert()
-        alert.messageText = "Go to Line"
-        alert.informativeText = "Enter a line number in \(doc.name)."
+        alert.messageText = L("Go to Line")
+        alert.informativeText = L("Enter a line number in %@.", doc.name)
         alert.accessoryView = field
-        alert.addButton(withTitle: "Go")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: L("Go"))
+        alert.addButton(withTitle: L("Cancel"))
         alert.window.initialFirstResponder = field
 
         guard alert.runModal() == .alertFirstButtonReturn,
@@ -172,14 +172,14 @@ class TextEditorManager {
         // An untouched scratch buffer has nothing worth asking about.
         guard doc.isDirty else { return true }
         let alert = NSAlert()
-        alert.messageText = "Save changes to \"\(doc.name)\"?"
+        alert.messageText = L("Save changes to \"%@\"?", doc.name)
         alert.informativeText = doc.url == nil
-            ? "This file has never been saved. Choose where to keep it, or discard it."
-            : "Your changes will be lost if you don't save them."
+            ? L("This file has never been saved. Choose where to keep it, or discard it.")
+            : L("Your changes will be lost if you don't save them.")
         alert.alertStyle = .warning
-        alert.addButton(withTitle: doc.url == nil ? "Save As…" : "Save")
-        alert.addButton(withTitle: "Don't Save")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: doc.url == nil ? L("Save As…") : L("Save"))
+        alert.addButton(withTitle: L("Don't Save"))
+        alert.addButton(withTitle: L("Cancel"))
         switch alert.runModal() {
         case .alertFirstButtonReturn:
             // Backing out of the save panel aborts the close too.
@@ -310,11 +310,11 @@ class TextEditorManager {
         }
 
         if total == 0 {
-            state.findStatus = "No results"
+            state.findStatus = L("No results")
         } else if current > 0 {
             state.findStatus = "\(current) / \(total)"
         } else {
-            state.findStatus = "\(total) found"
+            state.findStatus = L("%d found", total)
         }
     }
 }
@@ -331,7 +331,7 @@ class EditorDocument: NSObject, ObservableObject, Identifiable, NSTextViewDelega
     @Published var isDirty = false
 
     /// "Line 3, Column 12" for the status bar, refreshed as the caret moves.
-    @Published var caretDescription = "Line 1, Column 1"
+    @Published var caretDescription = L("Line %d, Column %d", 1, 1)
 
     /// Placeholder name shown while the document has no file on disk.
     private let untitledName: String
@@ -440,7 +440,7 @@ class EditorDocument: NSObject, ObservableObject, Identifiable, NSTextViewDelega
     @discardableResult
     func saveAs() -> Bool {
         let panel = NSSavePanel()
-        panel.title = "Save \(name)"
+        panel.title = L("Save %@", name)
         panel.nameFieldStringValue = url?.lastPathComponent ?? "\(untitledName).txt"
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
@@ -483,9 +483,9 @@ class EditorDocument: NSObject, ObservableObject, Identifiable, NSTextViewDelega
     private func refreshCaretDescription() {
         let selection = textView.selectedRange()
         let position = ruler?.position(forCharacterIndex: selection.location) ?? (line: 1, column: 1)
-        var description = "Line \(position.line), Column \(position.column)"
+        var description = L("Line %d, Column %d", position.line, position.column)
         if selection.length > 0 {
-            description += "  ·  \(selection.length) selected"
+            description += "  ·  " + L("%d selected", selection.length)
         }
         guard description != caretDescription else { return }
         caretDescription = description
@@ -519,6 +519,9 @@ class EditorPanelState: ObservableObject {
 /// The editor pane shown in the main content area when the sidebar is in
 /// editor mode — layout modeled after Sublime Text.
 struct EditorMainPane: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     @ObservedObject var state: EditorPanelState
 
     var body: some View {
@@ -548,12 +551,15 @@ struct EditorMainPane: View {
 
 /// Lists every open editor document by file name.
 struct EditorSidebarList: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     @ObservedObject var state: EditorPanelState
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
-                Text("OPEN FILES")
+                Text(L("OPEN FILES"))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(.secondary)
                 Spacer(minLength: 0)
@@ -564,14 +570,14 @@ struct EditorSidebarList: View {
                         .font(.system(size: 11, weight: .semibold))
                 }
                 .buttonStyle(.borderless)
-                .help("New file — a scratch buffer you pick a path for when saving")
+                .help(L("New file — a scratch buffer you pick a path for when saving"))
             }
             .padding(.horizontal, 14)
             .padding(.top, 10)
             .padding(.bottom, 6)
 
             if state.documents.isEmpty {
-                Text("No open files — press + for a new one")
+                Text(L("No open files — press + for a new one"))
                     .font(.system(size: 12))
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -599,6 +605,9 @@ struct EditorSidebarList: View {
 }
 
 private struct EditorSidebarRow: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     @ObservedObject var doc: EditorDocument
     let isActive: Bool
     let onSelect: () -> Void
@@ -639,11 +648,11 @@ private struct EditorSidebarRow: View {
         .onTapGesture(perform: onSelect)
         .onHover { isHovering = $0 }
         .contextMenu {
-            Button("Save") { _ = doc.save() }
-            Button("Save As…") { _ = doc.saveAs() }
-            Button("Close") { onClose() }
+            Button(L("Save")) { _ = doc.save() }
+            Button(L("Save As…")) { _ = doc.saveAs() }
+            Button(L("Close")) { onClose() }
             if let url = doc.url {
-                Button("Reveal in Finder") {
+                Button(L("Reveal in Finder")) {
                     NSWorkspace.shared.activateFileViewerSelecting([url])
                 }
             }
@@ -655,6 +664,9 @@ private struct EditorSidebarRow: View {
 
 /// Top tab bar, one tab per open file.
 private struct EditorTabBar: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     @ObservedObject var state: EditorPanelState
     let onSelect: (EditorDocument) -> Void
     let onClose: (EditorDocument) -> Void
@@ -679,6 +691,9 @@ private struct EditorTabBar: View {
 }
 
 private struct EditorTabItem: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     @ObservedObject var doc: EditorDocument
     let isActive: Bool
     let onSelect: () -> Void
@@ -735,6 +750,9 @@ private struct EditorTabItem: View {
 
 /// Shows the full path of the active file under the tab bar.
 private struct EditorPathBar: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     @ObservedObject var state: EditorPanelState
 
     var body: some View {
@@ -753,10 +771,13 @@ private struct EditorPathBar: View {
 /// Observes the document itself so the path appears the moment an untitled
 /// buffer is saved somewhere.
 private struct EditorPathLabel: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     @ObservedObject var doc: EditorDocument
 
     var body: some View {
-        Text(doc.url?.path ?? "\(doc.name) — not saved yet")
+        Text(doc.url?.path ?? L("%@ — not saved yet", doc.name))
             .font(.system(size: 11))
             .foregroundColor(EditorTheme.dimText)
             .lineLimit(1)
@@ -769,6 +790,9 @@ private struct EditorPathLabel: View {
 /// Shown when nothing is open. Doubles as the shortcut cheat sheet, since
 /// there is nowhere else in the app that lists them.
 private struct EditorEmptyState: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     private let shortcuts: [(String, String)] = [
         ("⌘N / ⌘O", "New file / open file"),
         ("⌘S / ⇧⌘S", "Save / save as"),
@@ -789,11 +813,11 @@ private struct EditorEmptyState: View {
     var body: some View {
         VStack(spacing: 4) {
             Spacer()
-            Text("No open files")
+            Text(L("No open files"))
                 .font(.system(size: 13))
                 .foregroundColor(EditorTheme.dimText)
-            Text("Press + above the sidebar's open-files list, or right-click a "
-                 + "file in the file browser and choose \"Edit\"")
+            Text(L("Press + above the sidebar's open-files list, or right-click a "
+                 + "file in the file browser and choose \"Edit\""))
                 .font(.system(size: 11))
                 .foregroundColor(EditorTheme.dimText.opacity(0.7))
                 .multilineTextAlignment(.center)
@@ -806,7 +830,7 @@ private struct EditorEmptyState: View {
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundColor(EditorTheme.dimText)
                             .frame(width: 108, alignment: .trailing)
-                        Text(label)
+                        Text(L(label))
                             .font(.system(size: 11))
                             .foregroundColor(EditorTheme.dimText.opacity(0.75))
                         Spacer(minLength: 0)
@@ -827,6 +851,9 @@ private struct EditorEmptyState: View {
 /// Thin strip along the very bottom: caret position on the left, indent width
 /// and dirty state on the right.
 private struct EditorStatusBar: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     @ObservedObject var state: EditorPanelState
 
     var body: some View {
@@ -835,7 +862,7 @@ private struct EditorStatusBar: View {
                 EditorCaretLabel(doc: doc)
             }
             Spacer(minLength: 12)
-            Text("Spaces: \(EditorKeyCommands.indentUnit.count)")
+            Text(L("Spaces: %d", EditorKeyCommands.indentUnit.count))
                 .font(.system(size: 10))
                 .foregroundColor(EditorTheme.dimText)
         }
@@ -849,6 +876,9 @@ private struct EditorStatusBar: View {
 }
 
 private struct EditorCaretLabel: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     @ObservedObject var doc: EditorDocument
 
     var body: some View {
@@ -857,7 +887,7 @@ private struct EditorCaretLabel: View {
                 .font(.system(size: 10))
                 .foregroundColor(EditorTheme.dimText)
             if doc.isDirty {
-                Text("Unsaved")
+                Text(L("Unsaved"))
                     .font(.system(size: 10))
                     .foregroundColor(EditorTheme.accent)
             }
@@ -871,6 +901,9 @@ private struct EditorCaretLabel: View {
 /// Sublime-style find/replace strip pinned to the bottom of the editor pane.
 /// Cmd+F shows just the find row; Cmd+Opt+F adds the replace row.
 private struct EditorFindBar: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     @ObservedObject var state: EditorPanelState
 
     @FocusState private var focusedField: Field?
@@ -884,7 +917,7 @@ private struct EditorFindBar: View {
         VStack(spacing: 5) {
             HStack(spacing: 8) {
                 caseToggle
-                Text("Find:")
+                Text(L("Find:"))
                     .font(.system(size: 11))
                     .foregroundColor(EditorTheme.dimText)
                     .frame(width: labelWidth, alignment: .trailing)
@@ -900,7 +933,7 @@ private struct EditorFindBar: View {
                     .font(.system(size: 10))
                     .foregroundColor(EditorTheme.dimText)
                     .frame(width: 64, alignment: .trailing)
-                Button("Find") { TextEditorManager.shared.findNext() }
+                Button(L("Find")) { TextEditorManager.shared.findNext() }
                     .frame(width: buttonWidth)
                 closeButton
             }
@@ -908,7 +941,7 @@ private struct EditorFindBar: View {
             if state.showsReplaceField {
                 HStack(spacing: 8) {
                     Color.clear.frame(width: 22, height: 1)
-                    Text("Replace:")
+                    Text(L("Replace:"))
                         .font(.system(size: 11))
                         .foregroundColor(EditorTheme.dimText)
                         .frame(width: labelWidth, alignment: .trailing)
@@ -918,7 +951,7 @@ private struct EditorFindBar: View {
                         .focused($focusedField, equals: .replace)
                         .onSubmit { TextEditorManager.shared.replaceCurrent() }
                     Color.clear.frame(width: 64, height: 1)
-                    Button("Replace") { TextEditorManager.shared.replaceCurrent() }
+                    Button(L("Replace")) { TextEditorManager.shared.replaceCurrent() }
                         .frame(width: buttonWidth)
                     // Keeps the two rows' fields aligned under the close button.
                     Color.clear.frame(width: 18, height: 1)
@@ -961,7 +994,7 @@ private struct EditorFindBar: View {
                 .foregroundColor(state.matchCase ? EditorTheme.brightText : EditorTheme.dimText)
         }
         .buttonStyle(.plain)
-        .help("Match case")
+        .help(L("Match case"))
     }
 
     private var closeButton: some View {
@@ -974,7 +1007,7 @@ private struct EditorFindBar: View {
                 .frame(width: 18, height: 18)
         }
         .buttonStyle(.plain)
-        .help("Close find bar (Esc)")
+        .help(L("Close find bar (Esc)"))
     }
 }
 

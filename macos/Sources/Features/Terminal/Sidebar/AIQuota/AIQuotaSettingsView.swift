@@ -3,6 +3,9 @@ import SwiftUI
 /// Settings sheet for AI quota accounts: master visibility toggle, the list
 /// of configured accounts (with per-account visibility), and add/edit/delete.
 struct AIQuotaSettingsView: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var manager: AIQuotaManager
 
@@ -13,15 +16,15 @@ struct AIQuotaSettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("AI Usage Accounts")
+            Text(L("AI Usage Accounts"))
                 .font(.headline)
 
-            Toggle("Show AI usage above the sidebar menu", isOn: $manager.showInSidebar)
+            Toggle(L("Show AI usage above the sidebar menu"), isOn: $manager.showInSidebar)
 
             Divider()
 
             if manager.accounts.isEmpty {
-                Text("No accounts yet. Add a Claude Code or ChatGPT account to track its quota.")
+                Text(L("No accounts yet. Add a Claude Code or ChatGPT account to track its quota."))
                     .font(.callout)
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 60)
@@ -41,12 +44,12 @@ struct AIQuotaSettingsView: View {
                     isAddingNew = true
                     editingAccount = AIQuotaAccount(name: "", provider: .claudeCode)
                 } label: {
-                    Label("Add Account…", systemImage: "plus")
+                    Label(L("Add Account…"), systemImage: "plus")
                 }
 
                 Spacer()
 
-                Button("Done") { dismiss() }
+                Button(L("Done")) { dismiss() }
                     .keyboardShortcut(.defaultAction)
             }
         }
@@ -99,7 +102,7 @@ struct AIQuotaSettingsView: View {
                 .toggleStyle(.switch)
                 .controlSize(.mini)
                 .labelsHidden()
-                .help("Show in sidebar")
+                .help(L("Show in sidebar"))
 
             Button {
                 isAddingNew = false
@@ -108,7 +111,7 @@ struct AIQuotaSettingsView: View {
                 Image(systemName: "pencil")
             }
             .buttonStyle(.borderless)
-            .help("Edit account")
+            .help(L("Edit account"))
 
             Button {
                 manager.accounts.removeAll { $0.id == account.id }
@@ -117,7 +120,7 @@ struct AIQuotaSettingsView: View {
                 Image(systemName: "trash")
             }
             .buttonStyle(.borderless)
-            .help("Delete account")
+            .help(L("Delete account"))
         }
     }
 
@@ -129,7 +132,7 @@ struct AIQuotaSettingsView: View {
     private func windowToggles(for account: AIQuotaAccount) -> some View {
         let labels = windowLabels(for: account)
         if labels.isEmpty {
-            Text("Refresh this account to list its quota windows.")
+            Text(L("Refresh this account to list its quota windows."))
                 .font(.caption)
                 .foregroundColor(.secondary)
         } else {
@@ -138,11 +141,11 @@ struct AIQuotaSettingsView: View {
                 alignment: .leading, spacing: 2
             ) {
                 ForEach(labels, id: \.self) { label in
-                    Toggle(label, isOn: windowBinding(account.id, label))
+                    Toggle(L(label), isOn: windowBinding(account.id, label))
                         .toggleStyle(.checkbox)
                         .controlSize(.small)
                         .font(.caption)
-                        .help("Show the \(label) bar in the sidebar")
+                        .help(L("Show the %@ bar in the sidebar", L(label)))
                 }
             }
         }
@@ -185,6 +188,9 @@ struct AIQuotaSettingsView: View {
 /// Form for one account: provider, credential source, and (for manual mode)
 /// the pasted token.
 private struct AIQuotaAccountForm: View {
+    /// Re-renders this view when the interface language changes.
+    @ObservedObject private var lang = LanguageManager.shared
+
     @Environment(\.dismiss) private var dismiss
 
     @State var account: AIQuotaAccount
@@ -193,34 +199,34 @@ private struct AIQuotaAccountForm: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(isNew ? "Add Account" : "Edit Account")
+            Text(isNew ? L("Add Account") : L("Edit Account"))
                 .font(.headline)
 
             Form {
-                TextField("Name:", text: $account.name, prompt: Text(defaultName))
+                TextField(L("Name:"), text: $account.name, prompt: Text(defaultName))
 
-                Picker("Service:", selection: $account.provider) {
+                Picker(L("Service:"), selection: $account.provider) {
                     ForEach(AIProvider.allCases) { provider in
                         Text(provider.displayName).tag(provider)
                     }
                 }
 
-                Picker("Credential:", selection: $account.authMode) {
+                Picker(L("Credential:"), selection: $account.authMode) {
                     ForEach(AIQuotaAuthMode.allCases) { mode in
                         Text(mode.displayName).tag(mode)
                     }
                 }
 
                 if account.authMode == .manualToken {
-                    SecureField("Token:", text: $account.token, prompt: Text(tokenPrompt))
+                    SecureField(L("Token:"), text: $account.token, prompt: Text(tokenPrompt))
                     if account.provider == .chatGPT {
                         TextField(
                             "Account ID:", text: $account.accountID,
-                            prompt: Text("optional — read from token if empty"))
+                            prompt: Text(L("optional — read from token if empty")))
                     }
                 }
 
-                Toggle("Show in sidebar", isOn: $account.isVisible)
+                Toggle(L("Show in sidebar"), isOn: $account.isVisible)
             }
 
             Text(credentialHint)
@@ -230,9 +236,9 @@ private struct AIQuotaAccountForm: View {
 
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
+                Button(L("Cancel")) { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button(isNew ? "Add" : "Save") {
+                Button(isNew ? L("Add") : L("Save")) {
                     var saved = account
                     let trimmed = saved.name.trimmingCharacters(in: .whitespaces)
                     saved.name = trimmed.isEmpty ? defaultName : trimmed
@@ -266,16 +272,16 @@ private struct AIQuotaAccountForm: View {
     private var credentialHint: String {
         switch (account.provider, account.authMode) {
         case (.claudeCode, .localLogin):
-            return "Uses the Claude Code CLI login on this Mac (keychain item "
-                + "\"Claude Code-credentials\"). The first query may ask for keychain access."
+            return L("Uses the Claude Code CLI login on this Mac (keychain item "
+                + "\"Claude Code-credentials\"). The first query may ask for keychain access.")
         case (.claudeCode, .manualToken):
-            return "Paste an OAuth access token (sk-ant-oat01-…), e.g. from another "
-                + "machine's ~/.claude/.credentials.json. Tokens expire and may need re-pasting."
+            return L("Paste an OAuth access token (sk-ant-oat01-…), e.g. from another "
+                + "machine's ~/.claude/.credentials.json. Tokens expire and may need re-pasting.")
         case (.chatGPT, .localLogin):
-            return "Uses the Codex CLI login on this Mac (~/.codex/auth.json)."
+            return L("Uses the Codex CLI login on this Mac (~/.codex/auth.json).")
         case (.chatGPT, .manualToken):
-            return "Paste the access_token from ~/.codex/auth.json of the account "
-                + "to track. Tokens expire and may need re-pasting."
+            return L("Paste the access_token from ~/.codex/auth.json of the account "
+                + "to track. Tokens expire and may need re-pasting.")
         }
     }
 }
