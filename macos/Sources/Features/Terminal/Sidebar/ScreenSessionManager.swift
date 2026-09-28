@@ -102,15 +102,22 @@ class ScreenSessionManager {
     }
 
     /// Run a tmux command and return its stdout, or nil on failure.
+    /// `input`, when given, is fed to the command's stdin.
     @discardableResult
-    private func runTmux(_ args: [String]) -> String? {
+    private func runTmux(_ args: [String], input: String? = nil) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: tmuxPath)
         process.arguments = args
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
+        let stdin = input.map { _ in Pipe() }
+        if let stdin { process.standardInput = stdin }
         do { try process.run() } catch { return nil }
+        if let stdin, let input {
+            stdin.fileHandleForWriting.write(Data(input.utf8))
+            try? stdin.fileHandleForWriting.close()
+        }
         process.waitUntilExit()
         guard process.terminationStatus == 0 else { return nil }
         return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
@@ -194,6 +201,32 @@ class ScreenSessionManager {
         ensureTmuxConf()
         let escapedConf = escapeForShell(tmuxConfPath.path)
         return "\(tmuxPath) -f \(escapedConf) attach-session -t \(sessionName)"
+    }
+
+    // MARK: - Typing Into a Session
+
+    /// Type text into a session that is still starting up, as if it had been
+    /// typed at the keyboard — newlines act as Return.
+    ///
+    /// It goes in through tmux rather than as the surface's initial input:
+    /// that arrives while the tmux client is still taking over the terminal,
+    /// which is free to throw pending input away. Pasted into the pane it
+    /// waits in the pane's own tty until the shell reads it, so a line that
+    /// starts another shell hands the rest on to that shell.
+    func typeIntoSession(named sessionName: String, text: String) {
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            // The session appears once the new surface has launched tmux.
+            var tries = 0
+            while runTmux(["has-session", "-t", sessionName]) == nil {
+                tries += 1
+                guard tries < 100 else { return }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+
+            let buffer = "myghost_preset_\(UUID().uuidString.lowercased())"
+            guard runTmux(["load-buffer", "-b", buffer, "-"], input: text) != nil else { return }
+            runTmux(["paste-buffer", "-d", "-b", buffer, "-t", sessionName])
+        }
     }
 
     // MARK: - Session Lifecycle

@@ -620,6 +620,58 @@ class SidebarTerminalController: BaseTerminalController {
         }
     }
 
+    /// Add a new tab on the currently selected host from a saved preset: the
+    /// tab takes the preset's name, and the preset's commands are typed into
+    /// it in order once its shell is up.
+    func addTabForCurrentHost(preset: TabPreset) {
+        let input = preset.input
+        let newTab: SidebarTabEntry?
+
+        if let host = currentHost, let target = host.target {
+            newTab = addRemoteTab(target: target, options: host.sshOptions, displayName: host.name)
+            if let newTab, let input, let session = newTab.screenSessionName {
+                RemoteHostManager.shared.typeIntoRemoteSession(
+                    target: target,
+                    options: host.sshOptions,
+                    sessionName: session,
+                    text: input
+                ) { [weak self, weak newTab] _ in
+                    // The session didn't exist on the host yet when the tab
+                    // was named below, so that stamp had nowhere to land. It
+                    // does now.
+                    DispatchQueue.main.async {
+                        guard let self, let newTab else { return }
+                        self.publishRemoteTitle(for: newTab)
+                    }
+                }
+            }
+        } else {
+            let mgr = ScreenSessionManager.shared
+            var config = Ghostty.SurfaceConfiguration()
+            // Without tmux there is no session to type into afterwards, so
+            // the commands ride along as the surface's initial input.
+            if !mgr.isAvailable { config.initialInput = input }
+            newTab = addNewTab(baseConfig: config)
+            if let input, let session = newTab?.screenSessionName {
+                mgr.typeIntoSession(named: session, text: input)
+            }
+        }
+
+        guard let newTab else { return }
+        let name = preset.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        newTab.customTitle = name
+        publishRemoteTitle(for: newTab)
+        if selectedTabID == newTab.id {
+            if let host = currentHost, !host.isLocal {
+                window?.title = "\(host.name) — \(name)"
+            } else {
+                window?.title = name
+            }
+        }
+        saveScreenSessionState()
+    }
+
     // MARK: - Tab Management
 
     /// Select a tab by switching the active surface tree.
@@ -668,8 +720,9 @@ class SidebarTerminalController: BaseTerminalController {
 
     /// Add a new tab with a fresh terminal surface.
     /// If screen is available and no custom command is set, wraps the shell in a screen session.
-    func addNewTab(baseConfig: Ghostty.SurfaceConfiguration? = nil) {
-        guard let ghostty_app = ghostty.app else { return }
+    @discardableResult
+    func addNewTab(baseConfig: Ghostty.SurfaceConfiguration? = nil) -> SidebarTabEntry? {
+        guard let ghostty_app = ghostty.app else { return nil }
 
         var config = baseConfig ?? Ghostty.SurfaceConfiguration()
 
@@ -696,6 +749,7 @@ class SidebarTerminalController: BaseTerminalController {
 
         // Clean up orphaned tmux sessions in the background
         cleanupOrphanedTmuxSessions()
+        return newTab
     }
 
     /// Add a new tab connected to a remote host over SSH. The shell runs inside
@@ -705,8 +759,9 @@ class SidebarTerminalController: BaseTerminalController {
         addRemoteTab(target: host.target, options: host.sshOptions, displayName: host.name)
     }
 
-    func addRemoteTab(target: String, options: [String], displayName: String) {
-        guard let ghostty_app = ghostty.app else { return }
+    @discardableResult
+    func addRemoteTab(target: String, options: [String], displayName: String) -> SidebarTabEntry? {
+        guard let ghostty_app = ghostty.app else { return nil }
 
         let rmgr = RemoteHostManager.shared
         let sessionName = rmgr.sessionName(for: UUID())
@@ -730,6 +785,7 @@ class SidebarTerminalController: BaseTerminalController {
         tabs.append(newTab)
         selectTab(newTab)
         saveScreenSessionState()
+        return newTab
     }
 
     /// If `surfaceView` is the ssh surface of a remote tab, upload what the

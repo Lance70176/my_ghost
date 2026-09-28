@@ -549,6 +549,51 @@ class RemoteHostManager {
         }
     }
 
+    /// Type text into a remote session that is still starting up, as if it
+    /// had been typed at the keyboard — newlines act as Return.
+    ///
+    /// The tab's own ssh can't carry it: anything sent before the connection
+    /// is up lands in whatever ssh asks first, a passphrase prompt included.
+    /// A second ssh waits for the session to appear on the host and pastes
+    /// into its pane, where it sits until the shell reads it. Calls
+    /// `completion` with whether the text was delivered.
+    func typeIntoRemoteSession(
+        target: String,
+        options: [String],
+        sessionName: String,
+        text: String,
+        completion: ((Bool) -> Void)? = nil
+    ) {
+        // Same precautions as setRemoteTitle: /bin/sh because the login shell
+        // may be fish, base64 to keep the text clear of quoting.
+        let encoded = Data(text.utf8).base64EncodedString()
+        let buffer = "myghost_preset_\(UUID().uuidString.lowercased())"
+        let script = "T=$(command -v tmux || echo /opt/homebrew/bin/tmux); i=0; "
+            + "while ! \"$T\" has-session -t \(sessionName) 2>/dev/null; do "
+            + "i=$((i+1)); [ \"$i\" -gt 30 ] && exit 1; sleep 1; done; "
+            + "printf %s \(encoded) | base64 -d | \"$T\" load-buffer -b \(buffer) - "
+            + "&& \"$T\" paste-buffer -d -b \(buffer) -t \(sessionName)"
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            process.arguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
+                + options
+                + [target, "--", "/bin/sh -c '\(script)'"]
+            process.standardInput = FileHandle.nullDevice
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+            } catch {
+                completion?(false)
+                return
+            }
+            process.waitUntilExit()
+            completion?(process.terminationStatus == 0)
+        }
+    }
+
     /// Identifies this Mac on the sessions it opens elsewhere.
     static let ownerID = ProcessInfo.processInfo.hostName
 
