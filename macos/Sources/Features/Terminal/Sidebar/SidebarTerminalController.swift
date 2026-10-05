@@ -151,6 +151,7 @@ class SidebarTerminalController: BaseTerminalController {
             repeats: true
         ) { [weak self] _ in
             self?.publishAllRemoteTitles()
+            self?.cleanupOrphanedRemoteSessionsPeriodically()
         }
     }
 
@@ -1006,23 +1007,43 @@ class SidebarTerminalController: BaseTerminalController {
     /// Collects active sessions across ALL windows — cleaning up based on a
     /// single window's tabs would kill the sessions of every other window.
     private func cleanupOrphanedTmuxSessions() {
-        var activeNames = Set<String>()
-        for controller in Self.allControllers.union([self]) {
-            for tab in controller.tabs {
-                if let name = tab.screenSessionName {
-                    activeNames.insert(name)
-                }
-                for child in tab.children {
-                    if let name = child.screenSessionName {
-                        activeNames.insert(name)
-                    }
-                }
-            }
-        }
+        let activeNames = activeSessionNames()
         DispatchQueue.global(qos: .utility).async {
             ScreenSessionManager.shared.cleanupOrphanedSessions(activeSessionNames: activeNames)
         }
         cleanupOrphanedRemoteSessions(keeping: activeNames)
+    }
+
+    /// The tmux sessions every open window's tabs are attached to.
+    private func activeSessionNames() -> Set<String> {
+        var names = Set<String>()
+        for controller in Self.allControllers.union([self]) {
+            for tab in controller.tabs {
+                for candidate in [tab] + tab.children {
+                    if let name = candidate.screenSessionName {
+                        names.insert(name)
+                    }
+                }
+            }
+        }
+        return names
+    }
+
+    /// When the timer last swept remote hosts. Shared across windows: each
+    /// window has its own timer, but one sweep already covers all of them.
+    private static var lastRemoteCleanup: Date?
+
+    /// Sweep remote hosts for leftovers on the refresh timer, not only when a
+    /// local tab is opened — a window that sits open for days would otherwise
+    /// let them pile up in that host's MyGhost Web.
+    private func cleanupOrphanedRemoteSessionsPeriodically() {
+        let now = Date()
+        if let last = Self.lastRemoteCleanup,
+           now.timeIntervalSince(last) < Self.remoteTitleRefreshInterval / 2 {
+            return
+        }
+        Self.lastRemoteCleanup = now
+        cleanupOrphanedRemoteSessions(keeping: activeSessionNames())
     }
 
     /// Retire remote sessions this Mac opened and no longer has a tab for.

@@ -595,12 +595,36 @@ class RemoteHostManager {
     }
 
     /// Identifies this Mac on the sessions it opens elsewhere.
-    static let ownerID = ProcessInfo.processInfo.hostName
+    ///
+    /// A UUID kept in defaults rather than the host name: the host name drifts
+    /// with the network (DHCP hands out a different one), and a session stamped
+    /// under a name this Mac no longer goes by was never recognised as ours
+    /// again — it lingered on the host as a duplicate tab in MyGhost Web.
+    static let ownerID: String = {
+        let key = "RemoteSessionOwnerID"
+        if let id = UserDefaults.standard.string(forKey: key), !id.isEmpty { return id }
+        let id = UUID().uuidString.lowercased()
+        UserDefaults.standard.set(id, forKey: key)
+        return id
+    }()
+
+    /// Every owner id this Mac may have stamped a session with: the current
+    /// one, plus each host name it has gone by, which older versions used.
+    /// Live tabs are re-stamped with `ownerID` within minutes; the host names
+    /// only matter for leftovers stamped before that.
+    static let ownerAliases: Set<String> = {
+        let key = "RemoteSessionOwnerAliases"
+        var names = Set(UserDefaults.standard.stringArray(forKey: key) ?? [])
+        if names.insert(ProcessInfo.processInfo.hostName).inserted {
+            UserDefaults.standard.set(Array(names).sorted(), forKey: key)
+        }
+        return names.union([ownerID])
+    }()
 
     /// Kill remote sessions this Mac opened but no longer has a tab for.
     ///
-    /// Only sessions stamped with our owner id are considered: a session with
-    /// no stamp, or another Mac's, is left alone. Detachment is not evidence of
+    /// Only sessions stamped with one of our owner ids are considered: a
+    /// session with no stamp, or another Mac's, is left alone. Detachment is not evidence of
     /// abandonment — every session detaches while its app is closed.
     func cleanupOrphanedSessions(target: String, options: [String], keeping: Set<String>) {
         DispatchQueue.global(qos: .utility).async { [self] in
@@ -625,7 +649,7 @@ class RemoteHostManager {
                 guard parts.count == 2 else { continue }
                 let name = String(parts[0]).trimmingCharacters(in: .whitespaces)
                 let owner = String(parts[1]).trimmingCharacters(in: .whitespaces)
-                guard name.hasPrefix("myghostr_"), owner == Self.ownerID,
+                guard name.hasPrefix("myghostr_"), Self.ownerAliases.contains(owner),
                       !keeping.contains(name) else { continue }
                 killRemoteSession(target: target, options: options, sessionName: name)
             }
