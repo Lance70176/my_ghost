@@ -628,8 +628,12 @@ class RemoteHostManager {
     /// abandonment — every session detaches while its app is closed.
     func cleanupOrphanedSessions(target: String, options: [String], keeping: Set<String>) {
         DispatchQueue.global(qos: .utility).async { [self] in
+            // The format goes in double quotes: the script itself rides inside
+            // single quotes, and single quotes here ended that early — the
+            // remote shell then took the "|" for a pipe, the listing always
+            // failed, and nothing was ever cleaned up.
             let script = "T=$(command -v tmux || echo /opt/homebrew/bin/tmux); "
-                + "\"$T\" list-sessions -F '#{session_name}|#{@myghost_owner}' 2>/dev/null"
+                + "\"$T\" list-sessions -F \"#{session_name}|#{@myghost_owner}\" 2>/dev/null"
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
             process.arguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
