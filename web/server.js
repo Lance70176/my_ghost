@@ -616,8 +616,27 @@ const server = http.createServer(async (req, res) => {
 
 const wss = new WebSocketServer({ server, path: "/ws" });
 
+// Ping every client and drop the ones that stop answering. A phone that
+// locked its screen never sends a close, so without this its `tmux attach`
+// lingered, still holding the window at the phone's size.
+const heartbeat = setInterval(() => {
+  for (const ws of wss.clients) {
+    if (ws.isAlive === false) {
+      ws.terminate();
+      continue;
+    }
+    ws.isAlive = false;
+    ws.ping();
+  }
+}, 30000);
+wss.on("close", () => clearInterval(heartbeat));
+
 wss.on("connection", (ws, req) => {
   if (!authed(req)) return ws.close(4401, "unauthorized");
+  ws.isAlive = true;
+  ws.on("pong", () => {
+    ws.isAlive = true;
+  });
   const url = new URL(req.url, "http://x");
   const session = url.searchParams.get("session") || "";
   if (!/^myghost[a-zA-Z0-9_-]*$/.test(session)) return ws.close(4400, "bad session");

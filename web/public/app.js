@@ -299,11 +299,6 @@
 
   function attach(name) {
     ensureTerm();
-    if (ws) {
-      ws.onclose = null;
-      ws.close();
-      ws = null;
-    }
     current = name;
     localStorage.setItem("myghost_last_session", name);
     $("term-empty").classList.add("hidden");
@@ -312,22 +307,96 @@
     term.clear();
     fit.fit();
     renderTabs();
+    retryDelay = RETRY_MIN;
+    connect();
+    term.focus();
+  }
 
+  // Reconnection. A phone drops the socket whenever the screen locks or the
+  // browser goes to the background, and coming back used to leave a dead
+  // terminal until the tab was opened again. Now a closed socket retries on
+  // its own, and returning to the page reattaches straight away. A socket
+  // that slept for a while is replaced even if it still claims to be open:
+  // iOS hands those back half-dead, never delivering another byte or close.
+  const RETRY_MIN = 1000;
+  const RETRY_MAX = 15000;
+  const STALE_AFTER = 15000; // ms in the background before a socket is distrusted
+  let retryDelay = RETRY_MIN;
+  let retryTimer = null;
+  let hiddenAt = 0;
+  let reconnectNoted = false;
+
+  function dropSocket() {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+    if (!ws) return;
+    ws.onclose = ws.onmessage = ws.onopen = null;
+    try { ws.close(); } catch {}
+    ws = null;
+  }
+
+  function connect() {
+    dropSocket();
+    const name = current;
+    if (!name) return;
+    fit.fit();
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const socket = new WebSocket(
       `${proto}://${location.host}/ws?session=${encodeURIComponent(name)}` +
         `&cols=${term.cols}&rows=${term.rows}`
     );
     socket.binaryType = "arraybuffer";
+    socket.onopen = () => {
+      retryDelay = RETRY_MIN;
+      reconnectNoted = false;
+    };
     socket.onmessage = (e) => {
       term.write(typeof e.data === "string" ? e.data : new Uint8Array(e.data));
     };
-    socket.onclose = () => {
-      if (current === name) term.write("\r\n\x1b[90m[disconnected — click the tab to reattach]\x1b[0m\r\n");
+    socket.onclose = (e) => {
+      if (ws !== socket) return;
+      ws = null;
+      if (current !== name) return;
+      const gone =
+        e.code === 4400 || e.code === 4401 ||
+        (state.sessions.length && !state.sessions.some((s) => s.name === name));
+      if (gone) {
+        term.write("\r\n\x1b[90m[disconnected — click the tab to reattach]\x1b[0m\r\n");
+        return;
+      }
+      if (!reconnectNoted) {
+        reconnectNoted = true;
+        term.write("\r\n\x1b[90m[connection lost — reconnecting…]\x1b[0m\r\n");
+      }
+      // In the background the retry waits for the page to come back (below);
+      // timers barely run there anyway.
+      if (!document.hidden) scheduleRetry();
     };
     ws = socket;
-    term.focus();
   }
+
+  function scheduleRetry() {
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(connect, retryDelay);
+    retryDelay = Math.min(retryDelay * 2, RETRY_MAX);
+  }
+
+  function resume() {
+    if (!current || !term) return;
+    const away = hiddenAt ? Date.now() - hiddenAt : 0;
+    hiddenAt = 0;
+    if (!ws || ws.readyState !== WebSocket.OPEN || away > STALE_AFTER) {
+      retryDelay = RETRY_MIN;
+      connect();
+    }
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) hiddenAt = Date.now();
+    else resume();
+  });
+  window.addEventListener("pageshow", (e) => { if (e.persisted) resume(); });
+  window.addEventListener("online", resume);
 
   // ------------------------------------------------------------------ sidebar
 
@@ -479,7 +548,7 @@
       return;
     }
     await api("/api/tabs/" + current, { method: "DELETE" }).catch(() => {});
-    if (ws) ws.close();
+    dropSocket();
     current = null;
     localStorage.removeItem("myghost_last_session");
     $("term-empty").classList.remove("hidden");
