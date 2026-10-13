@@ -99,6 +99,8 @@ pub fn init(alloc: Allocator, opts: rendererpkg.Options) !Metal {
             .view = switch (opts.rt_surface.platform) {
                 .macos => |v| v.nsview,
                 .ios => |v| v.uiview,
+                // Android renders with OpenGL ES, never Metal.
+                .android => return error.UnsupportedPlatform,
             },
         },
 
