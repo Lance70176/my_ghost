@@ -10,6 +10,8 @@ enum L10nStrings {
 
     static let table: [String: [AppLanguage: String]] = [
         // MARK: ghost-agentd decisions
+        "Under discussion": t("討論中", "讨论中", "相談中"),
+        "These requests stay open without a time limit. Once the assistant runs it will talk them through with you here; for now, decide when you're ready.": t("這些請求不會逾時，會一直保留。助手上線後會在這裡和你討論；在那之前，想好了直接在這裡同意或拒絕。", "这些请求不会超时，会一直保留。助手上线后会在这里和你讨论；在那之前，想好了直接在这里同意或拒绝。", "これらの要求は期限なしで保留されます。アシスタントが動き出すとここで一緒に検討します。それまでは、決まったらここで許可か拒否を選んでください。"),
         "Other conversations": t("其他對話", "其他对话", "その他の会話"),
         "Install it with agentd/install.sh, then this list fills in.": t("用 agentd/install.sh 安裝後，這裡就會列出助手。", "用 agentd/install.sh 安装后，这里就会列出助手。", "agentd/install.sh でインストールすると一覧が表示されます。"),
         "All projects": t("全部專案", "全部项目", "すべてのプロジェクト"),

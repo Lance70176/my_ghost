@@ -298,6 +298,10 @@ struct AgentDecisionCard: View {
             let err = await AgentDaemonClient.shared.decide(p, action: action, message: message)
             busy = false
             error = err
+            // Discussing happens in the project's assistant window.
+            if action == "discuss", err == nil {
+                AgentAssistantWindows.open(project: p.project)
+            }
         }
     }
 }

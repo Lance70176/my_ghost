@@ -171,6 +171,9 @@ private struct AgentConversationPlaceholder: View {
     @ObservedObject private var client = AgentDaemonClient.shared
 
     private var info: AgentProject? { client.projects.first { $0.name == project } }
+    private var discussing: [AgentPending] {
+        client.pending.filter { $0.project == project && $0.isDiscussing }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -181,6 +184,26 @@ private struct AgentConversationPlaceholder: View {
                         .font(.title3.weight(.semibold))
                     Text(info?.resident == true ? L("Resident") : L("Wakes on events"))
                         .font(.caption).foregroundColor(.secondary)
+                }
+            }
+
+            if !discussing.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label(L("Under discussion"), systemImage: "bubble.left.and.bubble.right.fill")
+                        .font(.headline)
+                        .foregroundColor(.blue)
+                    Text(L("These requests stay open without a time limit. Once the assistant runs it will talk them through with you here; for now, decide when you're ready."))
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(discussing) { p in
+                                AgentDecisionCard(p: p, width: 440)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 360)
                 }
             }
 

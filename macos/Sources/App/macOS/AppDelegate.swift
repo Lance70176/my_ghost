@@ -385,10 +385,14 @@ class AppDelegate: NSObject,
                     // Fallback: if restoreWindow failed but orphaned tmux sessions exist,
                     // ask the user whether to recover them.
                     if ScreenSessionManager.shared.isAvailable {
-                        // Exclude the session that the new tab just created
+                        // Exclude the session that the new tab just created, and
+                        // everything that isn't this Mac's own: "myghostr_"
+                        // sessions belong to another Mac's remote tabs (offering
+                        // to restore or kill them here would hijack or destroy
+                        // them), and other names belong to other tools.
                         let currentSession = controller.tabs.first?.screenSessionName
                         let orphaned = ScreenSessionManager.shared.listAliveSessions()
-                            .filter { $0 != currentSession }
+                            .filter { $0 != currentSession && $0.hasPrefix("myghost_") }
                         if !orphaned.isEmpty {
                             DispatchQueue.main.async {
                                 let alert = NSAlert()
@@ -397,7 +401,12 @@ class AppDelegate: NSObject,
                                 alert.addButton(withTitle: "恢復")
                                 alert.addButton(withTitle: "清除")
                                 alert.addButton(withTitle: "忽略")
-                                let response = alert.runModal()
+                                // A sheet, not runModal: a modal loop started from
+                                // a main-queue block holds the main queue until
+                                // answered, which froze every main-actor task —
+                                // ghost-agentd decision cards included — while
+                                // the question sat unseen on an unattended Mac.
+                                let handle: (NSApplication.ModalResponse) -> Void = { response in
                                 if response == .alertFirstButtonReturn {
                                     // Try to use saved state to reconstruct groups
                                     let savedState = ScreenSessionManager.shared.loadState()
@@ -456,6 +465,12 @@ class AppDelegate: NSObject,
                                     }
                                 }
                                 // Ignore: do nothing, sessions stay alive
+                                }
+                                if let window = controller.window {
+                                    alert.beginSheetModal(for: window, completionHandler: handle)
+                                } else {
+                                    handle(alert.runModal())
+                                }
                             }
                         }
                     }
