@@ -84,9 +84,11 @@ final class AgentDecisionPanel {
                               width: width, height: height), display: true)
     }
 
-    /// Bring the tab a request came from to the front.
-    static func reveal(tmuxSession: String) {
-        guard !tmuxSession.isEmpty else { return }
+    /// Bring the tab a request came from to the front. False when no open tab
+    /// runs that session any more (the conversation was closed).
+    @discardableResult
+    static func reveal(tmuxSession: String) -> Bool {
+        guard !tmuxSession.isEmpty else { return false }
         for window in NSApp.windows {
             guard let controller = window.windowController as? SidebarTerminalController else { continue }
             for tab in controller.tabs {
@@ -98,11 +100,13 @@ final class AgentDecisionPanel {
                    tab.isFullMode {
                     controller.switchFullModeChild(to: child, in: tab)
                 }
+                controller.sidebarUIState.sidebarMode = .terminal
                 window.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
-                return
+                return true
             }
         }
+        return false
     }
 }
 
@@ -147,8 +151,12 @@ private final class KeyablePanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
 
-private struct AgentDecisionCard: View {
+/// A pending request with its buttons; used by the bottom-right stack and the
+/// assistant window.
+struct AgentDecisionCard: View {
     let p: AgentPending
+    var width: CGFloat = 344
+    @State private var closedNotice = false
     @State private var busy = false
     @State private var error: String?
     @State private var reason = ""
@@ -175,7 +183,7 @@ private struct AgentDecisionCard: View {
                     .truncationMode(.middle)
                 Spacer(minLength: 4)
                 Button {
-                    AgentDecisionPanel.reveal(tmuxSession: p.tmuxSession)
+                    closedNotice = !AgentDecisionPanel.reveal(tmuxSession: p.tmuxSession)
                 } label: {
                     Image(systemName: "arrow.up.forward.square")
                 }
@@ -202,9 +210,20 @@ private struct AgentDecisionCard: View {
                 }
             }
 
-            Text(L("Denied automatically in %d min", minutesLeft))
-                .font(.caption2)
-                .foregroundColor(.secondary)
+            if p.isDiscussing {
+                Label(L("Under discussion — will not time out"), systemImage: "bubble.left.and.bubble.right")
+                    .font(.caption2)
+                    .foregroundColor(.blue)
+            } else {
+                Text(L("Denied automatically in %d min", minutesLeft))
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            if closedNotice {
+                Text(L("That conversation has been closed; it can't be shown."))
+                    .font(.caption2)
+                    .foregroundColor(.orange)
+            }
 
             if askingReason {
                 HStack {
@@ -229,6 +248,16 @@ private struct AgentDecisionCard: View {
                 Button(L("Deny with reason…")) { askingReason.toggle() }
                     .buttonStyle(.borderless)
                     .font(.caption)
+                if !p.isDiscussing {
+                    Button {
+                        send("discuss")
+                    } label: {
+                        Label(L("Discuss"), systemImage: "bubble.left.and.bubble.right")
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                    .help(L("Keep this request open without a time limit while you talk it over"))
+                }
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
@@ -252,7 +281,7 @@ private struct AgentDecisionCard: View {
             }
         }
         .padding(10)
-        .frame(width: 344, alignment: .leading)
+        .frame(width: width, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 10)
                 .fill(.regularMaterial)

@@ -18,13 +18,16 @@ struct AgentPending: Decodable, Identifiable, Equatable {
     let alwaysPattern: String?
     let canAlways: Bool
     let remaining: Int
+    /// Taken into a discussion: never times out until someone decides.
+    let discussing: Bool?
 
     var isConfirming: Bool { state == "confirming" }
+    var isDiscussing: Bool { discussing ?? false }
 
     /// `remaining` ticks down on every poll; it alone isn't a change worth
     /// re-rendering the cards for.
     static func == (a: AgentPending, b: AgentPending) -> Bool {
-        a.id == b.id && a.state == b.state
+        a.id == b.id && a.state == b.state && a.discussing == b.discussing
     }
     var isHighRisk: Bool { level >= 3 }
 }
@@ -38,6 +41,50 @@ struct AgentSession: Decodable, Equatable {
     /// running | waiting | done | ended
     let status: String
 }
+
+/// One project registered with ghost-agentd, as the assistant list shows it.
+struct AgentProject: Decodable, Identifiable, Equatable {
+    let name: String
+    let resident: Bool
+    let tgReady: Bool
+    let pending: Int
+    let sessions: Int
+    let waiting: Int
+    let running: Int
+    let lastActivity: Double
+
+    var id: String { name }
+    /// Requests outside every project.
+    var isDefault: Bool { name == "_default" }
+    var displayName: String { isDefault ? L("Other conversations") : name }
+}
+
+/// One line of a project's decisions.jsonl.
+struct AgentDecisionRecord: Decodable, Identifiable, Equatable {
+    let ts: Double
+    let id: String
+    let project: String
+    let sessionId: String?
+    let tmuxSession: String?
+    let tab: String?
+    let tool: String?
+    let summary: String
+    let level: String
+    let reason: String?
+    let state: String
+    let by: String
+    let alwaysAdded: String?
+    let discussed: Bool?
+    let denyMessage: String?
+
+    var date: Date { Date(timeIntervalSince1970: ts) }
+    var allowed: Bool { state == "allowed" }
+    /// L0/L1 decisions made by the rules rather than a person.
+    var byRule: Bool { by.hasPrefix("rule:") }
+}
+
+private struct AgentProjects: Decodable { let projects: [AgentProject] }
+private struct AgentDecisions: Decodable { let decisions: [AgentDecisionRecord] }
 
 private struct AgentState: Decodable {
     let version: Int
@@ -59,6 +106,12 @@ final class AgentDaemonClient: ObservableObject {
     /// Status per tmux session name (`myghost_…`), the key sidebar tabs know.
     @Published private(set) var statusByTmux: [String: String] = [:]
     @Published private(set) var online = false
+    @Published private(set) var projects: [AgentProject] = []
+    /// Bumped whenever the daemon's state changes, so open history lists know
+    /// to reload.
+    @Published private(set) var changeCount = 0
+
+    var totalPending: Int { pending.count }
 
     private let base = URL(string: ProcessInfo.processInfo.environment["GHOST_AGENTD_URL"]
                            ?? "http://127.0.0.1:7788")!
@@ -117,7 +170,9 @@ final class AgentDaemonClient: ObservableObject {
 
     private func apply(_ state: AgentState) {
         online = true
+        if state.version != version { changeCount += 1 }
         version = state.version
+        Task { await refreshProjects() }
         if state.pending != pending { pending = state.pending }
         var map: [String: String] = [:]
         // The daemon lists newest first; let the newest conversation in a tab win.
@@ -127,7 +182,23 @@ final class AgentDaemonClient: ObservableObject {
         if map != statusByTmux { statusByTmux = map }
     }
 
-    /// action: allow | deny | always | confirm | cancel. Returns the daemon's
+    func refreshProjects() async {
+        guard let (data, _) = try? await session.data(from: base.appendingPathComponent("api/projects")),
+              let list = try? Self.decoder.decode(AgentProjects.self, from: data) else { return }
+        if list.projects != projects { projects = list.projects }
+    }
+
+    /// Newest first; nil project means every project.
+    func decisions(project: String?, limit: Int = 300) async -> [AgentDecisionRecord] {
+        var comps = URLComponents(url: base.appendingPathComponent("api/decisions"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "limit", value: String(limit))]
+        if let project { comps.queryItems?.append(URLQueryItem(name: "project", value: project)) }
+        guard let (data, _) = try? await session.data(from: comps.url!),
+              let list = try? Self.decoder.decode(AgentDecisions.self, from: data) else { return [] }
+        return list.decisions
+    }
+
+    /// action: allow | deny | always | confirm | cancel | discuss. Returns the daemon's
     /// explanation when it refused (already handled, needs confirmation…).
     @discardableResult
     func decide(_ p: AgentPending, action: String, message: String = "") async -> String? {

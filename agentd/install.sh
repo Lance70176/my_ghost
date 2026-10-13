@@ -35,7 +35,7 @@ for ev in list(hooks):
     hooks[ev] = groups
 if mode == "add":
     hooks.setdefault("PermissionRequest", []).append(
-        {"hooks": [{"type": "command", "command": cmd, "timeout": 1860}]})
+        {"hooks": [{"type": "command", "command": cmd, "timeout": 604800}]})
     for ev in ("Notification", "Stop", "UserPromptSubmit", "SessionEnd"):
         hooks.setdefault(ev, []).append(
             {"hooks": [{"type": "command", "command": cmd, "timeout": 5, "async": True}]})

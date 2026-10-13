@@ -7,6 +7,8 @@ enum SidebarMode {
     case terminal
     case fileBrowser
     case editor
+    /// Project AI assistants (ghost-agentd): the list, each opening its window.
+    case assistant
 }
 
 /// A flattened row item for stable List identity.
@@ -235,6 +237,9 @@ struct SidebarView: View {
     /// Persistent file browser state across mode switches.
     @StateObject private var fileBrowserState = FileBrowserState()
 
+    /// ghost-agentd: pending decisions count on the assistant button.
+    @ObservedObject private var agentClient = AgentDaemonClient.shared
+
     /// AI quota accounts and their latest usage, shown above the menu.
     @ObservedObject private var quotaManager = AIQuotaManager.shared
 
@@ -309,6 +314,26 @@ struct SidebarView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.borderless)
+
+                Button(action: { sidebarMode = .assistant }) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 15))
+                        .overlay(alignment: .topTrailing) {
+                            if agentClient.totalPending > 0 {
+                                Text("\(agentClient.totalPending)")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 4)
+                                    .background(Capsule().fill(Color.orange))
+                                    .offset(x: 9, y: -6)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 28)
+                        .background(sidebarMode == .assistant ? Color.accentColor.opacity(0.25) : Color.clear)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .help(L("AI assistants"))
             }
             .background(Color(nsColor: .controlBackgroundColor))
             .padding(.top, 2)
@@ -410,6 +435,9 @@ struct SidebarView: View {
 
             case .editor:
                 EditorSidebarList(state: TextEditorManager.shared.state)
+
+            case .assistant:
+                AgentAssistantSidebarList()
             }
         }
         .frame(minWidth: 150, idealWidth: 200)

@@ -70,6 +70,12 @@ def make_handler(broker: Broker):
             if u.path == "/api/health":
                 return self._send(200, {"ok": True, "version": broker.version,
                                         "surfaces": broker.surfaces()})
+            if u.path == "/api/projects":
+                return self._send(200, {"projects": broker.list_projects()})
+            if u.path == "/api/decisions":
+                project = (q.get("project") or [""])[0] or None
+                limit = min(int((q.get("limit") or ["200"])[0]), 1000)
+                return self._send(200, {"decisions": broker.list_decisions(project, limit)})
             if u.path == "/api/state":
                 client = (q.get("client") or [""])[0]
                 if client in ("myghost", "web"):

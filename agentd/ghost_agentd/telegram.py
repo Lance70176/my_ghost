@@ -137,7 +137,9 @@ class Bot:
         lines = [head, f"<pre>{esc(p.summary[:900])}</pre>", esc(p.reason)]
         if p.level >= L3:
             lines.append("⚠️ 高風險：需要二次確認，不能設成一律允許")
-        if p.open:
+        if p.open and p.discussing:
+            lines.append("💬 討論中（不會逾時）· 回覆這則訊息可附上拒絕理由")
+        elif p.open:
             mins = max(0, int((p.deadline - time.time()) // 60))
             lines.append(f"⏳ {mins} 分鐘後逾時並拒絕 · 回覆這則訊息可附上拒絕理由")
         else:
@@ -161,6 +163,8 @@ class Bot:
             if p.always_pattern:
                 label = p.always_pattern if len(p.always_pattern) <= 40 else p.always_pattern[:39] + "…"
                 rows.append([b(f"♾ 此專案一律允許 {label}", "always")])
+        if not p.discussing:
+            rows.append([b("💬 討論（不逾時）", "discuss")])
         return {"inline_keyboard": rows}
 
     # --------------------------------------------------------------- outgoing

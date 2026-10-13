@@ -50,6 +50,8 @@ class Pending:
     always_added: str | None = None
     tg_message_id: int | None = None
     resolved_at: float = 0.0
+    # Taken into a discussion ("💬 討論"): never times out, still decidable.
+    discussing: bool = False
     event: threading.Event = field(default_factory=threading.Event, repr=False)
 
     @property
@@ -60,7 +62,7 @@ class Pending:
         d = {f.name: getattr(self, f.name) for f in fields(self) if f.name != "event"}
         d["level_name"] = LEVEL_NAMES[self.level]
         d["can_always"] = self.level == L2 and bool(self.always_pattern)
-        d["remaining"] = max(0, int(self.deadline - time.time()))
+        d["remaining"] = -1 if self.discussing else max(0, int(self.deadline - time.time()))
         return d
 
 
@@ -223,10 +225,14 @@ class Broker:
                 p = existing
                 self._touch_session(payload, project)
 
-        remaining = p.deadline - time.time()
-        if not p.event.wait(timeout=max(0.0, remaining)):
+        while not p.event.is_set():
+            # A request under discussion has no deadline; re-check hourly in
+            # case the discussion flag is ever cleared.
+            remaining = 3600.0 if p.discussing else p.deadline - time.time()
+            if p.event.wait(timeout=max(0.0, remaining)):
+                break
             with self.lock:
-                if p.open:
+                if p.open and not p.discussing and time.time() >= p.deadline:
                     p.deny_message = "逾時沒有人回應，預設拒絕。"
                     self._resolve(p, "expired", "timeout")
         return self.result(p)
@@ -239,7 +245,8 @@ class Broker:
         return {"behavior": "deny", "message": msg, "id": p.id}
 
     def decide(self, pid: str, action: str, by: str, message: str = "") -> tuple[bool, str]:
-        """action: allow | deny | always | confirm. Returns (ok, explanation)."""
+        """action: allow | deny | always | confirm | cancel | discuss.
+        Returns (ok, explanation)."""
         with self.lock:
             p = self.pending.get(pid)
             if p is None or not p.open:
@@ -266,6 +273,13 @@ class Broker:
                     return False, "L3 需要二次確認"
                 self._resolve(p, "allowed", by)
                 return True, "已同意"
+            if action == "discuss":
+                if p.discussing:
+                    return False, "已經在討論中"
+                p.discussing = True
+                self._bump()
+                self._emit("on_update", p)
+                return True, "已標成討論中，不會逾時；決定後再按同意或拒絕"
             if action == "cancel" and p.state == "confirming":
                 p.state = "pending"
                 self._bump()
@@ -279,9 +293,11 @@ class Broker:
         project = self.projects.get(p.project)
         _append(project.dir / "decisions.jsonl", {
             "ts": time.time(), "id": p.id, "project": p.project,
-            "session_id": p.session_id, "tab": p.tab_title, "tool": p.tool_name,
+            "session_id": p.session_id, "tmux_session": p.tmux_session,
+            "tab": p.tab_title, "tool": p.tool_name,
             "summary": p.summary, "level": LEVEL_NAMES[p.level], "reason": p.reason,
             "state": state, "by": by, "always_added": p.always_added,
+            "discussed": p.discussing, "deny_message": p.deny_message if state != "allowed" else "",
             "wait_seconds": round(time.time() - p.created, 1),
         })
         was_pending = self.pending.pop(p.id, None) is not None
@@ -300,6 +316,52 @@ class Broker:
     def list_pending(self) -> list[dict]:
         with self.lock:
             return [p.public() for p in sorted(self.pending.values(), key=lambda x: x.created)]
+
+    def list_decisions(self, project: str | None = None, limit: int = 200) -> list[dict]:
+        """Newest first, across one project or all of them."""
+        names = [project] if project else [p.name for p in self.projects.all()]
+        rows: list[dict] = []
+        for name in names:
+            f = self.projects.get(name).dir / "decisions.jsonl"
+            if self.projects.get(name).name != name or not f.exists():
+                continue
+            with open(f, encoding="utf-8") as fh:
+                lines = fh.readlines()[-limit:]
+            for line in lines:
+                try:
+                    rows.append(json.loads(line))
+                except ValueError:
+                    continue
+        with self.lock:
+            for r in rows:
+                # Records written before tmux_session was logged: recover it
+                # from the conversation's last known session.
+                if not r.get("tmux_session"):
+                    s = self.sessions.get(r.get("session_id", ""))
+                    r["tmux_session"] = s.tmux_session if s else ""
+        rows.sort(key=lambda r: -r.get("ts", 0))
+        return rows[:limit]
+
+    def list_projects(self) -> list[dict]:
+        self.projects.maybe_reload()
+        out = []
+        with self.lock:
+            for p in self.projects.all():
+                sessions = [s for s in self.sessions.values() if s.project == p.name and s.status != "ended"]
+                f = p.dir / "decisions.jsonl"
+                out.append({
+                    "name": p.name, "resident": p.resident, "paths": p.paths,
+                    "has_bot": bool(p.tg_token) or (p.name in self.tg_projects),
+                    "tg_ready": p.name in self.tg_projects,
+                    "pending": sum(1 for x in self.pending.values() if x.project == p.name),
+                    "sessions": len(sessions),
+                    "waiting": sum(1 for s in sessions if s.status == "waiting"),
+                    "running": sum(1 for s in sessions if s.status == "running"),
+                    "last_activity": max([s.updated for s in sessions] + [f.stat().st_mtime if f.exists() else 0]),
+                })
+        # Resident first, then the busiest.
+        out.sort(key=lambda r: (not r["resident"], r["name"] == "_default", -r["pending"], -r["last_activity"]))
+        return out
 
     def get(self, pid: str) -> Pending | None:
         with self.lock:

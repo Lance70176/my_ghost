@@ -23,9 +23,10 @@ import urllib.error
 import urllib.request
 
 URL = os.environ.get("GHOST_AGENTD_URL", "http://127.0.0.1:7788")
-# Slightly under the hook timeout in settings.json (1860s) so we always get
+# Slightly under the hook timeout in settings.json (604800s = 7 days, so a
+# request under discussion can wait that long) so we always get
 # to print an answer before Claude Code kills us.
-DEADLINE = float(os.environ.get("GHOST_HOOK_DEADLINE", "1840"))
+DEADLINE = float(os.environ.get("GHOST_HOOK_DEADLINE", "604780"))
 
 
 def tmux_info():

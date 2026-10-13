@@ -609,16 +609,19 @@
     refreshAgent();
   }
 
+  const leftText = (p) =>
+    p.discussing ? "💬 討論中，不會逾時" : Math.ceil(p.remaining / 60) + " 分鐘後逾時並拒絕";
+
   function renderDecisions() {
     const box = $("decisions");
     const pending = agent.pending || [];
     box.classList.toggle("hidden", pending.length === 0);
     // Don't rebuild under a finger: only re-render when the set changed.
-    const sig = pending.map((p) => p.id + p.state).join(",");
+    const sig = pending.map((p) => p.id + p.state + (p.discussing ? "d" : "")).join(",");
     if (box.dataset.sig === sig) {
       for (const p of pending) {
         const t = box.querySelector(`[data-left="${p.id}"]`);
-        if (t) t.textContent = Math.ceil(p.remaining / 60) + " 分鐘後逾時並拒絕";
+        if (t) t.textContent = leftText(p);
       }
       return;
     }
@@ -642,7 +645,7 @@
       const left = document.createElement("div");
       left.className = "dec-left";
       left.dataset.left = p.id;
-      left.textContent = Math.ceil(p.remaining / 60) + " 分鐘後逾時並拒絕";
+      left.textContent = leftText(p);
       const btns = document.createElement("div");
       btns.className = "dec-btns";
       const b = (label, cls, fn) => {
@@ -663,6 +666,7 @@
         const why = prompt("拒絕理由（會轉給對話）");
         if (why !== null) decide(p, "deny", why);
       });
+      if (!p.discussing) b("💬 討論（不逾時）", "", () => decide(p, "discuss"));
       if (p.can_always) b("此專案一律允許 " + p.always_pattern, "always", () => decide(p, "always"));
       card.append(head, cmd, why, left, btns);
       box.appendChild(card);
