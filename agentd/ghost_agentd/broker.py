@@ -1,0 +1,385 @@
+"""The decision broker: pending permission requests, session status, and the
+append-only logs.
+
+A hook thread calls `request_permission()` and blocks until someone decides
+(TG, MyGhost, the phone page) or the timeout denies it. Deciding from any
+surface resolves the one shared `Pending`, and every listener is told so the
+other surfaces can mark their card handled.
+"""
+
+from __future__ import annotations
+
+import json
+import secrets
+import threading
+import time
+from dataclasses import asdict, dataclass, field, fields
+from typing import Protocol
+
+from . import config as cfgmod
+from .config import Config, Project, Projects
+from .policy import L0, L1, L2, L3, LEVEL_NAMES, Grade, describe_request, grade
+
+
+class Listener(Protocol):
+    def on_pending(self, p: "Pending") -> None: ...
+    def on_update(self, p: "Pending") -> None: ...
+    def on_notice(self, project: Project, text: str) -> None: ...
+
+
+@dataclass
+class Pending:
+    id: str
+    key: str  # the hook's own request id; a retried hook re-joins its card
+    project: str
+    session_id: str
+    tmux_session: str
+    tab_title: str
+    cwd: str
+    tool_name: str
+    tool_input: dict
+    summary: str
+    level: int
+    reason: str
+    always_pattern: str | None
+    created: float
+    deadline: float
+    state: str = "pending"  # pending | confirming | allowed | denied | expired
+    decided_by: str = ""
+    deny_message: str = ""
+    always_added: str | None = None
+    tg_message_id: int | None = None
+    resolved_at: float = 0.0
+    event: threading.Event = field(default_factory=threading.Event, repr=False)
+
+    @property
+    def open(self) -> bool:
+        return self.state in ("pending", "confirming")
+
+    def public(self) -> dict:
+        d = {f.name: getattr(self, f.name) for f in fields(self) if f.name != "event"}
+        d["level_name"] = LEVEL_NAMES[self.level]
+        d["can_always"] = self.level == L2 and bool(self.always_pattern)
+        d["remaining"] = max(0, int(self.deadline - time.time()))
+        return d
+
+
+@dataclass
+class Session:
+    session_id: str
+    project: str
+    cwd: str
+    tmux_session: str = ""
+    tab_title: str = ""
+    status: str = "running"  # running | waiting | done | ended
+    updated: float = 0.0
+    last_message: str = ""
+
+
+def _append(path, record: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+class Broker:
+    def __init__(self, cfg: Config, projects: Projects):
+        self.cfg = cfg
+        self.projects = projects
+        self.lock = threading.RLock()
+        self.pending: dict[str, Pending] = {}
+        self.by_key: dict[str, Pending] = {}
+        self.sessions: dict[str, Session] = {}
+        self.listeners: list[Listener] = []
+        self.paused_until = 0.0
+        # Which surfaces can show a card right now: "tg" when configured, and
+        # MyGhost / the phone page while they keep polling /api/state.
+        self.client_seen: dict[str, float] = {}
+        self.tg_ready = False
+        # project -> list of (level, summary, tab) waiting for the digest
+        self._digest: dict[str, list[tuple[int, str, str]]] = {}
+        self._digest_due: dict[str, float] = {}
+        self.version = 0  # bumped on every change; clients long-poll on it
+        self._changed = threading.Condition(self.lock)
+        self._load_sessions()
+
+    # ------------------------------------------------------------------ util
+
+    def _bump(self) -> None:
+        self.version += 1
+        self._changed.notify_all()
+
+    def wait_change(self, since: int, timeout: float) -> int:
+        with self._changed:
+            if self.version == since:
+                self._changed.wait(timeout)
+            return self.version
+
+    def _emit(self, method: str, *args) -> None:
+        for l in list(self.listeners):
+            try:
+                getattr(l, method)(*args)
+            except Exception as e:  # a broken TG must never block a decision
+                log(f"listener {type(l).__name__}.{method} failed: {e!r}")
+
+    def _session_file(self):
+        return cfgmod.HOME / "sessions.json"
+
+    def _load_sessions(self) -> None:
+        try:
+            raw = json.loads(self._session_file().read_text())
+            for s in raw:
+                self.sessions[s["session_id"]] = Session(**s)
+        except (OSError, ValueError, TypeError):
+            pass
+
+    def _save_sessions(self) -> None:
+        cutoff = time.time() - 3 * 86400
+        live = [asdict(s) for s in self.sessions.values() if s.updated > cutoff]
+        f = self._session_file()
+        tmp = f.with_suffix(".tmp")
+        tmp.write_text(json.dumps(live, ensure_ascii=False))
+        tmp.replace(f)
+
+    def _touch_session(self, payload: dict, project: Project, status: str | None = None,
+                       message: str | None = None) -> Session:
+        sid = payload.get("session_id") or "unknown"
+        s = self.sessions.get(sid)
+        if s is None:
+            s = Session(session_id=sid, project=project.name, cwd=payload.get("cwd", ""))
+            self.sessions[sid] = s
+        s.project = project.name
+        s.cwd = payload.get("cwd") or s.cwd
+        s.tmux_session = payload.get("tmux_session") or s.tmux_session
+        s.tab_title = payload.get("tab_title") or s.tab_title
+        if status:
+            s.status = status
+        if message is not None:
+            s.last_message = message[:300]
+        s.updated = time.time()
+        self._save_sessions()
+        return s
+
+    def seen(self, client: str) -> None:
+        self.client_seen[client] = time.time()
+
+    def surfaces(self) -> list[str]:
+        now = time.time()
+        live = [c for c, t in self.client_seen.items() if now - t < 90]
+        return (["tg"] if self.tg_ready else []) + sorted(live)
+
+    # ------------------------------------------------------------ permission
+
+    def request_permission(self, payload: dict) -> dict:
+        """Called from the hook. Blocks until decided; returns
+        {"behavior": "allow"} or {"behavior": "deny", "message": ...}."""
+        self.projects.maybe_reload()
+        project = self.projects.match(payload.get("cwd", ""))
+        tool = payload.get("tool_name", "")
+        tool_input = payload.get("tool_input") or {}
+        key = str(payload.get("request_key") or secrets.token_hex(8))
+
+        with self.lock:
+            existing = self.by_key.get(key)
+            if existing is None and not self.surfaces():
+                # Nobody could see a card: let Claude Code ask in the terminal
+                # rather than hang until the timeout.
+                return {"behavior": "ask", "message": "no decision surface online"}
+            if existing is None:
+                g: Grade = grade(tool, tool_input, payload.get("cwd", ""), project.policy)
+                summary = describe_request(tool, tool_input)
+                now = time.time()
+                p = Pending(
+                    id=secrets.token_hex(4), key=key, project=project.name,
+                    session_id=payload.get("session_id", ""),
+                    tmux_session=payload.get("tmux_session", ""),
+                    tab_title=payload.get("tab_title", ""),
+                    cwd=payload.get("cwd", ""), tool_name=tool,
+                    tool_input=tool_input, summary=summary, level=g.level,
+                    reason=g.reason, always_pattern=g.always_pattern,
+                    created=now, deadline=now + self.cfg.decision_timeout,
+                )
+                self.by_key[key] = p
+                _append(project.dir / "events.jsonl", {
+                    "ts": now, "type": "permission_request", "id": p.id,
+                    "session_id": p.session_id, "tab": p.tab_title, "tool": tool,
+                    "summary": summary, "level": LEVEL_NAMES[g.level], "reason": g.reason,
+                })
+                if g.level <= L1:
+                    self._resolve(p, "allowed", f"rule:{LEVEL_NAMES[g.level]}")
+                    self._queue_digest(project, g.level, p)
+                else:
+                    self.pending[p.id] = p
+                    self._touch_session(payload, project, status="waiting",
+                                        message=f"等待授權：{summary}")
+                    self._bump()
+                    self._emit("on_pending", p)
+            else:
+                p = existing
+                self._touch_session(payload, project)
+
+        remaining = p.deadline - time.time()
+        if not p.event.wait(timeout=max(0.0, remaining)):
+            with self.lock:
+                if p.open:
+                    p.deny_message = "逾時沒有人回應，預設拒絕。"
+                    self._resolve(p, "expired", "timeout")
+        return self.result(p)
+
+    @staticmethod
+    def result(p: Pending) -> dict:
+        if p.state == "allowed":
+            return {"behavior": "allow", "id": p.id}
+        msg = p.deny_message or "使用者拒絕了這個操作。"
+        return {"behavior": "deny", "message": msg, "id": p.id}
+
+    def decide(self, pid: str, action: str, by: str, message: str = "") -> tuple[bool, str]:
+        """action: allow | deny | always | confirm. Returns (ok, explanation)."""
+        with self.lock:
+            p = self.pending.get(pid)
+            if p is None or not p.open:
+                return False, "這個請求已經處理過了"
+            if action == "deny":
+                p.deny_message = (f"使用者拒絕（{by}）：{message}" if message
+                                  else f"使用者在 {by} 拒絕了這個操作。")
+                self._resolve(p, "denied", by)
+                return True, "已拒絕"
+            if action == "always":
+                if p.level != L2 or not p.always_pattern:
+                    return False, "這個等級不能設成一律允許"
+                cfgmod.add_always_allow(self.projects.get(p.project), p.always_pattern)
+                p.always_added = p.always_pattern
+                self._resolve(p, "allowed", by)
+                return True, f"已同意，之後一律允許 {p.always_pattern}"
+            if action == "allow" and p.level >= L3 and p.state == "pending":
+                p.state = "confirming"
+                self._bump()
+                self._emit("on_update", p)
+                return True, "L3：請再確認一次"
+            if action in ("allow", "confirm"):
+                if p.level >= L3 and p.state != "confirming" and action != "confirm":
+                    return False, "L3 需要二次確認"
+                self._resolve(p, "allowed", by)
+                return True, "已同意"
+            if action == "cancel" and p.state == "confirming":
+                p.state = "pending"
+                self._bump()
+                self._emit("on_update", p)
+                return True, "已取消確認"
+            return False, f"不認得的動作 {action}"
+
+    def _resolve(self, p: Pending, state: str, by: str) -> None:
+        p.state = state
+        p.decided_by = by
+        project = self.projects.get(p.project)
+        _append(project.dir / "decisions.jsonl", {
+            "ts": time.time(), "id": p.id, "project": p.project,
+            "session_id": p.session_id, "tab": p.tab_title, "tool": p.tool_name,
+            "summary": p.summary, "level": LEVEL_NAMES[p.level], "reason": p.reason,
+            "state": state, "by": by, "always_added": p.always_added,
+            "wait_seconds": round(time.time() - p.created, 1),
+        })
+        was_pending = self.pending.pop(p.id, None) is not None
+        p.event.set()
+        if was_pending:
+            s = self.sessions.get(p.session_id)
+            if s is not None and not any(o.session_id == s.session_id for o in self.pending.values()):
+                s.status = "running"
+                s.last_message = ("已同意：" if state == "allowed" else "已拒絕：") + p.summary[:200]
+                s.updated = time.time()
+                self._save_sessions()
+            self._bump()
+            self._emit("on_update", p)
+        p.resolved_at = time.time()
+
+    def list_pending(self) -> list[dict]:
+        with self.lock:
+            return [p.public() for p in sorted(self.pending.values(), key=lambda x: x.created)]
+
+    def get(self, pid: str) -> Pending | None:
+        with self.lock:
+            return self.pending.get(pid)
+
+    # ---------------------------------------------------------------- events
+
+    def hook_event(self, payload: dict) -> None:
+        """Notification / Stop / UserPromptSubmit / SessionEnd from the hook."""
+        self.projects.maybe_reload()
+        project = self.projects.match(payload.get("cwd", ""))
+        ev = payload.get("hook_event_name", "")
+        with self.lock:
+            _append(project.dir / "events.jsonl", {
+                "ts": time.time(), "type": ev, "session_id": payload.get("session_id"),
+                "tab": payload.get("tab_title"),
+                "notification_type": payload.get("notification_type"),
+                "message": (payload.get("message") or payload.get("last_assistant_message") or "")[:500],
+            })
+            has_pending = any(p.session_id == payload.get("session_id") for p in self.pending.values())
+            if ev == "UserPromptSubmit":
+                self._touch_session(payload, project, "running", "")
+            elif ev == "Stop":
+                self._touch_session(payload, project, "waiting" if has_pending else "done",
+                                    payload.get("last_assistant_message") or "")
+            elif ev == "SessionEnd":
+                self._touch_session(payload, project, "ended")
+            elif ev == "Notification":
+                nt = payload.get("notification_type", "")
+                if nt == "idle_prompt":
+                    s = self._touch_session(payload, project, "waiting" if has_pending else "done")
+                    if self.cfg.notify_idle:
+                        self._emit("on_notice", project,
+                                   f"💤 {s.tab_title or s.session_id[:8]} 在等你輸入")
+                elif nt in ("permission_prompt", "elicitation_dialog", "agent_needs_input"):
+                    # A prompt the hook didn't take (daemon was down, or a
+                    # dialog type the hook can't answer): the user must act.
+                    self._touch_session(payload, project, "waiting", payload.get("message", ""))
+                else:
+                    self._touch_session(payload, project)
+            self._bump()
+
+    def list_sessions(self) -> list[dict]:
+        with self.lock:
+            return [asdict(s) for s in sorted(self.sessions.values(), key=lambda s: -s.updated)
+                    if s.status != "ended"]
+
+    # ---------------------------------------------------------------- digest
+
+    def _queue_digest(self, project: Project, level: int, p: Pending) -> None:
+        if level == L0 and not self.cfg.digest_l0:
+            return
+        self._digest.setdefault(project.name, []).append((level, p.summary, p.tab_title))
+        self._digest_due.setdefault(project.name, time.time() + self.cfg.digest_seconds)
+
+    def flush_digests(self, force: bool = False) -> None:
+        with self.lock:
+            now = time.time()
+            # A resolved key stays ten minutes so a hook retrying after a lost
+            # response gets the same answer instead of a fresh card.
+            for k in [k for k, p in self.by_key.items() if p.resolved_at and now - p.resolved_at > 600]:
+                del self.by_key[k]
+            due = [n for n, t in self._digest_due.items() if force or t <= now]
+            batches = {n: self._digest.pop(n, []) for n in due}
+            for n in due:
+                self._digest_due.pop(n, None)
+        for name, items in batches.items():
+            if not items:
+                continue
+            l1 = [i for i in items if i[0] == L1]
+            l0 = [i for i in items if i[0] == L0]
+            lines = []
+            if l1:
+                lines.append(f"L1 已放行 {len(l1)} 筆（做完通知）：")
+                lines += [f"・{tab + '：' if tab else ''}{s[:120]}" for _, s, tab in l1[:10]]
+            if l0:
+                kinds = sorted({s.split('(')[0].split(' ')[0] for _, s, _ in l0})
+                lines.append(f"L0 已自動放行 {len(l0)} 筆（{'、'.join(kinds[:6])}）")
+            self._emit("on_notice", self.projects.get(name), "\n".join(lines))
+
+
+_log_lock = threading.Lock()
+
+
+def log(msg: str) -> None:
+    line = time.strftime("%Y-%m-%d %H:%M:%S ") + msg
+    with _log_lock:
+        print(line, flush=True)
