@@ -182,7 +182,11 @@ class Broker:
 
         with self.lock:
             existing = self.by_key.get(key)
-            if existing is None and not self.surfaces(project.name):
+            # Hold only when TG or MyGhost can show the card. The phone page is
+            # the fallback for a card already held, not a reason to hold one:
+            # a browser tab left open would otherwise keep every prompt out of
+            # the terminal.
+            if existing is None and not {"tg", "myghost"} & set(self.surfaces(project.name)):
                 # Nobody could see a card: let Claude Code ask in the terminal
                 # rather than hang until the timeout.
                 return {"behavior": "ask", "message": "no decision surface online"}

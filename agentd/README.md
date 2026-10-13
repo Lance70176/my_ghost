@@ -50,14 +50,17 @@ The daemon runs from `~/.myghost/agentd` under launchd (`com.myghost.agentd`,
 log `~/.myghost/agentd.log`); restart after editing config with
 `launchctl kickstart -k gui/$(id -u)/com.myghost.agentd`.
 
-**Safe by default:** when no surface can show a card — no bot configured for
-the project, MyGhost not running, phone page closed — the daemon declines and
-the session asks in the terminal as usual. If the daemon is down the hook
+**Safe by default:** a request is held only while the project's bot or
+MyGhost (polling) can show the card; otherwise the daemon declines and the
+session asks in the terminal as usual. The phone page shows held cards but is
+never on its own a reason to hold one, so a forgotten browser tab can't keep
+prompts out of the terminal. If the daemon is down the hook
 prints nothing, with the same result. Set `GHOST_AGENTD=off` in a session's
 environment to bypass it entirely.
 
-沒有任何地方能顯示決策卡時（專案沒設 bot、MyGhost 沒開、手機網頁沒開），服務
-會直接退回，對話照常在終端機詢問，不會卡住等 30 分鐘。
+只有在專案的 bot 或 MyGhost 能顯示卡片時才攔下請求；否則服務直接退回，對話照常
+在終端機詢問，不會卡住等 30 分鐘。手機網頁會顯示已攔下的卡，但不會單獨成為攔截的
+理由。
 
 ## Files · 檔案
 
