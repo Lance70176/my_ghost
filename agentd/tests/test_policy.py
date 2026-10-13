@@ -68,3 +68,19 @@ def test_mcp_tools():
     assert grade("mcp__claude_ai_ClickUp__clickup_get_task", {}, "", POL).level == L0
     assert grade("mcp__claude_ai_ClickUp__clickup_update_task", {}, "", POL).level == L2
     assert grade("mcp__claude_ai_Gmail__trash_thread", {}, "", POL).level == L2
+
+
+def test_redact_secrets():
+    from ghost_agentd.policy import describe_request
+    cases = {
+        "curl -H 'Authorization: pk_113588694_A6KAUUI94M5Z4L4ZGIZZWV8SYK0UULUI' x": "pk_113588694_A6K",
+        "mysql -h db -uroot -pS3cretPass -e 'select 1'": "S3cretPass",
+        "curl -H 'Authorization: Bearer abcdefghijklmnop1234' u": "abcdefghijklmnop1234",
+        "export TOKEN=abcd1234efgh; run": "abcd1234efgh",
+        "git clone https://bob:hunter2pass@github.com/x/y": "hunter2pass",
+        "curl https://api.telegram.org/bot123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw/getMe": "AAHdqTcv",
+    }
+    for cmd, secret in cases.items():
+        out = describe_request("Bash", {"command": cmd})
+        assert secret not in out, out
+    assert describe_request("Bash", {"command": "git status"}) == "git status"

@@ -281,8 +281,35 @@ def grade(tool_name: str, tool_input: dict, cwd: str, pol: ProjectPolicy) -> Gra
     return Grade(L2, f"工具 {tool_name}", always_pattern=tool_name)
 
 
+# Secrets that turn up inside commands. The summary is shown on TG, MyGhost
+# and the phone page and kept in decisions.jsonl, so it never carries them.
+SECRET_PATTERNS = [
+    (re.compile(r"\b(pk_[0-9]+_[A-Z0-9]{16,})"), "pk_***"),  # ClickUp
+    (re.compile(r"\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"), "gh_***"),
+    (re.compile(r"\b(sk-[A-Za-z0-9_-]{16,})"), "sk-***"),
+    (re.compile(r"\b(xox[abprs]-[A-Za-z0-9-]{10,})"), "xox-***"),
+    (re.compile(r"\b(AKIA[0-9A-Z]{16})"), "AKIA***"),
+    (re.compile(r"(?<![0-9])\d{8,10}:[A-Za-z0-9_-]{30,}"), "<tg-bot-token>"),
+    (re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{12,}"), r"\1***"),
+    (re.compile(r"(?i)\b((?:api[_-]?key|token|secret|passw(?:or)?d|pwd)[\"']?\s*[=:]\s*[\"']?)[^\s\"'&]+"), r"\1***"),
+    (re.compile(r"(\b(?:mysql|mysqldump|mariadb)\b[^|;&]*?\s-p)(?!\s)\S+"), r"\1***"),
+    (re.compile(r"(?i)(://[^:/\s@]+:)[^@\s]+@"), r"\1***@"),
+]
+
+
+def redact(text: str) -> str:
+    for pattern, repl in SECRET_PATTERNS:
+        text = pattern.sub(repl, text)
+    return text
+
+
 def describe_request(tool_name: str, tool_input: dict) -> str:
-    """One line a phone can show: the command, the file, or the tool + args."""
+    """One line a phone can show: the command, the file, or the tool + args,
+    with secrets masked."""
+    return redact(_describe(tool_name, tool_input))
+
+
+def _describe(tool_name: str, tool_input: dict) -> str:
     if tool_name == "Bash":
         return str(tool_input.get("command", ""))
     for k in ("file_path", "notebook_path", "path", "url", "query"):
