@@ -133,8 +133,36 @@ final class AgentDaemonClient: ObservableObject {
 
     private init() {}
 
+    /// Keeps App Nap off while we poll. Napped, a window left hidden or a
+    /// screen left locked overnight stopped polling altogether, so the daemon
+    /// stopped counting MyGhost as a place to show cards.
+    private var activity: NSObjectProtocol?
+    private var lastSuccess = Date()
+    private var watchdog: Timer?
+
     func start() {
         guard task == nil else { return }
+        activity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiatedAllowingIdleSystemSleep],
+            reason: "Waiting for ghost-agentd permission requests")
+        startLoop()
+        // Belt and braces: a loop that hasn't succeeded for a minute while
+        // the daemon is up gets restarted.
+        let timer = Timer(timeInterval: 30, repeats: true) { _ in
+            Task { @MainActor in
+                let client = AgentDaemonClient.shared
+                guard Date().timeIntervalSince(client.lastSuccess) > 60 else { return }
+                client.task?.cancel()
+                client.startLoop()
+            }
+        }
+        timer.tolerance = 5
+        RunLoop.main.add(timer, forMode: .common)
+        watchdog = timer
+    }
+
+    private func startLoop() {
+        lastSuccess = Date()
         task = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -156,6 +184,7 @@ final class AgentDaemonClient: ObservableObject {
             guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
             let state = try Self.decoder.decode(AgentState.self, from: data)
             apply(state)
+            lastSuccess = Date()
             return true
         } catch {
             if online || !pending.isEmpty || !statusByTmux.isEmpty {
