@@ -4,7 +4,7 @@
     ├─ config.yaml                 # telegram token/chat, http port, timeouts
     ├─ agentd.log
     └─ projects/<name>/
-       ├─ project.yaml             # paths, telegram topic, policy overrides
+       ├─ project.yaml             # paths, own TG bot + group, policy overrides
        ├─ always_allow.json        # rules added from "此專案一律允許"
        ├─ events.jsonl             # hook events, append only
        └─ decisions.jsonl          # every decision, append only (audit)
@@ -30,11 +30,12 @@ DEFAULT_PROJECT = "_default"
 
 @dataclass
 class TelegramConfig:
+    # Fallback bot for requests outside every project (optional).
     token: str = ""
     chat_id: int | None = None
-    # Only these TG users may press buttons. Empty = anyone in chat_id, which
-    # is only safe for a private chat; config check warns about it.
-    allowed_user_ids: list[int] = field(default_factory=list)
+    # The commander's personal TG accounts: the only ones whose button
+    # presses and commands any bot obeys.
+    commander_user_ids: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -53,7 +54,11 @@ class Config:
 class Project:
     name: str
     paths: list[str]
-    topic_id: int | None = None
+    # The project's own assistant bot and group.
+    tg_token: str = ""
+    tg_chat_id: int | None = None
+    # Resident assistant (kept running) vs woken on events (P2).
+    resident: bool = False
     policy: ProjectPolicy = field(default_factory=ProjectPolicy)
 
     @property
@@ -72,7 +77,8 @@ def load_config() -> Config:
         telegram=TelegramConfig(
             token=str(token),
             chat_id=int(chat) if chat not in (None, "") else None,
-            allowed_user_ids=[int(u) for u in tg.get("allowed_user_ids") or []],
+            commander_user_ids=[int(u) for u in
+                                (tg.get("commander_user_ids") or tg.get("allowed_user_ids") or [])],
         ),
         host=raw.get("host", "127.0.0.1"),
         port=int(raw.get("port", 7788)),
@@ -105,11 +111,14 @@ class Projects:
                 continue
             mtimes[str(yml)] = yml.stat().st_mtime
             pol = raw.get("policy") or {}
+            tg = raw.get("telegram") or {}
             paths = [os.path.expanduser(p) for p in raw.get("paths") or []]
             found[name] = Project(
                 name=raw.get("name", name),
                 paths=paths,
-                topic_id=raw.get("telegram_topic"),
+                tg_token=str(tg.get("token") or ""),
+                tg_chat_id=int(tg["chat_id"]) if tg.get("chat_id") not in (None, "") else None,
+                resident=bool(raw.get("resident", False)),
                 policy=ProjectPolicy(
                     root_paths=paths,
                     allow=list(pol.get("allow") or []),

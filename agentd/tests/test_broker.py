@@ -19,7 +19,7 @@ def home(tmp_path, monkeypatch):
     proj = tmp_path / "projects" / "fq"
     proj.mkdir(parents=True)
     (proj / "project.yaml").write_text(
-        f"paths: ['{tmp_path}/code/fq']\ntelegram_topic: 12\npolicy:\n  l1: ['walle 發 *-test']\n")
+        f"paths: ['{tmp_path}/code/fq']\ntelegram: {{token: '', chat_id: -100123}}\nresident: true\npolicy:\n  l1: ['walle 發 *-test']\n")
     (tmp_path / "code" / "fq" / "sub").mkdir(parents=True)
     return tmp_path
 
@@ -30,7 +30,7 @@ def broker(home):
     from ghost_agentd.config import Config, Projects
     cfg = Config(decision_timeout=5, digest_seconds=0)
     b = Broker(cfg, Projects())
-    b.tg_ready = True
+    b.tg_projects = {"fq", "_default"}
     b.events = []
 
     class Rec:

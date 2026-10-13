@@ -1,5 +1,11 @@
 """Telegram gateway: decision cards out, button presses in.
 
+Each project has its own assistant bot and its own group (project.yaml
+`telegram: {token, chat_id}`); one `Bot` runs per distinct token and serves
+the projects configured with it. Requests outside every project use the
+fallback bot in config.yaml. Only the commander accounts
+(`telegram.commander_user_ids`) can press buttons or give commands.
+
 Plain Bot API over urllib — no third-party client, so the daemon has a single
 dependency (PyYAML). Outgoing calls run on a worker thread because the broker
 emits while holding its lock; a slow or dead Telegram must never stall a hook.
@@ -36,19 +42,42 @@ def esc(s: str) -> str:
     return html.escape(str(s), quote=False)
 
 
-class Telegram:
-    def __init__(self, cfg: Config, broker: Broker):
+def build_bots(cfg: Config, broker: Broker) -> list["Bot"]:
+    """One Bot per distinct token, routing each project to its own group."""
+    bots: dict[str, Bot] = {}
+    for p in broker.projects.all():
+        token, chat = p.tg_token, p.tg_chat_id
+        if p.name == DEFAULT_PROJECT or not token:
+            token, chat = cfg.telegram.token, cfg.telegram.chat_id
+        if not token:
+            continue
+        bot = bots.setdefault(token, Bot(cfg, broker, token))
+        bot.routes[p.name] = chat
+    return list(bots.values())
+
+
+class Bot:
+    def __init__(self, cfg: Config, broker: Broker, token: str):
         self.cfg = cfg
         self.broker = broker
+        self.token = token
+        # project name -> group chat id (None until set up with /chatid)
+        self.routes: dict[str, int | None] = {}
         self.jobs: queue.Queue = queue.Queue()
         self.offset = 0
-        self.enabled = bool(cfg.telegram.token)
         self.me: dict = {}
+
+    def chat_for(self, project: str) -> int | None:
+        return self.routes.get(project)
+
+    @property
+    def name(self) -> str:
+        return "@" + self.me.get("username", "?")
 
     # --------------------------------------------------------------- plumbing
 
     def call(self, method: str, timeout: float = 15, **params) -> dict:
-        url = API.format(token=self.cfg.telegram.token, method=method)
+        url = API.format(token=self.token, method=method)
         body = json.dumps({k: v for k, v in params.items() if v is not None}).encode()
         req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
         try:
@@ -61,17 +90,17 @@ class Telegram:
         return data["result"]
 
     def start(self) -> None:
-        if not self.enabled:
-            log("telegram: no token configured — TG disabled (cards only in MyGhost/web)")
-            return
         try:
             self.me = self.call("getMe")
-            log(f"telegram: logged in as @{self.me.get('username')}")
         except Exception as e:
             log(f"telegram: getMe failed: {e!r}")
-        if self.cfg.telegram.chat_id is None:
-            log("telegram: chat_id not set — send /chatid to the bot to find it")
-        self.broker.tg_ready = self.cfg.telegram.chat_id is not None
+        for project, chat in self.routes.items():
+            if chat is None:
+                log(f"telegram: {self.name} has no chat_id for {project} — "
+                    "add the bot to the project group and send /chatid there")
+            else:
+                self.broker.tg_projects.add(project)
+        log(f"telegram: {self.name} serving {', '.join(self.routes)}")
         threading.Thread(target=self._worker, name="tg-out", daemon=True).start()
         threading.Thread(target=self._poll, name="tg-in", daemon=True).start()
 
@@ -86,21 +115,18 @@ class Telegram:
                     log(f"telegram: {fn.__name__} failed ({attempt + 1}/3): {e!r}")
                     time.sleep(2 * (attempt + 1))
 
-    def _thread(self, project: Project) -> int | None:
-        return project.topic_id if project.name != DEFAULT_PROJECT else None
-
     # ------------------------------------------------------ broker listener
 
     def on_pending(self, p: Pending) -> None:
-        if self.enabled and self.cfg.telegram.chat_id is not None:
+        if self.chat_for(p.project) is not None:
             self.jobs.put((self._send_card, (p,)))
 
     def on_update(self, p: Pending) -> None:
-        if self.enabled and self.cfg.telegram.chat_id is not None:
+        if self.chat_for(p.project) is not None:
             self.jobs.put((self._edit_card, (p,)))
 
     def on_notice(self, project: Project, text: str) -> None:
-        if self.enabled and self.cfg.telegram.chat_id is not None:
+        if self.chat_for(project.name) is not None:
             self.jobs.put((self._send_notice, (project, text)))
 
     # ---------------------------------------------------------------- render
@@ -142,9 +168,7 @@ class Telegram:
     def _send_card(self, p: Pending) -> None:
         if not p.open:
             return
-        project = self.broker.projects.get(p.project)
-        msg = self.call("sendMessage", chat_id=self.cfg.telegram.chat_id,
-                        message_thread_id=self._thread(project), text=self.card_text(p),
+        msg = self.call("sendMessage", chat_id=self.chat_for(p.project), text=self.card_text(p),
                         parse_mode="HTML", reply_markup=self.keyboard(p))
         p.tg_message_id = msg["message_id"]
         if not p.open:  # decided elsewhere while we were sending
@@ -154,7 +178,7 @@ class Telegram:
         if p.tg_message_id is None:
             return
         try:
-            self.call("editMessageText", chat_id=self.cfg.telegram.chat_id,
+            self.call("editMessageText", chat_id=self.chat_for(p.project),
                       message_id=p.tg_message_id, text=self.card_text(p), parse_mode="HTML",
                       reply_markup=self.keyboard(p) or {"inline_keyboard": []})
         except RuntimeError as e:
@@ -162,18 +186,22 @@ class Telegram:
                 raise
 
     def _send_notice(self, project: Project, text: str) -> None:
-        self.call("sendMessage", chat_id=self.cfg.telegram.chat_id,
-                  message_thread_id=self._thread(project),
+        self.call("sendMessage", chat_id=self.chat_for(project.name),
                   text=f"👻 {project.name}\n{text}", disable_notification=True)
 
     # --------------------------------------------------------------- incoming
 
     def _authorized(self, user: dict, chat: dict) -> bool:
-        allowed = self.cfg.telegram.allowed_user_ids
-        if allowed:
-            return user.get("id") in allowed
-        # No allow-list: only a private chat with the configured chat id.
-        return chat.get("type") == "private" and chat.get("id") == self.cfg.telegram.chat_id
+        # Only the commander's own accounts, and only in a chat this bot serves
+        # (its project groups, or a private chat with the commander).
+        if user.get("id") not in self.cfg.telegram.commander_user_ids:
+            return False
+        return chat.get("type") == "private" or chat.get("id") in self.routes.values()
+
+    def _projects_in(self, chat: dict) -> list[str]:
+        if chat.get("type") == "private":
+            return list(self.routes)
+        return [n for n, c in self.routes.items() if c == chat.get("id")]
 
     def _poll(self) -> None:
         while True:
@@ -200,6 +228,10 @@ class Telegram:
             parts = (cq.get("data") or "").split(":")
             if len(parts) != 3 or parts[0] != "g":
                 return
+            p = self.broker.get(parts[1])
+            if p is not None and p.project not in self._projects_in(chat):
+                self.call("answerCallbackQuery", callback_query_id=cq["id"], text="不屬於這個群組的專案")
+                return
             ok, why = self.broker.decide(parts[1], parts[2], "tg")
             self.call("answerCallbackQuery", callback_query_id=cq["id"], text=why)
             return
@@ -208,34 +240,35 @@ class Telegram:
         chat, user, text = m.get("chat") or {}, m.get("from") or {}, (m.get("text") or "").strip()
         if text.startswith("/chatid"):
             # Setup helper: works before chat_id is configured.
-            self.call("sendMessage", chat_id=chat["id"], message_thread_id=m.get("message_thread_id"),
-                      text=f"chat_id: {chat['id']}\nthread_id: {m.get('message_thread_id')}\n"
-                           f"user_id: {user.get('id')}")
+            self.call("sendMessage", chat_id=chat["id"],
+                      text=f"chat_id: {chat['id']}\nuser_id: {user.get('id')}\n"
+                           "（chat_id 填到 project.yaml 的 telegram.chat_id；"
+                           "user_id 填到 config.yaml 的 commander_user_ids）")
             return
         if not self._authorized(user, chat):
             return
+        mine = self._projects_in(chat)
         reply = m.get("reply_to_message") or {}
         if reply.get("message_id") and text and not text.startswith("/"):
             for p in list(self.broker.pending.values()):
-                if p.tg_message_id == reply["message_id"]:
+                if p.tg_message_id == reply["message_id"] and p.project in mine:
                     ok, why = self.broker.decide(p.id, "deny", "tg", message=text)
                     self.call("sendMessage", chat_id=chat["id"],
-                              message_thread_id=m.get("message_thread_id"),
                               reply_to_message_id=m["message_id"],
                               text=("已拒絕，並把理由轉給對話" if ok else why))
                     return
         if text.startswith("/pending"):
-            pend = list(self.broker.pending.values())
+            pend = [p for p in self.broker.pending.values() if p.project in mine]
             if not pend:
                 self.call("sendMessage", chat_id=chat["id"],
-                          message_thread_id=m.get("message_thread_id"), text="目前沒有待決策的請求 👍")
+                          text="目前沒有待決策的請求 👍")
             for p in pend:  # re-send so buttons are at the bottom of the chat
                 self.jobs.put((self._send_card, (p,)))
             return
         if text.startswith("/status"):
-            rows = self.broker.list_sessions()[:20]
+            rows = [s for s in self.broker.list_sessions() if s["project"] in mine][:20]
             icon = {"running": "⚙️", "waiting": "🙋", "done": "✅"}
             lines = [f"{icon.get(s['status'], '·')} {s['project']} · {s['tab_title'] or s['session_id'][:8]}"
                      for s in rows] or ["沒有進行中的對話"]
-            self.call("sendMessage", chat_id=chat["id"], message_thread_id=m.get("message_thread_id"),
+            self.call("sendMessage", chat_id=chat["id"],
                       text="\n".join(lines))

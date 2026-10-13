@@ -95,7 +95,7 @@ class Broker:
         # Which surfaces can show a card right now: "tg" when configured, and
         # MyGhost / the phone page while they keep polling /api/state.
         self.client_seen: dict[str, float] = {}
-        self.tg_ready = False
+        self.tg_projects: set[str] = set()  # projects whose bot has a group
         # project -> list of (level, summary, tab) waiting for the digest
         self._digest: dict[str, list[tuple[int, str, str]]] = {}
         self._digest_due: dict[str, float] = {}
@@ -163,10 +163,11 @@ class Broker:
     def seen(self, client: str) -> None:
         self.client_seen[client] = time.time()
 
-    def surfaces(self) -> list[str]:
+    def surfaces(self, project: str | None = None) -> list[str]:
         now = time.time()
         live = [c for c, t in self.client_seen.items() if now - t < 90]
-        return (["tg"] if self.tg_ready else []) + sorted(live)
+        tg = project in self.tg_projects if project else bool(self.tg_projects)
+        return (["tg"] if tg else []) + sorted(live)
 
     # ------------------------------------------------------------ permission
 
@@ -181,7 +182,7 @@ class Broker:
 
         with self.lock:
             existing = self.by_key.get(key)
-            if existing is None and not self.surfaces():
+            if existing is None and not self.surfaces(project.name):
                 # Nobody could see a card: let Claude Code ask in the terminal
                 # rather than hang until the timeout.
                 return {"behavior": "ask", "message": "no decision surface online"}

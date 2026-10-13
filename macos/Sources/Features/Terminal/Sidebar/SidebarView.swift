@@ -800,6 +800,8 @@ private struct SidebarStandaloneTabRow: View {
 
             Spacer()
 
+            AgentStatusBadge(sessionName: tab.screenSessionName)
+
             if tab.bell {
                 Image(systemName: "bell.fill")
                     .foregroundColor(.yellow)
@@ -1020,6 +1022,8 @@ private struct SidebarGroupChildRow: View {
                 .truncationMode(.tail)
 
             Spacer()
+
+            AgentStatusBadge(sessionName: child.screenSessionName)
 
             if isActiveChild {
                 Image(systemName: "circle.fill")

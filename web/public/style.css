@@ -243,3 +243,28 @@ body {
   /* Start the terminal below the header rather than under it. */
   #app.nav-term #terminal { top: calc(50px + env(safe-area-inset-top)); }
 }
+
+/* ghost-agentd decisions + session status */
+#decisions { padding: 8px 10px; border-bottom: 1px solid #2c2f3b; max-height: 55vh; overflow-y: auto; }
+.dec-head { font-size: 12px; font-weight: 600; margin-bottom: 6px; color: #e0c04e; }
+.dec-card { border: 1px solid #3a3e50; border-left: 3px solid #e09a4e; border-radius: 6px;
+  padding: 7px 8px; margin-bottom: 8px; background: #1d202b; }
+.dec-card.l3 { border-left-color: #e06c75; }
+.dec-meta { font-size: 11px; color: #8a8fa3; display: flex; gap: 6px; }
+.dec-meta .lv { color: #e09a4e; font-weight: 700; }
+.dec-card.l3 .dec-meta .lv { color: #e06c75; }
+.dec-cmd { margin: 5px 0; padding: 5px 6px; background: #141620; border-radius: 4px; font-size: 11px;
+  white-space: pre-wrap; word-break: break-all; max-height: 8em; overflow-y: auto; }
+.dec-why { font-size: 11px; }
+.dec-left { font-size: 10px; color: #8a8fa3; margin: 3px 0 5px; }
+.dec-btns { display: flex; flex-wrap: wrap; gap: 5px; }
+.dec-btns button { font: inherit; font-size: 12px; padding: 6px 10px; border-radius: 5px;
+  border: 1px solid #3a3e50; background: #262a37; color: #d7dae0; cursor: pointer; min-height: 32px; }
+.dec-btns button.ok { background: #2f5a35; border-color: #3f7a47; }
+.dec-btns button.no { background: #4a2a2e; border-color: #6a3a40; }
+.dec-btns button.always { flex-basis: 100%; font-size: 11px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; text-align: left; }
+.tab .status { font-size: 9px; padding: 1px 5px; border-radius: 8px; flex: none; }
+.tab .status.waiting { background: #5a4520; color: #f0c060; }
+.tab .status.running { background: #1f3a5a; color: #7ab4f0; }
+.tab .status.done { color: #78c87c; }

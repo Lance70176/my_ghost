@@ -9,6 +9,26 @@ enum L10nStrings {
     }
 
     static let table: [String: [AppLanguage: String]] = [
+        // MARK: ghost-agentd decisions
+        "Needs you": t("等你", "等你", "要対応"),
+        "Running": t("執行中", "执行中", "実行中"),
+        "Claude is waiting for your decision or input": t("Claude 在等你決定或輸入", "Claude 在等你决定或输入", "Claude があなたの判断か入力を待っています"),
+        "Claude finished this turn": t("Claude 這一輪做完了", "Claude 这一轮做完了", "Claude はこのターンを完了しました"),
+        "%@ · %@ needs permission": t("%@ · %@ 要求授權", "%@ · %@ 请求授权", "%@ · %@ が許可を求めています"),
+        "Show this tab": t("前往這個分頁", "前往这个标签页", "このタブを表示"),
+        "· needs a second confirmation": t("· 需要二次確認", "· 需要二次确认", "· 二重確認が必要"),
+        "Denied automatically in %d min": t("%d 分鐘後逾時並拒絕", "%d 分钟后超时并拒绝", "%d 分後に自動で拒否"),
+        "Reason (sent to the conversation)": t("理由（會轉給對話）", "理由（会转给对话）", "理由（会話に送られます）"),
+        "Deny": t("拒絕", "拒绝", "拒否"),
+        "Deny with reason…": t("附理由拒絕…", "附理由拒绝…", "理由を付けて拒否…"),
+        "Allow": t("同意", "同意", "許可"),
+        "Allow…": t("同意（需再確認）", "同意（需再确认）", "許可（要確認）"),
+        "Yes, allow": t("確定同意", "确定同意", "許可する"),
+        "Always allow in this project: %@": t("此專案一律允許：%@", "此项目一律允许：%@", "このプロジェクトで常に許可：%@"),
+        "%d more waiting": t("還有 %d 筆在等", "还有 %d 笔在等", "ほかに %d 件待機中"),
+        "ghost-agentd refused the request": t("ghost-agentd 拒絕了這個操作", "ghost-agentd 拒绝了这个操作", "ghost-agentd が要求を拒否しました"),
+        "ghost-agentd is not reachable": t("連不到 ghost-agentd", "连不到 ghost-agentd", "ghost-agentd に接続できません"),
+
         // MARK: Top bar
         "Language": t("語言", "语言", "言語"),
         "System (%@)": t("跟隨系統（%@）", "跟随系统（%@）", "システムに従う（%@）"),

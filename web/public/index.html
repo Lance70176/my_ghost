@@ -28,6 +28,10 @@
       <div id="ai-body"></div>
     </div>
 
+    <!-- Permission requests held by ghost-agentd: the fallback for when
+         Telegram is unreachable. Hidden while nothing is waiting. -->
+    <div id="decisions" class="hidden"></div>
+
     <div id="mode-bar">
       <button id="mode-term" class="mode active" title="Terminal tabs">Tabs</button>
       <button id="mode-files" class="mode" title="File browser">Files</button>

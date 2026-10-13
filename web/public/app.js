@@ -30,6 +30,10 @@
   });
 
   let state = { sessions: [], host: "", home: "" };
+  // ghost-agentd: pending decisions and each Claude session's status, keyed
+  // by the tmux session the conversation runs in.
+  let agent = { pending: [], sessions: [] };
+  let agentStatus = new Map();
   let current = null; // attached session name
   let ws = null;
   let term = null;
@@ -455,6 +459,13 @@
         title.className = "title";
         title.textContent = s.title;
         el.appendChild(title);
+        const st = agentStatus.get(s.name);
+        if (st) {
+          const b = document.createElement("span");
+          b.className = "status " + st;
+          b.textContent = { waiting: "等你", running: "執行中", done: "✓" }[st] || "";
+          el.appendChild(b);
+        }
         if (s.name.startsWith("myghostr_")) {
           const b = document.createElement("span");
           b.className = "badge";
@@ -562,6 +573,101 @@
     await refreshState();
     attach(name);
   };
+
+  // ------------------------------------------------------------------ decisions
+
+  const LEVEL_CLASS = { L0: "l0", L1: "l1", L2: "l2", L3: "l3" };
+
+  async function refreshAgent() {
+    let data;
+    try {
+      data = await api("/api/agent/state");
+    } catch {
+      return;
+    }
+    agent = data;
+    const next = new Map();
+    // Oldest first, so a tab's freshest conversation decides its badge.
+    for (const s of [...(data.sessions || [])].reverse())
+      if (s.tmux_session && s.status !== "ended") next.set(s.tmux_session, s.status);
+    const changed = JSON.stringify([...next]) !== JSON.stringify([...agentStatus]);
+    agentStatus = next;
+    if (changed) renderTabs();
+    renderDecisions();
+  }
+
+  async function decide(p, action, message) {
+    try {
+      const r = await fetch("/api/agent/decisions/" + p.id, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, message: message || "" }),
+      });
+      const j = await r.json();
+      if (!r.ok && j.message) alert(j.message);
+    } catch {}
+    refreshAgent();
+  }
+
+  function renderDecisions() {
+    const box = $("decisions");
+    const pending = agent.pending || [];
+    box.classList.toggle("hidden", pending.length === 0);
+    // Don't rebuild under a finger: only re-render when the set changed.
+    const sig = pending.map((p) => p.id + p.state).join(",");
+    if (box.dataset.sig === sig) {
+      for (const p of pending) {
+        const t = box.querySelector(`[data-left="${p.id}"]`);
+        if (t) t.textContent = Math.ceil(p.remaining / 60) + " 分鐘後逾時並拒絕";
+      }
+      return;
+    }
+    box.dataset.sig = sig;
+    box.innerHTML = `<div class="dec-head">🔐 待決策 ${pending.length}</div>`;
+    for (const p of pending) {
+      const card = document.createElement("div");
+      card.className = "dec-card " + (LEVEL_CLASS[p.level_name] || "");
+      const head = document.createElement("div");
+      head.className = "dec-meta";
+      head.innerHTML = `<span class="lv"></span> <span class="who"></span>`;
+      head.querySelector(".lv").textContent = p.level_name;
+      head.querySelector(".who").textContent =
+        `${p.project} · ${p.tab_title || p.session_id.slice(0, 8)}`;
+      const cmd = document.createElement("pre");
+      cmd.className = "dec-cmd";
+      cmd.textContent = p.summary;
+      const why = document.createElement("div");
+      why.className = "dec-why";
+      why.textContent = p.reason + (p.level_name === "L3" ? " · 需要二次確認" : "");
+      const left = document.createElement("div");
+      left.className = "dec-left";
+      left.dataset.left = p.id;
+      left.textContent = Math.ceil(p.remaining / 60) + " 分鐘後逾時並拒絕";
+      const btns = document.createElement("div");
+      btns.className = "dec-btns";
+      const b = (label, cls, fn) => {
+        const el = document.createElement("button");
+        el.className = cls;
+        el.textContent = label;
+        el.onclick = fn;
+        btns.appendChild(el);
+      };
+      if (p.state === "confirming") {
+        b("⚠️ 確定同意", "ok", () => decide(p, "confirm"));
+        b("取消", "", () => decide(p, "cancel"));
+      } else {
+        b(p.level_name === "L3" ? "同意（需再確認）" : "同意", "ok", () => decide(p, "allow"));
+      }
+      b("拒絕", "no", () => decide(p, "deny"));
+      b("附理由拒絕…", "no", () => {
+        const why = prompt("拒絕理由（會轉給對話）");
+        if (why !== null) decide(p, "deny", why);
+      });
+      if (p.can_always) b("此專案一律允許 " + p.always_pattern, "always", () => decide(p, "always"));
+      card.append(head, cmd, why, left, btns);
+      box.appendChild(card);
+    }
+  }
 
   // ------------------------------------------------------------------ AI usage
 
@@ -775,6 +881,8 @@
     else showScreen("list");
   });
   refreshAI();
+  refreshAgent();
+  setInterval(refreshAgent, 3000);
   setInterval(refreshState, 5000);
   setInterval(refreshAI, 60000);
 })();

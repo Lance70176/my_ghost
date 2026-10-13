@@ -19,6 +19,9 @@ const pty = require("node-pty");
 
 const PORT = parseInt(process.env.MYGHOST_WEB_PORT || "8899", 10);
 const HOST = process.env.MYGHOST_WEB_BIND || "0.0.0.0";
+// ghost-agentd (agentd/): the permission relay whose pending decisions the
+// phone can answer here when Telegram is unreachable.
+const AGENTD = new URL(process.env.GHOST_AGENTD_URL || "http://127.0.0.1:7788");
 
 const APP_SUPPORT = path.join(os.homedir(), "Library/Application Support/MyGhost");
 const STATE_FILE = path.join(APP_SUPPORT, "screen_sessions.json");
@@ -440,6 +443,33 @@ function collisionFree(dir, name) {
 }
 
 // ---------------------------------------------------------------------------
+// ghost-agentd proxy
+
+function agentd(method, p, body) {
+  return new Promise((resolve) => {
+    const data = body ? JSON.stringify(body) : null;
+    const req = http.request(
+      { host: AGENTD.hostname, port: AGENTD.port, path: p, method, timeout: 5000,
+        headers: Object.assign({ "X-Ghost": "1" },
+          data ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(data) } : {}) },
+      (res) => {
+        let buf = "";
+        res.on("data", (c) => (buf += c));
+        res.on("end", () => {
+          try { resolve({ code: res.statusCode, body: JSON.parse(buf) }); }
+          catch { resolve({ code: 502, body: { error: "bad reply from ghost-agentd" } }); }
+        });
+      });
+    // Not installed or not running: the page just shows no decisions.
+    const down = () => resolve({ code: 200, body: { offline: true, pending: [], sessions: [] } });
+    req.on("error", down);
+    req.on("timeout", () => { req.destroy(); });
+    if (data) req.write(data);
+    req.end();
+  });
+}
+
+// ---------------------------------------------------------------------------
 // HTTP server
 
 const PUBLIC = path.join(__dirname, "public");
@@ -598,6 +628,20 @@ const server = http.createServer(async (req, res) => {
         req.on("error", bad);
       });
       return send(res, 200, { path: dest });
+    }
+
+    if (p === "/api/agent/state" && req.method === "GET") {
+      const r = await agentd("GET", "/api/state?client=web");
+      return send(res, r.code, r.body);
+    }
+    const decideMatch = p.match(/^\/api\/agent\/decisions\/([0-9a-f]{8})$/);
+    if (decideMatch && req.method === "POST") {
+      let body = "";
+      for await (const c of req) body += c;
+      const b = JSON.parse(body || "{}");
+      const r = await agentd("POST", `/api/decisions/${decideMatch[1]}`,
+        { action: String(b.action || ""), message: String(b.message || "").slice(0, 500), by: "web" });
+      return send(res, r.code, r.body);
     }
 
     if (p === "/api/ai-usage" && req.method === "GET") {

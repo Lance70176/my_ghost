@@ -13,7 +13,7 @@ import time
 from . import config as cfgmod
 from .broker import Broker, log
 from .server import serve
-from .telegram import Telegram
+from .telegram import build_bots
 
 
 def check() -> int:
@@ -22,13 +22,12 @@ def check() -> int:
     print(f"home: {cfgmod.HOME}")
     print(f"http: {cfg.host}:{cfg.port}  timeout: {cfg.decision_timeout}s")
     tg = cfg.telegram
-    print(f"telegram: token {'set' if tg.token else 'MISSING'}, chat_id {tg.chat_id}, "
-          f"allowed users {tg.allowed_user_ids or 'none'}")
-    if tg.token and not tg.allowed_user_ids and (tg.chat_id or 0) < 0:
-        print("  ! chat_id is a group but allowed_user_ids is empty: buttons will be ignored")
+    print(f"commanders: {tg.commander_user_ids or 'NONE — no one can press buttons'}")
+    print(f"fallback bot: {'set' if tg.token else '-'}, chat_id {tg.chat_id}")
     for p in projects.all():
-        print(f"project {p.name}: topic {p.topic_id}, paths {p.paths or '-'}, "
-              f"{len(p.policy.allow)} always-allow rules")
+        bot = "own bot" if p.tg_token else ("fallback bot" if tg.token else "NO BOT")
+        print(f"project {p.name}{' (resident)' if p.resident else ''}: {bot}, chat_id {p.tg_chat_id}, "
+              f"paths {p.paths or '-'}, {len(p.policy.allow)} always-allow rules")
     return 0
 
 
@@ -38,9 +37,12 @@ def main() -> int:
     cfg = cfgmod.load_config()
     projects = cfgmod.Projects()
     broker = Broker(cfg, projects)
-    tg = Telegram(cfg, broker)
-    broker.listeners.append(tg)
-    tg.start()
+    bots = build_bots(cfg, broker)
+    if not bots:
+        log("telegram: no bot configured — cards only in MyGhost / the phone page")
+    for bot in bots:
+        broker.listeners.append(bot)
+        bot.start()
 
     def ticker():
         while True:

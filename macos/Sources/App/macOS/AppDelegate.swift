@@ -215,6 +215,9 @@ class AppDelegate: NSObject,
 
         installWebAccessMenuItem()
 
+        // Decision cards and tab status from ghost-agentd (agentd/), when it runs.
+        AgentDecisionPanel.shared.start()
+
         // Check if secure input was enabled when we last quit.
         if UserDefaults.standard.bool(forKey: "SecureInput") != SecureInput.shared.enabled {
             toggleSecureInput(self)
