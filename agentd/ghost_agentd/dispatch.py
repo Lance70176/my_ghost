@@ -145,7 +145,8 @@ class Dispatcher:
                    f"📁 {rp.name}　🌿 {branch}（從 {base} 開）\n"
                    f"🔐 一般授權模式：push、merge、刪檔、裝套件、連資料庫都會先問你\n\n"
                    f"要交給工作對話的任務：\n{task}")
-        card = self.broker.create_dispatch(project.name, summary, {"id": d.id},
+        card = self.broker.create_dispatch(project.name, summary, {
+            "id": d.id, "title": title, "repo": rp.name, "branch": branch, "base": base, "task": task},
                                            ["🚀 開工", "💬 要改", "🙅 不做"])
         d.card = card.id
         with self.lock:

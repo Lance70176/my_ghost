@@ -2560,6 +2560,8 @@ class SidebarUIState: ObservableObject {
     /// A Claude Code conversation opened in the assistant's right column in
     /// place of the decisions (click its row again to go back).
     @Published var focusedWorkerID: String?
+    /// A card whose question the assistant conversation should scroll to.
+    @Published var assistantFocusCard: String?
 
     /// Hides the tab/file sidebar so the terminal fills the window. Remembered
     /// across launches — it's a layout preference, not per-window state.

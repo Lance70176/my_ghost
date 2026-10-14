@@ -8,7 +8,8 @@ import SwiftUI
 /// terminal was.
 @MainActor
 enum AgentAssistantNav {
-    static func show(project: String?, hostKey: String) {
+    /// `focusCard`: scroll the conversation to the question behind this card.
+    static func show(project: String?, hostKey: String, focusCard: String? = nil) {
         let windows = NSApp.orderedWindows.filter { $0.windowController is SidebarTerminalController }
         // Prefer a window that has this host open.
         let withHost = windows.first { w in
@@ -20,6 +21,7 @@ enum AgentAssistantNav {
             controller.selectHost(host)
         }
         controller.sidebarUIState.assistantProject = project
+        controller.sidebarUIState.assistantFocusCard = focusCard
         controller.sidebarUIState.sidebarMode = .assistant
         if controller.sidebarUIState.isSidebarCollapsed {
             controller.sidebarUIState.isSidebarCollapsed = false
@@ -335,6 +337,8 @@ struct AgentChatView: View {
     @EnvironmentObject private var client: AgentDaemonClient
     @StateObject private var follow = AgentFollow()
     @ObservedObject private var tray: AgentAttachmentTray
+    /// The message a card's 💬 opened, highlighted for a moment.
+    @State private var highlighted: Int?
 
     enum Tab { case chat, conversations }
 
@@ -409,6 +413,12 @@ struct AgentChatView: View {
                         ForEach(visible) { item in
                             AgentChatRow(item: item, project: project)
                                 .id(item.seq)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .fill(Color.accentColor.opacity(highlighted == item.seq ? 0.18 : 0))
+                                        .padding(-6)
+                                        .animation(.easeOut(duration: 0.4), value: highlighted)
+                                )
                         }
                         if !model.partial.isEmpty {
                             AgentBubble(text: model.partial, mine: false, streaming: true)
@@ -438,7 +448,11 @@ struct AgentChatView: View {
                 .onChange(of: model.partial) { _ in
                     if follow.atBottom { proxy.scrollTo(AgentScrollEndMarker.id, anchor: .bottom) }
                 }
-                .onAppear { proxy.scrollTo(AgentScrollEndMarker.id, anchor: .bottom) }
+                .onAppear { land(proxy) }
+                // The messages arrive after the view does: land again once
+                // they're in, else it stays at the top.
+                .onChange(of: model.items.isEmpty) { _ in land(proxy) }
+                .onChange(of: uiState.assistantFocusCard) { _ in land(proxy) }
                 .overlay(alignment: .bottom) {
                     AgentNewMessagesButton(follow: follow) {
                         follow.unseen = 0
@@ -449,6 +463,26 @@ struct AgentChatView: View {
             }
             Divider()
             input
+        }
+    }
+
+    /// Where to be when the conversation opens: at the question a card was
+    /// opened from (highlighted for a moment), else at the newest message.
+    private func land(_ proxy: ScrollViewProxy) {
+        guard !model.items.isEmpty else { return }
+        if let card = uiState.assistantFocusCard,
+           let item = model.items.last(where: { $0.choiceId == card || $0.cardId == card }) {
+            tab = .chat
+            uiState.assistantFocusCard = nil
+            DispatchQueue.main.async {
+                withAnimation { proxy.scrollTo(item.seq, anchor: .center) }
+                highlighted = item.seq
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                    if highlighted == item.seq { highlighted = nil }
+                }
+            }
+        } else {
+            DispatchQueue.main.async { proxy.scrollTo(AgentScrollEndMarker.id, anchor: .bottom) }
         }
     }
 

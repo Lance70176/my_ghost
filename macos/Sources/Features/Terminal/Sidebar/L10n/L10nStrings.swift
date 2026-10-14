@@ -10,6 +10,12 @@ enum L10nStrings {
 
     static let table: [String: [AppLanguage: String]] = [
         // MARK: ghost-agentd decisions
+        "%@ assistant proposes work": t("%@ 助手提議開工", "%@ 助手提议开工", "%@ アシスタントが作業を提案"),
+        "New branch %@ from %@": t("新分支 %1$@（從 %2$@ 開）", "新分支 %1$@（从 %2$@ 开）", "%2$@ から新しいブランチ %1$@"),
+        "Asks you before push, merge, deleting, installing or touching a database": t("一般授權模式：push、merge、刪檔、裝套件、連資料庫都會先問你", "一般授权模式：push、merge、删档、装套件、连数据库都会先问你", "push・merge・削除・インストール・DB 操作の前に確認します"),
+        "Task for the new conversation": t("要交給工作對話的任務", "要交给工作对话的任务", "新しい会話に渡すタスク"),
+        "Start work": t("開工", "开工", "作業開始"),
+        "Don't do it": t("不做", "不做", "やらない"),
         "Claude is working; nothing needed from you": t("Claude 正在處理，不需要你輸入", "Claude 正在处理，不需要你输入", "Claude が処理中です。操作は不要です"),
         "Chose: %@": t("選了：%@", "选了：%@", "選択：%@"),
         "Sent as %@": t("已用 %@ 送出", "已用 %@ 发出", "%@ として送信済み"),

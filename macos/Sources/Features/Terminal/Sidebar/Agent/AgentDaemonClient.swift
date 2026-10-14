@@ -28,6 +28,8 @@ struct AgentPending: Decodable, Identifiable, Equatable {
     let cardId: String?
     /// A drafted reply from the project's work account (option 0 sends it).
     let reply: AgentReplyDraft?
+    /// Proposed work (option 0 starts it in a new tab).
+    let dispatch: AgentDispatchDraft?
 
     var isChoice: Bool { kind == "choice" }
 
@@ -40,6 +42,14 @@ struct AgentPending: Decodable, Identifiable, Equatable {
         a.id == b.id && a.state == b.state && a.discussing == b.discussing
     }
     var isHighRisk: Bool { level >= 3 }
+}
+
+struct AgentDispatchDraft: Decodable, Equatable {
+    let title: String?
+    let repo: String?
+    let branch: String?
+    let base: String?
+    let task: String?
 }
 
 struct AgentReplyDraft: Decodable, Equatable {

@@ -173,6 +173,9 @@ private struct AgentDecisionStack: View {
             AgentDecisionPanel.shared.contentSizeChanged(size)
         }
         .frame(maxHeight: .infinity, alignment: .bottom)
+        // The panel never becomes the key window, which greys out tinted
+        // buttons; draw them as active, as everywhere else.
+        .environment(\.controlActiveState, .key)
     }
 }
 
@@ -212,6 +215,7 @@ struct AgentDecisionCard: View {
 
     private var accent: Color {
         if p.reply != nil { return .orange }
+        if p.dispatch != nil { return .green }
         return p.isChoice ? .accentColor : (p.isHighRisk ? .red : (p.level >= 2 ? .orange : .green))
     }
 
@@ -219,6 +223,8 @@ struct AgentDecisionCard: View {
         Group {
             if let r = p.reply {
                 replyBody(r)
+            } else if let d = p.dispatch, d.task != nil {
+                dispatchBody(d)
             } else if p.isChoice {
                 choiceBody
             } else {
@@ -248,7 +254,7 @@ struct AgentDecisionCard: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
                 Button {
-                    AgentAssistantNav.show(project: p.project, hostKey: client.hostKey)
+                    AgentAssistantNav.show(project: p.project, hostKey: client.hostKey, focusCard: p.id)
                 } label: {
                     Image(systemName: "bubble.left.and.text.bubble.right")
                 }
@@ -313,6 +319,77 @@ struct AgentDecisionCard: View {
         }
     }
 
+    /// Work the assistant proposes: what, where, and one clear 開工 button.
+    private func dispatchBody(_ d: AgentDispatchDraft) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "hammer.circle.fill").foregroundColor(.green)
+                Text(L("%@ assistant proposes work", p.project))
+                    .agentFont(.headline)
+                Spacer(minLength: 4)
+                Button {
+                    AgentAssistantNav.show(project: p.project, hostKey: client.hostKey, focusCard: p.id)
+                } label: {
+                    Image(systemName: "bubble.left.and.text.bubble.right")
+                }
+                .buttonStyle(.borderless)
+                .help(L("Open the assistant conversation"))
+            }
+            Text(d.title ?? "").agentFont(.title3, weight: .semibold)
+                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 3) {
+                Label(d.repo ?? "", systemImage: "folder").agentFont(.callout)
+                Label(L("New branch %@ from %@", d.branch ?? "", d.base ?? ""), systemImage: "arrow.triangle.branch")
+                    .agentFont(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+                Label(L("Asks you before push, merge, deleting, installing or touching a database"),
+                      systemImage: "lock.shield")
+                    .agentFont(.caption).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(L("Task for the new conversation"))
+                    .agentFont(.caption, weight: .semibold).foregroundColor(.green)
+                ScrollView {
+                    Text(d.task ?? "")
+                        .agentFont(.body)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 220)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.green.opacity(0.10)))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.green.opacity(0.45)))
+            }
+            if showHost { hostLabel }
+            Button { pickReply("o0") } label: {
+                Label(L("Start work"), systemImage: "play.fill")
+                    .agentFont(.body, weight: .semibold)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 3)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.green)
+            .controlSize(.large)
+            .disabled(busy)
+            HStack(spacing: 8) {
+                Button { pickReply("o1") } label: {
+                    Label(L("Change it"), systemImage: "pencil").frame(maxWidth: .infinity)
+                }
+                Button { pickReply("o2") } label: {
+                    Label(L("Don't do it"), systemImage: "xmark").frame(maxWidth: .infinity)
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
+            .disabled(busy)
+            if let error {
+                Text(error).agentFont(.caption).foregroundColor(.red)
+            }
+        }
+    }
+
     private func pickReply(_ action: String) {
         busy = true
         Task {
@@ -330,7 +407,7 @@ struct AgentDecisionCard: View {
                     .agentFont(.callout, weight: .semibold)
                 Spacer(minLength: 4)
                 Button {
-                    AgentAssistantNav.show(project: p.project, hostKey: client.hostKey)
+                    AgentAssistantNav.show(project: p.project, hostKey: client.hostKey, focusCard: p.id)
                 } label: {
                     Image(systemName: "bubble.left.and.text.bubble.right")
                 }
