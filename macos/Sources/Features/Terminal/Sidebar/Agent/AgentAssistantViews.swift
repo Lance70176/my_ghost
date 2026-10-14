@@ -1056,6 +1056,10 @@ private struct AgentWorkersList: View {
     @State private var asked: String?
     @State private var loaded = false
     @State private var loadFailed = false
+    /// Right-click → Delete: the one waiting for confirmation, and why a
+    /// delete didn't happen.
+    @State private var deleting: (project: String, worker: AgentWorker)?
+    @State private var deleteError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -1093,6 +1097,13 @@ private struct AgentWorkersList: View {
                     row(item.project, item.worker)
                         .contentShape(Rectangle())
                         .onTapGesture { onSelect?(item.worker) }
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                deleting = (item.project, item.worker)
+                            } label: {
+                                Label(L("Delete…"), systemImage: "trash")
+                            }
+                        }
                         .listRowBackground(item.worker.id == selectedID
                                            ? Color.accentColor.opacity(0.18) : Color.clear)
                 }
@@ -1100,6 +1111,22 @@ private struct AgentWorkersList: View {
             }
         }
         .padding(10)
+        .alert(L("Delete \u{201C}%@\u{201D}?", deleting?.worker.name ?? ""),
+               isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+            Button(L("Delete"), role: .destructive) {
+                if let d = deleting { Task { await delete(d.project, d.worker) } }
+            }
+            Button(L("Cancel"), role: .cancel) {}
+        } message: {
+            Text((deleting?.worker.isWorking == true ? L("It is still running and will be stopped first.") + "\n" : "")
+                 + L("This deletes the background conversation and its worktree, like `claude rm`. If the worktree has commits that aren't pushed, it refuses."))
+        }
+        .alert(L("Couldn't delete"), isPresented: Binding(get: { deleteError != nil },
+                                                        set: { if !$0 { deleteError = nil } })) {
+            Button(L("OK"), role: .cancel) {}
+        } message: {
+            Text(deleteError ?? "")
+        }
         .task(id: project ?? "*") {
             // Every 15 s while visible, and soon after anything changes.
             var seen = -1
@@ -1115,6 +1142,16 @@ private struct AgentWorkersList: View {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }
+    }
+
+    private func delete(_ proj: String, _ w: AgentWorker) async {
+        if let err = await client.workerRemove(project: proj, id: w.id) {
+            deleteError = err
+            return
+        }
+        if w.id == selectedID { onSelect?(w) }  // close it on the right
+        workers.removeAll { $0.worker.id == w.id }
+        await reload()
     }
 
     private func reload() async {

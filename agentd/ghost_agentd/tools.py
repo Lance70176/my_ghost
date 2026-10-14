@@ -296,6 +296,23 @@ def job_send(job: dict, text: str) -> str:
     return ""
 
 
+def job_remove(job: dict) -> str:
+    """Delete a background conversation and its worktree, as `claude rm`
+    does from `claude agents` (stopping it if it still runs). It refuses when
+    the worktree has work that isn't pushed; that message comes back as is.
+    "" when it's gone."""
+    _tmux("kill-session", "-t", ATTACH_PREFIX + job["id"])  # our hidden attach, if any
+    _attach_used.pop(ATTACH_PREFIX + job["id"], None)
+    try:
+        r = subprocess.run([CLAUDE_BIN, "rm", job["id"]], capture_output=True, text=True, timeout=90,
+                           cwd=job.get("cwd") or os.path.expanduser("~"))
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"刪不掉：{e}"
+    if r.returncode == 0:
+        return ""
+    return (r.stderr.strip() or r.stdout.strip() or f"claude rm 失敗（{r.returncode}）")[:800]
+
+
 def close_idle_attachments(max_idle: float = 1800) -> None:
     """Hidden `claude attach` windows unused for a while are closed (the
     conversation itself keeps running)."""

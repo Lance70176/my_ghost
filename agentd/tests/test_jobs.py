@@ -76,3 +76,18 @@ def test_agent_view_status_is_its_jobs(tmp_path, monkeypatch):
     write_job(jobs, "d", state="working", sessionId="s4", originCwd=view)
     monkeypatch.setattr(tools, "_job_cache", (0.0, []))
     assert Broker._status(B, v, tools.job_states()) == "running"
+
+
+def test_job_remove_runs_claude_rm(tmp_path, monkeypatch):
+    """Deleting a conversation is `claude rm <id>`; its refusal (work not
+    pushed) comes back for the commander to read."""
+    calls = tmp_path / "calls"
+    fake = tmp_path / "claude"
+    fake.write_text(f'#!/bin/sh\necho "$@" >> {calls}\n'
+                    'if [ "$2" = "keep" ]; then echo "worktree has unpushed commits" >&2; exit 1; fi\n')
+    fake.chmod(0o755)
+    monkeypatch.setattr(tools, "CLAUDE_BIN", str(fake))
+    monkeypatch.setattr(tools, "_tmux", lambda *a, **k: None)
+    assert tools.job_remove({"id": "a1b2c3d4", "cwd": str(tmp_path)}) == ""
+    assert "unpushed" in tools.job_remove({"id": "keep", "cwd": str(tmp_path)})
+    assert calls.read_text().split("\n")[:2] == ["rm a1b2c3d4", "rm keep"]

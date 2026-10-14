@@ -548,6 +548,13 @@ final class AgentDaemonClient: ObservableObject {
         return ok ? nil : (msg ?? L("ghost-agentd refused the request"))
     }
 
+    /// Deletes a background conversation and its worktree (`claude rm`).
+    /// nil when it's gone, else why not (e.g. work not pushed yet).
+    func workerRemove(project: String, id: String) async -> String? {
+        let (ok, msg) = await post("api/projects/\(project)/workers/\(id)/remove", [:])
+        return ok ? nil : (msg ?? L("ghost-agentd refused the request"))
+    }
+
     /// Newest first; nil project means every project.
     /// nil when the request failed — not the same as "no decisions".
     func decisions(project: String?, limit: Int = 300) async -> [AgentDecisionRecord]? {

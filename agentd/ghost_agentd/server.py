@@ -45,7 +45,7 @@ ASSISTANT = re.compile(r"^/api/assistants/([A-Za-z0-9_.-]+)/(chat|messages|stop|
 TOOL = re.compile(r"^/assistant-tools/([a-z_]+)$")
 HELP = re.compile(r"^/api/help/([0-9a-f]{6})$")
 WORKERS = re.compile(r"^/api/projects/([A-Za-z0-9_.-]+)/workers$")
-WORKER = re.compile(r"^/api/projects/([A-Za-z0-9_.-]+)/workers/([0-9a-f]{8})/(log|send)$")
+WORKER = re.compile(r"^/api/projects/([A-Za-z0-9_.-]+)/workers/([0-9a-f]{8})/(log|send|remove)$")
 LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
 
@@ -228,6 +228,18 @@ def make_handler(broker: Broker, assistants=None, tools=None, remote_token: str 
                 broker.hook_event(body)
                 return self._send(200, {"ok": True})
             m = WORKER.match(u.path)
+            if m and m.group(3) == "remove":
+                from .tools import find_job, job_remove
+                p = broker.projects.get(m.group(1))
+                own = assistants.get(p.name).meta.get("session_id", "") if assistants else ""
+                job = find_job(p.paths, m.group(2), exclude_session=own)
+                if job is None:
+                    return self._send(404, {"ok": False, "message": "找不到這個專案的這個對話"})
+                err = job_remove(job)
+                log(f"worker {job['id']} ({job.get('name', '')}) removed" if not err
+                    else f"worker {job['id']} remove refused: {err[:200]}")
+                broker.bump()
+                return self._send(200 if not err else 409, {"ok": not err, "message": err or "已刪除"})
             if m and m.group(3) == "send":
                 from .tools import find_job, job_send
                 p = broker.projects.get(m.group(1))
