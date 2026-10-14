@@ -190,19 +190,24 @@ private struct AgentAssistantMainContent: View {
     @EnvironmentObject private var client: AgentDaemonClient
 
     var body: some View {
-        HSplitView {
-            Group {
-                if let project = uiState.assistantProject {
-                    AgentChatView(project: project, client: client, uiState: uiState)
-                        .id(project)
-                } else {
-                    AgentOverview(uiState: uiState)
+        GeometryReader { geo in
+            HSplitView {
+                Group {
+                    if let project = uiState.assistantProject {
+                        AgentChatView(project: project, client: client, uiState: uiState)
+                            .id(project)
+                    } else {
+                        AgentOverview(uiState: uiState)
+                    }
                 }
-            }
-            .frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
+                .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
 
-            AgentRightColumn(project: uiState.assistantProject, uiState: uiState)
-                .frame(minWidth: 300, idealWidth: 340, maxWidth: 460, maxHeight: .infinity)
+                // Drag the divider to widen the right column up to half the
+                // area — room to read a conversation opened there.
+                AgentRightColumn(project: uiState.assistantProject, uiState: uiState)
+                    .frame(minWidth: 300, idealWidth: 340,
+                           maxWidth: max(300, geo.size.width * 0.5), maxHeight: .infinity)
+            }
         }
     }
 }
