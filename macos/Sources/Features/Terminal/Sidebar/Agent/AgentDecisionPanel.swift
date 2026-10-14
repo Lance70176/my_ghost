@@ -58,11 +58,17 @@ final class AgentDecisionPanel {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         let host = NSHostingView(rootView: AgentDecisionStack())
         host.translatesAutoresizingMaskIntoConstraints = true
-        // We place and size the panel (layout()). Left to itself the hosting
-        // view grows the window downward from its top as cards get taller,
-        // pushing the buttons below the screen's bottom edge.
-        host.sizingOptions = []
         panel.contentView = host
+        // The hosting view sizes the panel to its cards, growing it downward
+        // from the top — past the screen's bottom edge for a tall card. Put
+        // it back at the bottom-right every time its size changes.
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.didResizeNotification, object: panel, queue: .main
+        ) { [weak self, weak panel] _ in
+            MainActor.assumeIsolated {
+                if let self, let panel { self.layout(panel) }
+            }
+        }
         return panel
     }
 
@@ -75,7 +81,6 @@ final class AgentDecisionPanel {
 
     /// Bottom-right of the frontmost MyGhost window, else of the screen.
     private func layout(_ panel: NSPanel) {
-        let size = contentSize
         let anchor: NSRect
         if let win = NSApp.orderedWindows.first(where: { $0.isVisible && $0.windowController is SidebarTerminalController }) {
             anchor = win.frame
@@ -85,10 +90,14 @@ final class AgentDecisionPanel {
         // Keep it on the screen the window is on, above the Dock.
         let screen = (NSScreen.screens.first { $0.frame.intersects(anchor) } ?? NSScreen.main)?.visibleFrame ?? anchor
         let area = anchor.intersection(screen).isEmpty ? screen : anchor.intersection(screen)
-        let width = min(max(size.width, 340), 420)
-        let height = min(size.height, area.height - 32)
-        panel.setFrame(NSRect(x: area.maxX - width - 16, y: area.minY + 16,
-                              width: width, height: height), display: true)
+        let maxHeight = area.height - 32
+        panel.maxSize = NSSize(width: 420, height: maxHeight)
+        // As tall as its cards are (SwiftUI's own measure), within the screen.
+        let fit = (panel.contentView as? NSHostingView<AgentDecisionStack>)?.fittingSize ?? panel.frame.size
+        let width = min(max(fit.width, 340), 420)
+        let height = min(max(fit.height, 1), maxHeight)
+        let target = NSRect(x: area.maxX - width - 16, y: area.minY + 16, width: width, height: height)
+        if panel.frame != target { panel.setFrame(target, display: true) }
     }
 
     /// Bring the tab a request came from to the front. False when no open tab
