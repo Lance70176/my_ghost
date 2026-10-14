@@ -201,6 +201,8 @@ final class AgentDaemonClient: ObservableObject {
 
     private var base: URL?
     private var tunnel: Process?
+    /// Kept open for the tunnel's lifetime; see openTunnel.
+    private var tunnelLifeline: Pipe?
     private var version = -1
     private var task: Task<Void, Never>?
     private var lastSuccess = Date()
@@ -244,11 +246,16 @@ final class AgentDaemonClient: ObservableObject {
         guard let port = Self.freePort() else { return nil }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        p.arguments = ["-N", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+        // The remote side runs `cat` reading our pipe instead of `-N`: when
+        // MyGhost exits — even killed — the pipe closes, cat ends and ssh
+        // with it. With -N the forward outlived the app as an orphan.
+        p.arguments = ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
                        "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15",
                        "-o", "ServerAliveCountMax=3",
-                       "-L", "127.0.0.1:\(port):127.0.0.1:7788"] + sshOptions + [target]
-        p.standardInput = FileHandle.nullDevice
+                       "-L", "127.0.0.1:\(port):127.0.0.1:7788"] + sshOptions + [target, "cat"]
+        let lifeline = Pipe()
+        p.standardInput = lifeline
+        tunnelLifeline = lifeline
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
         do {
