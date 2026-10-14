@@ -228,8 +228,14 @@ class ClickUpSource:
             t = c.ticket
             keys = {t["id"]} | ({t["custom_id"]} if t["custom_id"] else set())
             keys |= set(re.findall(r"#\d+", t["name"]))
+            site = self.site(t["name"])
             for j in jobs:
                 text = f"{j.get('name', '')} {j.get('detail', '')}"
+                # Sites number their tickets separately: LSA #167 isn't LSC #167.
+                if self.sites and site in self.sites:
+                    other = self.site(j.get("name", ""))
+                    if other in self.sites and other != site:
+                        continue
                 if any(k and k in text for k in keys):
                     c.workers.append((j["id"], j.get("name", ""), j.get("state_label", "")))
             if c.workers:

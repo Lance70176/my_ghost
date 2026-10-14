@@ -65,6 +65,8 @@ def test_first_run_then_only_changes(broker, manager, tmp_path, monkeypatch):
     p = broker.projects.get("fq")
     write_job(tmp_path / "jobs", "ab12cd34", name="【LSC】優惠設置 #198", state="working",
               cwd=p.paths[0] if p.paths else str(tmp_path))
+    write_job(tmp_path / "jobs", "ef56ab78", name="【LSA】別站的單 #198", state="done",
+              cwd=p.paths[0] if p.paths else str(tmp_path))
     fake = FakeClickUp()
     fake.tasks = {"t1": task("t1", "【LSC】後台－優惠設置（#198）", "開發中"),
                   "t2": task("t2", "【LSA】後台－會員紀錄（#173）", "待驗收")}
@@ -87,6 +89,7 @@ def test_first_run_then_only_changes(broker, manager, tmp_path, monkeypatch):
     assert "離開清單" in msg and "新單" in msg
     if p.paths:
         assert "已有工作對話" in msg  # t1 matched the job by #198
+        assert "別站的單" not in msg  # …but not another site's #198
 
 
 def test_done_only_for_tracked_tickets(broker, manager):
