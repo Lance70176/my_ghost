@@ -147,6 +147,8 @@ cat > "$PLIST" <<PLIST
   <dict>
     <key>MYGHOST_HOME</key><string>$HOME_DIR</string>
     <key>PYTHONUNBUFFERED</key><string>1</string>
+    <!-- launchd's PATH is bare; assistants need claude, its tools and share. -->
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

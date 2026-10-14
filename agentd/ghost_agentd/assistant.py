@@ -34,7 +34,10 @@ from .config import Project
 from .policy import redact
 
 MODEL = os.environ.get("GHOST_ASSISTANT_MODEL", "claude-opus-5-5")
-CLAUDE = os.environ.get("GHOST_CLAUDE_BIN") or shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
+CLAUDE = os.environ.get("GHOST_CLAUDE_BIN") or shutil.which("claude") or next(
+    (c for c in ("/opt/homebrew/bin/claude", "/usr/local/bin/claude",
+                 os.path.expanduser("~/.local/bin/claude"), os.path.expanduser("~/.claude/local/claude"))
+     if os.path.exists(c)), "claude")
 IDLE_STOP_SECONDS = 30 * 60
 COMPACT_AT = 80  # percent of the context window
 DAILY_RESTART_HOUR = 4
