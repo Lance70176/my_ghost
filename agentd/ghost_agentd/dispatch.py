@@ -259,7 +259,7 @@ class Dispatcher:
         except Exception as e:
             d.state, d.error = "failed", str(e)
             log(f"dispatch {d.id}: {e}")
-            a.add("notice", f"⚠️ 「{d.title}」沒有開工成功：{e}", source="system")
+            a.add("notice", f"⚠️ 「{d.title}」沒有開工成功：{e}", source="system", choice_id=d.card)
             self.assistants.notify(project, f"⚠️ 「{d.title}」沒有開工成功：{e}")
         finally:
             with self.lock:
@@ -270,6 +270,7 @@ class Dispatcher:
                                      "title": d.title, "branch": d.branch, "tmux": d.tmux, "job": d.job_id},
                                     ensure_ascii=False) + "\n")
             where = f"背景工作 {d.job_id}" if d.mode == "job" else "新分頁"
+            a.add("notice", f"🚀 已開工（{Path(d.repo).name} / {d.branch}，{where}）", source="system", choice_id=d.card)
             self.assistants.notify(project, f"🚀 已開工：{d.title}（{Path(d.repo).name} / {d.branch}，{where}）")
             self.broker.bump()
 

@@ -410,7 +410,7 @@ class AccountWatcher:
             self.transport.send(r["chat_id"], r["text"], r["msg_id"])
         except Exception as e:
             log(f"account {self.project.name}: send failed {e!r}")
-            a.add("notice", f"⚠️ 回覆「{r['chat']}」沒有送出：{e}", source="system")
+            a.add("notice", f"⚠️ 回覆「{r['chat']}」沒有送出：{e}", source="system", choice_id=p.id)
             self.assistants.notify(self.project, f"⚠️ 用 {r['account']} 回覆「{r['chat']}」失敗：{e}")
             return
         self.on_mine(r["chat_id"])
@@ -418,7 +418,7 @@ class AccountWatcher:
             fh.write(json.dumps({"ts": time.time(), "type": "account_reply", "card": p.id,
                                  "chat": r["chat"], "chat_id": r["chat_id"], "by": p.decided_by},
                                 ensure_ascii=False) + "\n")
-        a.add("notice", f"已用 {r['account']} 回覆「{r['chat']}」。", source="system")
+        a.add("notice", f"已用 {r['account']} 回覆「{r['chat']}」。", source="system", choice_id=p.id)
 
 
 # ------------------------------------------------------- the real account

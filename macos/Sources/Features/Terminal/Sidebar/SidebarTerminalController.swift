@@ -2712,6 +2712,19 @@ class SidebarTerminalWindow: NSWindow {
             return true
         }
 
+        // Cmd+C in the assistant pane copies the text selected there (its
+        // selectable text works through the field editor). The terminal
+        // stays mounted underneath and its copy binding would claim the key
+        // first, copying the terminal's (empty) selection instead.
+        if sidebarController?.sidebarUIState.sidebarMode == .assistant,
+           flags == .command,
+           event.charactersIgnoringModifiers?.lowercased() == "c",
+           let text = firstResponder as? NSTextView,
+           text.selectedRange().length > 0 {
+            text.copy(nil)
+            return true
+        }
+
         return super.performKeyEquivalent(with: event)
     }
 }

@@ -356,8 +356,18 @@ struct AgentChatView: View {
         _tab = State(initialValue: AgentDraftStore.shared.flag(storeKey + "|conversations") ? .conversations : .chat)
     }
 
+    /// Notices the daemon tied to a card ("你選了…", "已用 … 回覆…"): they
+    /// show inside the card instead of loose in the conversation.
+    private var cardNotices: [String: [AgentChatItem]] {
+        Dictionary(grouping: model.items.filter { $0.role == "notice" && !$0.choiceId.isEmpty }, by: \.choiceId)
+    }
+
     private var visible: [AgentChatItem] {
-        model.items.filter { item in
+        let cards = Set(model.items.lazy.filter { $0.role == "choice" }.map(\.choiceId))
+        return model.items.filter { item in
+            if item.role == "notice" && !item.choiceId.isEmpty && cards.contains(item.choiceId) {
+                return false
+            }
             if item.role == "tool" {
                 // Claude Code loading its own tools isn't worth a line.
                 return showTools && !item.text.hasPrefix("ToolSearch")
@@ -411,7 +421,7 @@ struct AgentChatView: View {
                             emptyHint
                         }
                         ForEach(visible) { item in
-                            AgentChatRow(item: item, project: project)
+                            AgentChatRow(item: item, project: project, outcomes: cardNotices[item.choiceId] ?? [])
                                 .id(item.seq)
                                 .background(
                                     RoundedRectangle(cornerRadius: 10)
@@ -482,7 +492,7 @@ struct AgentChatView: View {
                 }
             }
         } else {
-            DispatchQueue.main.async { proxy.scrollTo(AgentScrollEndMarker.id, anchor: .bottom) }
+            proxy.settleAtEnd()
         }
     }
 
@@ -791,7 +801,8 @@ private struct AgentInputField: NSViewRepresentable {
 private struct AgentChatRow: View {
     let item: AgentChatItem
     let project: String
-    @State private var choiceError: String?
+    /// For a card: the notices about it (shown inside it).
+    var outcomes: [AgentChatItem] = []
     @EnvironmentObject private var client: AgentDaemonClient
 
     private static let time: DateFormatter = {
@@ -820,25 +831,7 @@ private struct AgentChatRow: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
         case "choice":
-            VStack(alignment: .leading, spacing: 6) {
-                Label(item.text, systemImage: "questionmark.bubble.fill")
-                    .agentFont(.callout, weight: .semibold)
-                    .fixedSize(horizontal: false, vertical: true)
-                if !item.chosen.isEmpty {
-                    Text(L("You chose: %@", item.chosen)).agentFont(.caption).foregroundColor(.secondary)
-                } else if client.pending.contains(where: { $0.id == item.choiceId }) {
-                    AgentChoiceButtons(choiceId: item.choiceId, options: item.options,
-                                       busy: .constant(false), error: $choiceError)
-                    if let choiceError {
-                        Text(choiceError).agentFont(.caption).foregroundColor(.red)
-                    }
-                } else {
-                    Text(L("Answered")).agentFont(.caption).foregroundColor(.secondary)
-                }
-            }
-            .padding(10)
-            .frame(maxWidth: 520, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 10).stroke(Color.accentColor.opacity(0.6)))
+            AgentChatCard(item: item, outcomes: outcomes)
         case "discuss":
             VStack(alignment: .leading, spacing: 6) {
                 Label(L("Discussing this request"), systemImage: "bubble.left.and.bubble.right.fill")
@@ -1491,6 +1484,8 @@ private struct AgentWorkerConversationView: View {
     @State private var sending = false
     @State private var note: String?
     @State private var loaded = false
+    /// Scrolled to the newest message once they first came in.
+    @State private var landed = false
     /// The last refresh failed (what's shown is from before).
     @State private var failed = false
     @StateObject private var follow = AgentFollow()
@@ -1560,7 +1555,14 @@ private struct AgentWorkerConversationView: View {
                 .onChange(of: messages.last?.id) { _ in
                     if follow.shouldFollow() { proxy.scrollTo(AgentScrollEndMarker.id, anchor: .bottom) }
                 }
-                .onAppear { proxy.scrollTo(AgentScrollEndMarker.id, anchor: .bottom) }
+                .onAppear { proxy.settleAtEnd() }
+                // The messages arrive after the view does: open at the newest.
+                .onChange(of: messages.isEmpty) { empty in
+                    if !empty && !landed {
+                        landed = true
+                        proxy.settleAtEnd()
+                    }
+                }
                 .overlay(alignment: .bottom) {
                     AgentNewMessagesButton(follow: follow) {
                         follow.unseen = 0

@@ -66,6 +66,9 @@ SYSTEM_PROMPT = """\
 """
 
 
+REPLY_KEYS = ("chat", "sender", "text", "account", "private", "original", "note")
+
+
 @dataclass
 class ChatItem:
     seq: int
@@ -79,6 +82,9 @@ class ChatItem:
     card_id: str = ""
     chosen: str = ""
     files: list = field(default_factory=list)  # attachments: [{name, path, kind, size, label}]
+    # A reply / dispatch card: its draft, so the chat can show it as a card.
+    reply: dict | None = None
+    dispatch: dict | None = None
 
 
 class Assistant:
@@ -517,7 +523,9 @@ class AssistantManager:
     def on_pending(self, p: Pending) -> None:
         if p.kind == "choice":
             a = self.get(p.project)
-            a.add("choice", p.summary, choice_id=p.id, options=p.options, card_id=p.card_id or "")
+            reply = {k: p.reply.get(k) for k in REPLY_KEYS} if getattr(p, "reply", None) else None
+            a.add("choice", p.summary, choice_id=p.id, options=p.options, card_id=p.card_id or "",
+                  reply=reply, dispatch=dict(p.dispatch) if getattr(p, "dispatch", None) else None)
 
     def on_update(self, p: Pending) -> None:
         pass
@@ -560,5 +568,5 @@ class AssistantManager:
                    1: f"他想修改你給「{p.reply['chat']}」的回覆（ref={p.reply['ref']}）。問他要怎麼改，改好再用 draft_reply 出新的回覆卡。",
                    2: f"他決定不回「{p.reply['chat']}」這則訊息（ref={p.reply['ref']}）。"}.get(
                 p.chosen, f"他略過了給「{p.reply['chat']}」的回覆卡。")
-        a.add("notice", f"你選了：{label}" if label else "你略過了這個問題", source="myghost")
+        a.add("notice", f"你選了：{label}" if label else "你略過了這個問題", source="myghost", choice_id=p.id)
         threading.Thread(target=a.send, args=(msg, "system", False), daemon=True).start()

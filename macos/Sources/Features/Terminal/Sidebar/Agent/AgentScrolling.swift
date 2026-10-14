@@ -24,6 +24,19 @@ struct AgentScrollEndMarker: View {
     }
 }
 
+extension ScrollViewProxy {
+    /// To a conversation's end — and again once the lazily laid-out rows have
+    /// measured themselves: one jump lands on estimated heights, which in a
+    /// long conversation leaves it far short of the end (near the top).
+    func settleAtEnd() {
+        for delay in [0.0, 0.1, 0.3, 0.7] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                scrollTo(AgentScrollEndMarker.id, anchor: .bottom)
+            }
+        }
+    }
+}
+
 /// Whether a conversation view should follow new messages. It follows only
 /// while you're at the bottom (or just sent something); reading further up,
 /// new messages don't pull you down — they're counted for a "↓ N new" button.

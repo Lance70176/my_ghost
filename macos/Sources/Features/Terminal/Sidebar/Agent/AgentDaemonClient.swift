@@ -91,6 +91,9 @@ struct AgentChatItem: Decodable, Identifiable, Equatable {
     let chosen: String
     /// Attachments (older daemons don't send the field).
     let files: [AgentChatFile]?
+    /// A reply / dispatch card's draft, shown with the card.
+    let reply: AgentReplyDraft?
+    let dispatch: AgentDispatchDraft?
 
     var id: Int { seq }
 }

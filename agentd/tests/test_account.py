@@ -100,6 +100,11 @@ def test_message_to_card_to_send(broker, manager):
     assert ok
     wait_for(lambda: w.transport.sent == [(42, "您好，我馬上幫您查，稍等一下。", 9)])
     wait_for(lambda: any(r == "notice" and "已用 @SnakeFQ 回覆" in t for r, t in roles(a)))
+    # The chat shows the card with its draft; what became of it points back at it.
+    item = next(i for i in a.items if i.role == "choice" and i.choice_id == cards[0].id)
+    assert item.reply["text"].startswith("您好") and "chat_id" not in item.reply
+    linked = [i.text for i in a.items if i.role == "notice" and i.choice_id == cards[0].id]
+    assert any("你選了" in t for t in linked) and any("已用 @SnakeFQ 回覆" in t for t in linked)
     import json
     recs = [json.loads(l) for l in (w.project.dir / "decisions.jsonl").read_text().splitlines()]
     assert recs[-1]["outcome"] == "send" and recs[-1]["reply"]["text"].startswith("您好")
