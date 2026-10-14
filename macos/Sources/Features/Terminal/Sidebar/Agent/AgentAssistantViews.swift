@@ -498,18 +498,10 @@ struct AgentChatView: View {
     private var input: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .bottom, spacing: 8) {
-                ZStack(alignment: .topLeading) {
-                    if draft.isEmpty {
-                        Text(L("Message the %@ assistant… (Return sends, ⇧Return for a new line)", project))
-                            .agentFont(.body)
-                            .foregroundColor(.secondary)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 8)
-                            .allowsHitTesting(false)
-                    }
-                    AgentInputField(text: $draft, onSubmit: submit, autoFocus: true)
-                        .frame(minHeight: 34, maxHeight: 140)
-                }
+                AgentInputField(text: $draft,
+                                placeholder: L("Message the %@ assistant… (Return sends, ⇧Return for a new line)", project),
+                                onSubmit: submit, autoFocus: true)
+                    .frame(minHeight: 34, maxHeight: 140)
                 .padding(.horizontal, 6)
                 .background(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.35)))
 
@@ -547,8 +539,48 @@ struct AgentChatView: View {
 }
 
 /// A multi-line text field where Return sends and Shift-Return breaks the line.
+/// An NSTextView that draws its own placeholder, hidden as soon as there is
+/// anything in it — including text still being composed with an input method
+/// (Chinese, Japanese…), which a SwiftUI overlay keyed on the committed text
+/// drew on top of.
+final class AgentPlaceholderTextView: NSTextView {
+    var placeholder = "" {
+        didSet { needsDisplay = true }
+    }
+
+    override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange)
+        needsDisplay = true
+    }
+
+    override func unmarkText() {
+        super.unmarkText()
+        needsDisplay = true
+    }
+
+    override func didChangeText() {
+        super.didChangeText()
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard string.isEmpty, !hasMarkedText(), !placeholder.isEmpty else { return }
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize),
+            .foregroundColor: NSColor.placeholderTextColor,
+        ]
+        let pad = textContainer?.lineFragmentPadding ?? 5
+        let origin = NSPoint(x: textContainerOrigin.x + pad, y: textContainerOrigin.y)
+        NSAttributedString(string: placeholder, attributes: attrs)
+            .draw(in: NSRect(x: origin.x, y: origin.y,
+                             width: bounds.width - origin.x - pad, height: bounds.height - origin.y))
+    }
+}
+
 private struct AgentInputField: NSViewRepresentable {
     @Binding var text: String
+    var placeholder = ""
     let onSubmit: () -> Void
     /// Take the keyboard when shown (SwiftUI focus doesn't reach the
     /// NSTextView inside, and the terminal under the assistant must not keep it).
@@ -556,8 +588,17 @@ private struct AgentInputField: NSViewRepresentable {
     @Environment(\.agentZoom) private var zoom
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSTextView.scrollableTextView()
-        let tv = scroll.documentView as! NSTextView
+        let scroll = NSScrollView()
+        let tv = AgentPlaceholderTextView(frame: .zero)
+        tv.minSize = NSSize(width: 0, height: 0)
+        tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        tv.isVerticallyResizable = true
+        tv.isHorizontallyResizable = false
+        tv.autoresizingMask = [.width]
+        tv.textContainer?.widthTracksTextView = true
+        tv.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+        scroll.documentView = tv
+        tv.placeholder = placeholder
         tv.delegate = context.coordinator
         tv.isRichText = false
         tv.font = .systemFont(ofSize: NSFont.systemFontSize)
@@ -573,8 +614,11 @@ private struct AgentInputField: NSViewRepresentable {
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
-        let tv = scroll.documentView as! NSTextView
-        if tv.string != text { tv.string = text }
+        let tv = scroll.documentView as! AgentPlaceholderTextView
+        // Never replace the text mid-composition: the binding only holds
+        // committed text, and writing it back would cancel the candidate.
+        if !tv.hasMarkedText() && tv.string != text { tv.string = text }
+        if tv.placeholder != placeholder { tv.placeholder = placeholder }
         let size = NSFont.systemFontSize * zoom
         if tv.font?.pointSize != size { tv.font = .systemFont(ofSize: size) }
         context.coordinator.parent = self
@@ -1317,18 +1361,9 @@ private struct AgentWorkerConversationView: View {
             Divider()
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .bottom, spacing: 6) {
-                    ZStack(alignment: .topLeading) {
-                        if draft.isEmpty {
-                            Text(L("Type into this conversation… (Return sends)"))
-                                .agentFont(.body)
-                                .foregroundColor(.secondary)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 8)
-                                .allowsHitTesting(false)
-                        }
-                        AgentInputField(text: $draft, onSubmit: send)
-                            .frame(minHeight: 34, maxHeight: 120)
-                    }
+                    AgentInputField(text: $draft, placeholder: L("Type into this conversation… (Return sends)"),
+                                    onSubmit: send)
+                        .frame(minHeight: 34, maxHeight: 120)
                     .padding(.horizontal, 6)
                     .background(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.35)))
                     Button(action: send) { Image(systemName: "paperplane.fill") }
