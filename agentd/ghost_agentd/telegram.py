@@ -35,7 +35,8 @@ STATE_TEXT = {
     "denied": "❌ 已拒絕",
     "expired": "⌛️ 逾時，已預設拒絕",
 }
-SOURCE_TEXT = {"tg": "TG", "myghost": "MyGhost", "web": "手機網頁", "timeout": "逾時"}
+SOURCE_TEXT = {"tg": "TG", "myghost": "MyGhost", "web": "手機網頁", "timeout": "逾時",
+               "self_reply": "你已在 TG 自己回覆", "replaced": "已改稿"}
 
 
 def esc(s: str) -> str:
@@ -154,7 +155,8 @@ class Bot:
 
     def card_text(self, p: Pending) -> str:
         if p.kind == "choice":
-            lines = [f"❓ <b>{esc(p.project)} 助手問你</b>", esc(p.summary[:900])]
+            head = "✉️ <b>{} 助手草擬了回覆</b>" if p.reply else "❓ <b>{} 助手問你</b>"
+            lines = [head.format(esc(p.project)), esc(p.summary[:3000])]
             if not p.open:
                 pick = p.options[p.chosen]["label"] if p.chosen is not None else "（略過）"
                 lines.append(f"<b>你選了：{esc(pick)}</b>（{esc(SOURCE_TEXT.get(p.decided_by, p.decided_by))}）")

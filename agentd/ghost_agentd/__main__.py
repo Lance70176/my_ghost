@@ -2,6 +2,9 @@
 
     python -m ghost_agentd            run (launchd does this)
     python -m ghost_agentd check      validate config and print the projects
+    python -m ghost_agentd account-login <project>
+                                      log the project's work TG account in
+                                      (you type the code Telegram sends)
 """
 
 from __future__ import annotations
@@ -31,12 +34,19 @@ def check() -> int:
         bot = "own bot" if p.tg_token else ("fallback bot" if tg.token else "NO BOT")
         print(f"project {p.name}{' (resident)' if p.resident else ''}: {bot}, chat_id {p.tg_chat_id}, "
               f"paths {p.paths or '-'}, {len(p.policy.allow)} always-allow rules")
+        if p.tg_account:
+            from .account import session_file
+            state = "logged in" if session_file(p).exists() else "NOT logged in (run account-login)"
+            print(f"  work account {p.tg_account.get('phone', '?')[:4]}…: {state}")
     return 0
 
 
 def main() -> int:
     if sys.argv[1:2] == ["check"]:
         return check()
+    if sys.argv[1:2] == ["account-login"] and len(sys.argv) > 2:
+        from .account import login
+        return login(cfgmod.Projects().get(sys.argv[2]))
     cfg = cfgmod.load_config()
     projects = cfgmod.Projects()
     broker = Broker(cfg, projects)
@@ -54,7 +64,16 @@ def main() -> int:
     def bot_for(project: str):
         return next((b for b in bots if b.chat_for(project) is not None), None)
 
-    tools = Tools(broker, assistants, bot_for)
+    from .account import AccountWatcher, TelethonAccount
+    accounts = {}
+    for p in projects.all():
+        if p.tg_account:
+            w = AccountWatcher(broker, assistants, p)
+            w.transport = TelethonAccount(p, w)
+            if w.transport.start():
+                accounts[p.name] = w
+                broker.listeners.append(w)
+    tools = Tools(broker, assistants, bot_for, accounts)
     if os.environ.get("GHOST_NO_ASSISTANTS") != "1":
         threading.Timer(2, assistants.start_residents).start()
 
@@ -66,6 +85,11 @@ def main() -> int:
             except Exception as e:
                 log(f"digest failed: {e!r}")
             assistants.tick()
+            for w in list(accounts.values()):
+                try:
+                    w.tick()
+                except Exception as e:
+                    log(f"account tick failed: {e!r}")
             try:
                 from .tools import close_idle_attachments
                 close_idle_attachments()

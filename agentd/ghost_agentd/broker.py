@@ -64,6 +64,10 @@ class Pending:
     # applies it to that card — the assistant itself can't decide anything.
     card_id: str | None = None
     chosen: int | None = None
+    # A reply card (P3): a choice whose first option sends `text` from the
+    # project's work account to the chat a message came from —
+    # {ref, chat_id, msg_id, chat, sender, text, account}.
+    reply: dict | None = None
     event: threading.Event = field(default_factory=threading.Event, repr=False)
 
     @property
@@ -286,6 +290,35 @@ class Broker:
             self._bump()
             self._emit("on_pending", p)
         return p
+
+    def create_reply(self, project: str, summary: str, reply: dict, options: list[str]) -> Pending:
+        """A drafted reply to a message the work account got. Sending it is
+        the commander's pick of option 0; nothing sends it otherwise."""
+        now = time.time()
+        with self.lock:
+            p = Pending(
+                id=secrets.token_hex(4), key="reply-" + secrets.token_hex(6), project=project,
+                session_id="", tmux_session="", tab_title=f"{project} 助手", cwd="",
+                tool_name="draft_reply", tool_input={}, summary=summary[:3000],
+                level=L2, reason="用工作帳號回覆外部訊息", always_pattern=None,
+                created=now, deadline=now + 30 * 86400, kind="choice",
+                options=[{"label": o, "action": None} for o in options], reply=reply,
+            )
+            self.pending[p.id] = p
+            self.by_key[p.key] = p
+            self._bump()
+            self._emit("on_pending", p)
+        return p
+
+    def dismiss(self, pid: str, by: str) -> bool:
+        """Close a card nobody needs any more (answered elsewhere, replaced)
+        without it counting as anyone's answer."""
+        with self.lock:
+            p = self.pending.get(pid)
+            if p is None or not p.open:
+                return False
+            self._resolve(p, "denied", by)
+        return True
 
     def decide(self, pid: str, action: str, by: str, message: str = "") -> tuple[bool, str]:
         """action: allow | deny | always | confirm | cancel | discuss, or for

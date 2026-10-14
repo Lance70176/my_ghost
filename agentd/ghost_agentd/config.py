@@ -65,6 +65,9 @@ class Project:
     # Resident assistant (kept running) vs woken on events (P2).
     resident: bool = False
     policy: ProjectPolicy = field(default_factory=ProjectPolicy)
+    # The project's work account (a real Telegram user) to watch and reply
+    # from (P3): {api_id, api_hash, phone}; None = not watched.
+    tg_account: dict | None = None
 
     @property
     def dir(self) -> Path:
@@ -126,6 +129,7 @@ class Projects:
                 tg_token=str(tg.get("token") or ""),
                 tg_chat_id=int(tg["chat_id"]) if tg.get("chat_id") not in (None, "") else None,
                 resident=bool(raw.get("resident", False)),
+                tg_account=tg.get("account") if isinstance(tg.get("account"), dict) else None,
                 policy=ProjectPolicy(
                     root_paths=paths,
                     allow=list(pol.get("allow") or []),

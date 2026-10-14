@@ -253,10 +253,11 @@ def close_idle_attachments(max_idle: float = 1800) -> None:
 
 
 class Tools:
-    def __init__(self, broker, assistants, bots_for):
+    def __init__(self, broker, assistants, bots_for, accounts=None):
         self.broker = broker
         self.assistants = assistants
         self.bots_for = bots_for  # project name -> Bot or None
+        self.accounts = accounts if accounts is not None else {}  # project name -> AccountWatcher
 
     def call(self, project: str, name: str, args: dict) -> str:
         fn = getattr(self, "t_" + name, None)
@@ -367,3 +368,15 @@ class Tools:
             return "這個專案還沒設定 TG bot，訊息沒有送出。"
         bot.jobs.put((bot._send_notice, (p, redact(text))))
         return "已送到專案群組。"
+
+    def t_draft_reply(self, p, args) -> str:
+        w = self.accounts.get(p.name)
+        if w is None:
+            return "這個專案沒有設定工作帳號。"
+        return w.draft(str(args.get("ref") or ""), str(args.get("text") or ""), str(args.get("note") or ""))
+
+    def t_read_tg_chat(self, p, args) -> str:
+        w = self.accounts.get(p.name)
+        if w is None:
+            return "這個專案沒有設定工作帳號。"
+        return w.history(str(args.get("ref") or ""), int(args.get("limit") or 20))

@@ -3,7 +3,7 @@ name = "ghost-agentd"
 version = "0.1.0"
 description = "MyGhost project-assistant daemon: permission relay and Telegram decision cards"
 requires-python = ">=3.11"
-dependencies = ["pyyaml>=6"]
+dependencies = ["pyyaml>=6", "telethon>=1.36"]
 
 [dependency-groups]
 dev = ["pytest>=8"]
