@@ -73,7 +73,10 @@ def main() -> int:
             if w.transport.start():
                 accounts[p.name] = w
                 broker.listeners.append(w)
-    tools = Tools(broker, assistants, bot_for, accounts)
+    from .sources import Sources
+    sources = Sources(projects, assistants)
+    sources.reload()
+    tools = Tools(broker, assistants, bot_for, accounts, sources)
     if os.environ.get("GHOST_NO_ASSISTANTS") != "1":
         threading.Timer(2, assistants.start_residents).start()
 
@@ -85,6 +88,10 @@ def main() -> int:
             except Exception as e:
                 log(f"digest failed: {e!r}")
             assistants.tick()
+            try:
+                sources.tick()
+            except Exception as e:
+                log(f"sources tick failed: {e!r}")
             for w in list(accounts.values()):
                 try:
                     w.tick()

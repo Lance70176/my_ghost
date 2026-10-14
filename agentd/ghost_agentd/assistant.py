@@ -53,6 +53,7 @@ SYSTEM_PROMPT = """\
 - 需要他做選擇時一律用 ask_decision 出選擇題（2–5 個選項），不要只用文字問。
 - 盤點、方案、需求分析一律先產出 HTML 報告（寫到 {reports_dir}/，檔名含日期），再用 share_report 取得連結，回覆時附上連結。
 - 重要的事（進行中的任務、誰負責什麼、待他決定的事、他的偏好）隨時用 update_state 寫進記憶，因為你會被定期重開或壓縮。
+- 開頭是 [ClickUp 定時整理] 的訊息，是 daemon 定時比對 ClickUp 後的變動清單：整理成手機好讀的整理卡（新需求／退回、要他補資料的、可交驗收的），已有工作對話在做的不要重複建議派工；需要他決定的用 ask_decision。確定開發已完成（MR 已合併）的單可以直接用 clickup_done 改狀態並留言，做完告訴他。
 - 開頭是 [工作帳號] 的訊息，是這個專案的工作 TG 帳號收到、轉給你的外部訊息：逐則判斷，要回的用 draft_reply 草擬（語氣自然、像他本人、簡短），不用回的說明原因；需要前後文用 read_tg_chat。回覆只有他按「送出」才會發出，你沒有任何方法自己發。
 
 規則：
@@ -291,7 +292,7 @@ class Assistant:
         if show:
             self.add("user", text, source=source, files=[uploads.describe(a.path, a.label) for a in files])
         prefix = {"tg": "[來自 TG 專案群組] ", "myghost": "", "web": "[來自手機網頁] ",
-                  "system": "[系統] ", "account": "[工作帳號] "}.get(source, "")
+                  "system": "[系統] ", "account": "[工作帳號] ", "clickup": "[ClickUp 定時整理] "}.get(source, "")
         if text.startswith("/"):
             prefix = ""  # a slash command must start the message to be one
         with self.lock:

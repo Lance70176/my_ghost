@@ -310,11 +310,12 @@ def close_idle_attachments(max_idle: float = 1800) -> None:
 
 
 class Tools:
-    def __init__(self, broker, assistants, bots_for, accounts=None):
+    def __init__(self, broker, assistants, bots_for, accounts=None, sources=None):
         self.broker = broker
         self.assistants = assistants
         self.bots_for = bots_for  # project name -> Bot or None
         self.accounts = accounts if accounts is not None else {}  # project name -> AccountWatcher
+        self.sources = sources  # Sources (requirement sources), or None
 
     def call(self, project: str, name: str, args: dict) -> str:
         fn = getattr(self, "t_" + name, None)
@@ -437,3 +438,38 @@ class Tools:
         if w is None:
             return "這個專案沒有設定工作帳號。"
         return w.history(str(args.get("ref") or ""), int(args.get("limit") or 20))
+
+    def t_clickup_task(self, p, args) -> str:
+        tid = str(args.get("task_id") or "").strip()
+        src = self.sources.find(p.name, tid) if self.sources else None
+        if src is None:
+            return "這個專案沒有設定 ClickUp 來源，或這張單不在追蹤範圍內。"
+        try:
+            return src.task(tid)
+        except Exception as e:
+            return f"讀不到這張單：{e}"
+
+    def t_clickup_done(self, p, args) -> str:
+        tid = str(args.get("task_id") or "").strip()
+        src = self.sources.find(p.name, tid) if self.sources else None
+        if src is None:
+            return "這個專案沒有設定 ClickUp 來源，或這張單不在追蹤範圍內。"
+        try:
+            return src.done(tid, str(args.get("comment") or ""))
+        except Exception as e:
+            return f"沒有改成功：{e}"
+
+    def t_refresh_sources(self, p, args) -> str:
+        srcs = (self.sources.by_project.get(p.name) if self.sources else None) or []
+        if not srcs:
+            return "這個專案沒有設定需求來源。"
+        out = []
+        for s in srcs:
+            if not s.lock.acquire(blocking=False):
+                out.append(f"{s.name}：正在整理中")
+                continue
+            try:
+                out.append(f"{s.name}：{s.run()}")
+            finally:
+                s.lock.release()
+        return "\n".join(out)
