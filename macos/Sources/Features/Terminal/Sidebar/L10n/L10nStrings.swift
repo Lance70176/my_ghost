@@ -10,6 +10,12 @@ enum L10nStrings {
 
     static let table: [String: [AppLanguage: String]] = [
         // MARK: ghost-agentd decisions
+        "Chose: %@": t("選了：%@", "选了：%@", "選択：%@"),
+        "Sent as %@": t("已用 %@ 送出", "已用 %@ 发出", "%@ として送信済み"),
+        "Not sent: asked for changes": t("沒送出：要求修改", "没发出：要求修改", "未送信：修正を依頼"),
+        "Not sent: you replied in Telegram yourself": t("沒送出：你已在 TG 自己回覆", "没发出：你已在 TG 自己回复", "未送信：Telegram で自分で返信済み"),
+        "Not sent: replaced by a newer draft": t("沒送出：已換成新草稿", "没发出：已换成新草稿", "未送信：新しい下書きに置き換え"),
+        "Not sent: no reply needed": t("沒送出：不用回", "没发出：不用回", "未送信：返信不要"),
         "Reply to %@ as %@?": t("要用 %2$@ 回覆 %1$@ 嗎？", "要用 %2$@ 回复 %1$@ 吗？", "%2$@ として %1$@ に返信しますか？"),
         "%@ in %@ wrote": t("%1$@ 在「%2$@」說", "%1$@ 在「%2$@」说", "%1$@（%2$@）のメッセージ"),
         "%@ wrote": t("%@ 說", "%@ 说", "%@ のメッセージ"),

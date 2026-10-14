@@ -1305,6 +1305,9 @@ private struct AgentHistoryRow: View {
     }()
 
     private var icon: (String, Color) {
+        if record.reply != nil {
+            return record.outcome == "send" ? ("paperplane.circle.fill", .green) : ("minus.circle.fill", .secondary)
+        }
         switch record.state {
         case "allowed": return ("checkmark.circle.fill", .green)
         case "expired": return ("clock.badge.xmark", .secondary)
@@ -1343,11 +1346,18 @@ private struct AgentHistoryRow: View {
                 .help(L("Show the conversation this request came from"))
                 .disabled((record.tmuxSession ?? "").isEmpty)
             }
-            Text(record.summary)
-                .agentFont(.caption, design: .monospaced)
-                .lineLimit(isExpanded ? nil : 1)
-                .truncationMode(.middle)
-                .onTapGesture(perform: onToggle)
+            if let r = record.reply {
+                replyRecord(r)
+            } else {
+                Text(record.summary)
+                    .agentFont(.caption, design: .monospaced)
+                    .lineLimit(isExpanded ? nil : 1)
+                    .truncationMode(.middle)
+                    .onTapGesture(perform: onToggle)
+                if let chosen = record.chosen {
+                    Text(L("Chose: %@", chosen)).agentFont(.caption, weight: .semibold)
+                }
+            }
             if isClosed {
                 Label(L("That conversation has been closed; it can't be shown."),
                       systemImage: "exclamationmark.triangle")
@@ -1366,6 +1376,51 @@ private struct AgentHistoryRow: View {
             }
         }
         .padding(.vertical, 2)
+    }
+
+    /// A work-account reply: who wrote what, the reply in full, and whether
+    /// it went out.
+    private func replyRecord(_ r: AgentReplyDraft) -> some View {
+        let sent = record.outcome == "send"
+        let outcome: String = {
+            switch record.outcome {
+            case "send": return L("Sent as %@", r.account)
+            case "revise": return L("Not sent: asked for changes")
+            case "self_reply": return L("Not sent: you replied in Telegram yourself")
+            case "replaced": return L("Not sent: replaced by a newer draft")
+            default: return L("Not sent: no reply needed")
+            }
+        }()
+        return VStack(alignment: .leading, spacing: 4) {
+            Text(r.isPrivate == false ? L("%@ in %@ wrote", r.sender, r.chat) : L("%@ wrote", r.sender))
+                .agentFont(.caption).foregroundColor(.secondary)
+            if let original = r.original, !original.isEmpty {
+                Text(original)
+                    .agentFont(.callout)
+                    .lineLimit(isExpanded ? nil : 3)
+                    .textSelection(.enabled)
+                    .padding(6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
+            }
+            Label(outcome, systemImage: sent ? "paperplane.fill" : "xmark")
+                .agentFont(.caption, weight: .semibold)
+                .foregroundColor(sent ? .green : .secondary)
+            Text(r.text)
+                .agentFont(.callout)
+                .textSelection(.enabled)
+                .padding(6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 6)
+                    .fill(sent ? Color.green.opacity(0.10) : Color.primary.opacity(0.04)))
+                .overlay(RoundedRectangle(cornerRadius: 6)
+                    .stroke(sent ? Color.green.opacity(0.4) : Color.secondary.opacity(0.25)))
+            if let note = r.note, !note.isEmpty, isExpanded {
+                Label(note, systemImage: "lightbulb").agentFont(.caption).foregroundColor(.secondary)
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onToggle)
     }
 }
 

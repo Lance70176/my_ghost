@@ -206,6 +206,12 @@ struct AgentDecisionRecord: Decodable, Identifiable, Equatable {
     let alwaysAdded: String?
     let discussed: Bool?
     let denyMessage: String?
+    /// A choice: the option picked.
+    let chosen: String?
+    /// A work-account reply card, and what became of it:
+    /// send | revise | skip | self_reply | replaced.
+    let reply: AgentReplyDraft?
+    let outcome: String?
 
     var date: Date { Date(timeIntervalSince1970: ts) }
     var allowed: Bool { state == "allowed" }

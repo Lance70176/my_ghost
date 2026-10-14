@@ -401,6 +401,11 @@ class Broker:
             "discussed": p.discussing, "deny_message": p.deny_message if state != "allowed" else "",
             "kind": p.kind,
             "chosen": p.options[p.chosen]["label"] if p.kind == "choice" and p.chosen is not None else None,
+            "reply": {k: p.reply.get(k) for k in ("chat", "sender", "text", "account", "private", "original", "note")}
+            if p.reply else None,
+            # send | revise | skip | self_reply | replaced
+            "outcome": (by if by in ("self_reply", "replaced") else
+                        {0: "send", 1: "revise"}.get(p.chosen, "skip")) if p.reply else None,
             "wait_seconds": round(time.time() - p.created, 1),
         })
         was_pending = self.pending.pop(p.id, None) is not None

@@ -100,6 +100,11 @@ def test_message_to_card_to_send(broker, manager):
     assert ok
     wait_for(lambda: w.transport.sent == [(42, "您好，我馬上幫您查，稍等一下。", 9)])
     wait_for(lambda: any(r == "notice" and "已用 @SnakeFQ 回覆" in t for r, t in roles(a)))
+    import json
+    recs = [json.loads(l) for l in (w.project.dir / "decisions.jsonl").read_text().splitlines()]
+    assert recs[-1]["outcome"] == "send" and recs[-1]["reply"]["text"].startswith("您好")
+    assert recs[-1]["reply"]["original"] == "會員 5 號登不進去"
+    assert recs[-2]["outcome"] == "replaced"  # the first draft
 
 
 def test_skip_and_self_reply_send_nothing(broker, manager):
