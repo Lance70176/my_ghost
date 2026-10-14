@@ -419,8 +419,13 @@ class Broker:
             for p in self.projects.all():
                 sessions = [s for s in self.sessions.values() if s.project == p.name and s.status != "ended"]
                 f = p.dir / "decisions.jsonl"
+                from .tools import list_jobs
+                jobs = list_jobs(p.paths) if p.paths else []
                 out.append({
                     "name": p.name, "resident": p.resident, "paths": p.paths,
+                    "jobs": len(jobs),
+                    "jobs_working": sum(1 for j in jobs if j["state"] == "working"),
+                    "jobs_waiting": sum(1 for j in jobs if j["state_label"] == "等你"),
                     "has_bot": bool(p.tg_token) or (p.name in self.tg_projects),
                     "tg_ready": p.name in self.tg_projects,
                     "pending": sum(1 for x in self.pending.values() if x.project == p.name),

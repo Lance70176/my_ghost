@@ -144,7 +144,9 @@ private struct AgentProjectRow: View {
         if let a = assistant {
             parts.append(a.busy ? L("Replying…") : (a.running ? L("Ready") : L("Asleep")))
         }
-        if project.sessions > 0 { parts.append(L("%d conversations", project.sessions)) }
+        let convs = project.jobs ?? project.sessions
+        if convs > 0 { parts.append(L("%d conversations", convs)) }
+        if let working = project.jobsWorking, working > 0 { parts.append(L("%d running", working)) }
         return parts.joined(separator: " · ")
     }
 }
@@ -197,7 +199,7 @@ private struct AgentAssistantMainContent: View {
             }
             .frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
 
-            AgentRightColumn(project: uiState.assistantProject)
+            AgentRightColumn(project: uiState.assistantProject, uiState: uiState)
                 .frame(minWidth: 300, idealWidth: 340, maxWidth: 460, maxHeight: .infinity)
         }
     }
@@ -264,7 +266,11 @@ struct AgentChatView: View {
     @ObservedObject private var lang = LanguageManager.shared
     @State private var draft = ""
     @State private var showTools = false
+    @State private var tab = Tab.chat
     @FocusState private var inputFocused: Bool
+    @EnvironmentObject private var client: AgentDaemonClient
+
+    enum Tab { case chat, conversations }
 
     init(project: String, client: AgentDaemonClient) {
         self.project = project
@@ -285,6 +291,30 @@ struct AgentChatView: View {
         VStack(spacing: 0) {
             header
             Divider()
+            if tab == .conversations {
+                AgentWorkersList(project: project) { _, w in
+                    tab = .chat
+                    let text = L("Please look at the conversation \"%@\" (session_id=%@): where it stands, anything unfinished, and what you need from me.",
+                                 w.name, w.sessionId)
+                    model.send(text)
+                }
+            } else {
+                chatPane
+            }
+        }
+        .onAppear {
+            model.start()
+            inputFocused = true
+        }
+        .onDisappear { model.stop() }
+    }
+
+    private var conversationCount: Int? {
+        client.projects.first { $0.name == project }?.jobs
+    }
+
+    private var chatPane: some View {
+        VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
@@ -317,11 +347,6 @@ struct AgentChatView: View {
             Divider()
             input
         }
-        .onAppear {
-            model.start()
-            inputFocused = true
-        }
-        .onDisappear { model.stop() }
     }
 
     private var header: some View {
@@ -336,10 +361,20 @@ struct AgentChatView: View {
                     .font(.caption)
                     .foregroundColor(s.busy ? .orange : (s.running ? .green : .secondary))
             }
+            Picker("", selection: $tab) {
+                Text(L("Assistant chat")).tag(Tab.chat)
+                Text(conversationCount.map { L("Conversations %d", $0) } ?? L("Conversations")).tag(Tab.conversations)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .padding(.leading, 8)
             Spacer()
-            Toggle(L("Show tool calls"), isOn: $showTools)
-                .toggleStyle(.checkbox)
-                .font(.caption)
+            if tab == .chat {
+                Toggle(L("Show tool calls"), isOn: $showTools)
+                    .toggleStyle(.checkbox)
+                    .font(.caption)
+            }
             if let s = model.status {
                 if let pct = s.contextPct {
                     Text(L("Context %d%%", pct)).font(.caption.monospacedDigit())
@@ -667,6 +702,7 @@ private struct AgentOverview: View {
 
 private struct AgentRightColumn: View {
     let project: String?
+    @ObservedObject var uiState: SidebarUIState
     @EnvironmentObject private var client: AgentDaemonClient
 
     private var pending: [AgentPending] {
@@ -695,11 +731,142 @@ private struct AgentRightColumn: View {
                 }
             }
             .padding(10)
-            .frame(minHeight: 160)
+            .frame(minHeight: 120)
 
             AgentHistoryList(project: project)
-                .frame(minHeight: 160)
+                .frame(minHeight: 140)
         }
+    }
+}
+
+/// The project's Claude Code conversations (the same list Claude Code's agent
+/// view shows), each with a way to ask the assistant about it.
+private struct AgentWorkersList: View {
+    let project: String?
+    /// "Ask the assistant" about a conversation (project, conversation).
+    let onAsk: (String, AgentWorker) -> Void
+    @EnvironmentObject private var client: AgentDaemonClient
+    @State private var workers: [(project: String, worker: AgentWorker)] = []
+    @State private var expanded: Set<String> = []
+    @State private var asked: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                let working = workers.filter { $0.worker.isWorking }.count
+                let waiting = workers.filter { $0.worker.needsYou }.count
+                Text(L("%d awaiting input · %d working · %d completed", waiting, working,
+                       workers.count - working - waiting))
+                    .font(.callout).foregroundColor(.secondary)
+                Spacer()
+                Button { Task { await reload() } } label: { Image(systemName: "arrow.clockwise") }
+                    .buttonStyle(.borderless)
+                    .help(L("Refresh"))
+            }
+            if workers.isEmpty {
+                Text(L("No conversations in this project yet."))
+                    .font(.callout).foregroundColor(.secondary)
+                Spacer(minLength: 0)
+            } else {
+                List(workers, id: \.worker.id) { item in
+                    row(item.project, item.worker)
+                }
+                .listStyle(.inset)
+            }
+        }
+        .padding(10)
+        .task(id: "\(project ?? "*")-\(client.changeCount / 6)") { await reload() }
+    }
+
+    private func reload() async {
+        var out: [(String, AgentWorker)] = []
+        let names = project.map { [$0] } ?? client.projects.map(\.name)
+        for name in names {
+            for w in await client.workers(project: name) { out.append((name, w)) }
+        }
+        out.sort { $0.1.updatedAt > $1.1.updatedAt }
+        workers = out.map { (project: $0.0, worker: $0.1) }
+    }
+
+    private static let iso: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    private static let shown: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MM/dd HH:mm"
+        return f
+    }()
+
+    private static let relative: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .short
+        return f
+    }()
+
+    private func when(_ s: String) -> String {
+        guard let d = Self.iso.date(from: s) ?? ISO8601DateFormatter().date(from: s) else { return "" }
+        if Date().timeIntervalSince(d) > 7 * 86400 { return Self.shown.string(from: d) }
+        return Self.relative.localizedString(for: d, relativeTo: Date())
+    }
+
+    @ViewBuilder
+    private func row(_ proj: String, _ w: AgentWorker) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(w.isWorking ? Color.blue : (w.needsYou ? Color.orange : Color.green))
+                    .frame(width: 7, height: 7)
+                Text(w.name).fontWeight(.semibold).lineLimit(1)
+                if project == nil {
+                    Text(proj).font(.caption).foregroundColor(.accentColor)
+                }
+                Spacer()
+                Text(w.stateLabel).font(.caption2)
+                    .foregroundColor(w.isWorking ? .blue : (w.needsYou ? .orange : .secondary))
+                Text(when(w.updatedAt)).font(.caption2.monospacedDigit()).foregroundColor(.secondary)
+            }
+            if !w.detail.isEmpty {
+                Text(w.detail)
+                    .font(.callout)
+                    .foregroundColor(.secondary)
+                    .lineLimit(expanded.contains(w.id) ? nil : 1)
+                    .truncationMode(.tail)
+                    .onTapGesture {
+                        if expanded.contains(w.id) { expanded.remove(w.id) } else { expanded.insert(w.id) }
+                    }
+            }
+            if expanded.contains(w.id) {
+                VStack(alignment: .leading, spacing: 2) {
+                    if !w.intent.isEmpty { Text(L("Started with: %@", w.intent)) }
+                    if !w.branch.isEmpty { Text(L("Branch: %@", w.branch)) }
+                    Text(w.cwd)
+                }
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .textSelection(.enabled)
+            }
+            HStack {
+                Spacer()
+                Button {
+                    ask(proj, w)
+                } label: {
+                    Label(asked == w.id ? L("Asked") : L("Ask the assistant"), systemImage: "sparkles")
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .help(L("Have the assistant read this conversation and sum it up"))
+                .disabled(asked == w.id)
+            }
+        }
+        .padding(.vertical, 3)
+    }
+
+    private func ask(_ proj: String, _ w: AgentWorker) {
+        asked = w.id
+        onAsk(proj, w)
     }
 }
 

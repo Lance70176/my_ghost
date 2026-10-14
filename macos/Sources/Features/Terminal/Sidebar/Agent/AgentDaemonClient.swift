@@ -100,12 +100,36 @@ struct AgentProject: Decodable, Identifiable, Equatable {
     let waiting: Int
     let running: Int
     let lastActivity: Double
+    /// Claude Code conversations (its agent list) under the project.
+    let jobs: Int?
+    let jobsWorking: Int?
+    let jobsWaiting: Int?
 
     var id: String { name }
     /// Requests outside every project.
     var isDefault: Bool { name == "_default" }
     var displayName: String { isDefault ? L("Other conversations") : name }
 }
+
+/// One of a project's Claude Code conversations, as Claude Code's own agent
+/// list has it (~/.claude/jobs/<id>/state.json).
+struct AgentWorker: Decodable, Identifiable, Equatable {
+    let id: String
+    let name: String
+    let state: String
+    let stateLabel: String
+    let detail: String
+    let intent: String
+    let sessionId: String
+    let cwd: String
+    let branch: String
+    let updatedAt: String
+
+    var isWorking: Bool { state == "working" }
+    var needsYou: Bool { stateLabel == "等你" }
+}
+
+private struct AgentWorkers: Decodable { let workers: [AgentWorker] }
 
 /// One line of a project's decisions.jsonl.
 struct AgentDecisionRecord: Decodable, Identifiable, Equatable {
@@ -379,6 +403,13 @@ final class AgentDaemonClient: ObservableObject {
             let map = Dictionary(a.assistants.map { ($0.project, $0) }, uniquingKeysWith: { x, _ in x })
             if map != assistants { assistants = map }
         }
+    }
+
+    /// The project's Claude Code conversations, newest first.
+    func workers(project: String) async -> [AgentWorker] {
+        guard let (data, _) = try? await fetch("api/projects/\(project)/workers"),
+              let list = try? Self.decoder.decode(AgentWorkers.self, from: data) else { return [] }
+        return list.workers
     }
 
     /// Newest first; nil project means every project.

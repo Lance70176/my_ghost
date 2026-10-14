@@ -36,6 +36,7 @@ from .broker import Broker, log
 DECIDE = re.compile(r"^/api/decisions/([0-9a-f]{8})$")
 ASSISTANT = re.compile(r"^/api/assistants/([A-Za-z0-9_.-]+)/(chat|messages|stop|start)$")
 TOOL = re.compile(r"^/assistant-tools/([a-z_]+)$")
+WORKERS = re.compile(r"^/api/projects/([A-Za-z0-9_.-]+)/workers$")
 LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
 
@@ -113,6 +114,12 @@ def make_handler(broker: Broker, assistants=None, tools=None, remote_token: str 
                 return self._send(200, self._state())
             if u.path == "/api/assistants" and assistants:
                 return self._send(200, {"assistants": assistants.list()})
+            m = WORKERS.match(u.path)
+            if m:
+                from .tools import list_jobs
+                p = broker.projects.get(m.group(1))
+                own = assistants.get(p.name).meta.get("session_id", "") if assistants else ""
+                return self._send(200, {"workers": list_jobs(p.paths, exclude_session=own)})
             m = ASSISTANT.match(u.path)
             if m and m.group(2) == "chat" and assistants:
                 since = int((q.get("since") or ["0"])[0])

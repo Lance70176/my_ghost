@@ -10,6 +10,17 @@ enum L10nStrings {
 
     static let table: [String: [AppLanguage: String]] = [
         // MARK: ghost-agentd decisions
+        "Assistant chat": t("助手對話", "助手对话", "アシスタント"),
+        "Conversations %d": t("工作對話 %d", "工作对话 %d", "会話 %d"),
+        "%d awaiting input · %d working · %d completed": t("%d 等你 · %d 執行中 · %d 完成", "%d 等你 · %d 执行中 · %d 完成", "入力待ち %d · 実行中 %d · 完了 %d"),
+        "Refresh": t("重新整理", "刷新", "更新"),
+        "Started with: %@": t("一開始的要求：%@", "一开始的要求：%@", "最初の依頼：%@"),
+        "Branch: %@": t("分支：%@", "分支：%@", "ブランチ：%@"),
+        "No conversations in this project yet.": t("這個專案還沒有對話。", "这个项目还没有对话。", "このプロジェクトにはまだ会話がありません。"),
+        "Asked": t("已請助手查看", "已请助手查看", "依頼済み"),
+        "Ask the assistant": t("請助手看看", "请助手看看", "アシスタントに聞く"),
+        "Have the assistant read this conversation and sum it up": t("請助手讀這個對話並整理重點", "请助手读这个对话并整理重点", "アシスタントにこの会話を読んで要約してもらう"),
+        "Please look at the conversation \"%@\" (session_id=%@): where it stands, anything unfinished, and what you need from me.": t("請看一下工作對話「%@」（session_id=%@）：目前進度、還有什麼沒收尾、需要我做什麼。", "请看一下工作对话「%@」（session_id=%@）：目前进度、还有什么没收尾、需要我做什么。", "会話「%@」（session_id=%@）を確認してください：進捗、未完了のこと、私にしてほしいこと。"),
         "This Mac": t("這台 Mac", "这台 Mac", "この Mac"),
         "ghost-agentd isn't running on this Mac": t("這台 Mac 沒有執行 ghost-agentd", "这台 Mac 没有运行 ghost-agentd", "この Mac では ghost-agentd が動いていません"),
         "Can't reach ghost-agentd on %@": t("連不到 %@ 上的 ghost-agentd", "连不到 %@ 上的 ghost-agentd", "%@ の ghost-agentd に接続できません"),

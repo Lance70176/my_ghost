@@ -19,6 +19,57 @@ from pathlib import Path
 from .policy import redact
 
 TRANSCRIPTS = Path(os.path.expanduser("~/.claude/projects"))
+JOBS = Path(os.path.expanduser("~/.claude/jobs"))
+# Claude Code background job states, as the agent list shows them.
+JOB_STATE = {"working": "執行中", "done": "完成", "idle": "完成", "blocked": "等你",
+             "awaiting_input": "等你", "needs_input": "等你", "waiting": "等你", "failed": "失敗",
+             "error": "失敗", "stopped": "已停止"}
+
+
+def _under(path: str, roots: list[str]) -> bool:
+    if not path:
+        return False
+    p = os.path.realpath(path)
+    for r in roots:
+        r = os.path.realpath(os.path.expanduser(r)).rstrip("/")
+        if p == r or p.startswith(r + "/"):
+            return True
+    return False
+
+
+def list_jobs(project_paths: list[str], exclude_session: str = "") -> list[dict]:
+    """The project's Claude Code conversations as its agent list knows them
+    (~/.claude/jobs/<id>/state.json): name, state, latest progress."""
+    out = []
+    if not JOBS.exists() or not project_paths:
+        return out
+    for f in JOBS.glob("*/state.json"):
+        try:
+            d = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        cwd = d.get("cwd") or d.get("originCwd") or ""
+        if not (_under(cwd, project_paths) or _under(d.get("worktreePath") or "", project_paths)):
+            continue
+        if exclude_session and d.get("sessionId") == exclude_session:
+            continue
+        state = str(d.get("state") or "")
+        intent = str(d.get("displayIntent") or d.get("intent") or "").strip().splitlines()
+        out.append({
+            "id": f.parent.name,
+            "name": d.get("name") or (intent[0][:60] if intent else f.parent.name),
+            "state": state,
+            "state_label": JOB_STATE.get(state, state),
+            "detail": redact(str(d.get("detail") or "")[:400]),
+            "intent": redact(intent[0][:200]) if intent else "",
+            "session_id": d.get("sessionId") or "",
+            "cwd": cwd,
+            "branch": d.get("worktreeBranch") or "",
+            "created_at": d.get("createdAt") or "",
+            "updated_at": d.get("updatedAt") or "",
+        })
+    out.sort(key=lambda j: j["updated_at"], reverse=True)
+    return out
 SHARE = shutil.which("share") or os.path.expanduser("~/.local/bin/share")
 
 
@@ -133,6 +184,14 @@ class Tools:
         days = float(args.get("days") or 2)
         own = self.assistants.get(p.name).meta.get("session_id")
         live = {s["session_id"]: s for s in self.broker.list_sessions()}
+        # Claude Code's own agent list first: it has the names and states the
+        # commander sees.
+        jobs = list_jobs(p.paths, exclude_session=own)
+        if jobs:
+            for j in jobs:
+                j["pending_decisions"] = sum(1 for x in self.broker.pending.values()
+                                             if x.session_id == j["session_id"])
+            return json.dumps(jobs, ensure_ascii=False, indent=1)
         rows = []
         for f in _transcripts(p.paths, days)[:40]:
             if f.stem == own:
