@@ -549,9 +549,10 @@ class AssistantManager:
         if option and option.get("action") and p.card_id:
             msg += f"（這個選項已直接對決策卡 {p.card_id} 執行 {option['action']}，你不需要再做什麼。）"
         if getattr(p, "dispatch", None):
-            msg = {0: "他按了開工：daemon 正在建 worktree 並開分頁，開好會通知；之後它停下來時你會收到它最後說的話。",
-                   1: "他想修改這張開工卡。問他要怎麼改，改好再用 propose_dispatch 出新卡。",
-                   2: "他決定不做這項工作。"}.get(p.chosen, "他略過了這張開工卡。")
+            which = f"「{p.dispatch.get('title', '')}」（派工 id={p.dispatch.get('id', '')}）"
+            msg = {0: f"他按了開工{which}：daemon 正在建 worktree 並啟動，開好會通知；之後它停下來時你會收到它最後說的話。",
+                   1: f"他想修改開工卡{which}。問他要怎麼改，改好再用 propose_dispatch 出新卡。",
+                   2: f"他決定不做{which}。"}.get(p.chosen, f"他略過了開工卡{which}。")
         if p.reply:
             msg = {0: f"他按了送出：你草擬給「{p.reply['chat']}」的回覆正在用 {p.reply['account']} 發出，你不需要再做什麼。",
                    1: f"他想修改你給「{p.reply['chat']}」的回覆（ref={p.reply['ref']}）。問他要怎麼改，改好再用 draft_reply 出新的回覆卡。",
