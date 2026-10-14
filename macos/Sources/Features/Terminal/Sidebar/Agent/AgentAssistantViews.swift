@@ -1299,8 +1299,13 @@ private struct AgentHistoryList: View {
                         onToggle: {
                             if expanded.contains(r.id) { expanded.remove(r.id) } else { expanded.insert(r.id) }
                         })
+                    // Each decision is its own card, with room between them.
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 5, leading: 2, bottom: 5, trailing: 2))
+                    .listRowBackground(Color.clear)
                 }
-                .listStyle(.inset)
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
             }
         }
         .padding(10)
@@ -1409,7 +1414,20 @@ private struct AgentHistoryRow: View {
                 .foregroundColor(.secondary)
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 9)
+        .padding(.leading, 13)
+        .padding(.trailing, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.05)))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.secondary.opacity(0.22)))
+        // A strip in the outcome's colour down the left edge.
+        .overlay(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(icon.1.opacity(0.85))
+                .frame(width: 3)
+                .padding(.vertical, 8)
+                .padding(.leading, 4)
+        }
     }
 
     /// A work-account reply: who wrote what, the reply in full, and whether
