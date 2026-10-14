@@ -114,12 +114,31 @@ private struct AgentDecisionStack: View {
     @ObservedObject private var hub = AgentHub.shared
     @ObservedObject private var lang = LanguageManager.shared
 
+    /// The cards' natural height, measured inside the scroll view.
+    @State private var cardsHeight: CGFloat = 0
+
+    /// Tallest the card area may be: the screen, less room for the rest.
+    private var maxCardsHeight: CGFloat {
+        ((NSScreen.main ?? NSScreen.screens.first)?.visibleFrame.height ?? 800) - 120
+    }
+
     var body: some View {
         VStack(alignment: .trailing, spacing: 8) {
-            ForEach(hub.allPending.suffix(3)) { hp in
-                AgentDecisionCard(p: hp.pending, showHost: hub.clients.count > 1 || !hp.client.isLocal)
-                    .environmentObject(hp.client)
+            // Tall cards (long choices, an open reason field) scroll rather
+            // than run off the screen.
+            ScrollView(.vertical) {
+                VStack(alignment: .trailing, spacing: 8) {
+                    ForEach(hub.allPending.suffix(3)) { hp in
+                        AgentDecisionCard(p: hp.pending, showHost: hub.clients.count > 1 || !hp.client.isLocal)
+                            .environmentObject(hp.client)
+                    }
+                }
+                .background(GeometryReader { g in
+                    Color.clear.preference(key: CardsHeightKey.self, value: g.size.height)
+                })
             }
+            .frame(height: min(max(cardsHeight, 1), maxCardsHeight))
+            .onPreferenceChange(CardsHeightKey.self) { cardsHeight = $0 }
             if hub.allPending.count > 3 {
                 Text(L("%d more waiting", hub.allPending.count - 3))
                     .agentFont(.caption)
@@ -353,4 +372,9 @@ struct AgentDecisionCard: View {
             }
         }
     }
+}
+
+private struct CardsHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }

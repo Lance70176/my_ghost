@@ -469,9 +469,11 @@ final class AgentDaemonClient: ObservableObject {
     }
 
     /// The project's Claude Code conversations, newest first.
-    func workers(project: String) async -> [AgentWorker] {
-        guard let (data, _) = try? await fetch("api/projects/\(project)/workers"),
-              let list = try? Self.decoder.decode(AgentWorkers.self, from: data) else { return [] }
+    /// nil when the request failed — not the same as "no conversations".
+    func workers(project: String) async -> [AgentWorker]? {
+        guard let (data, resp) = try? await fetch("api/projects/\(project)/workers"),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let list = try? Self.decoder.decode(AgentWorkers.self, from: data) else { return nil }
         return list.workers
     }
 
@@ -488,11 +490,13 @@ final class AgentDaemonClient: ObservableObject {
     }
 
     /// Newest first; nil project means every project.
-    func decisions(project: String?, limit: Int = 300) async -> [AgentDecisionRecord] {
+    /// nil when the request failed — not the same as "no decisions".
+    func decisions(project: String?, limit: Int = 300) async -> [AgentDecisionRecord]? {
         var q = [URLQueryItem(name: "limit", value: String(limit))]
         if let project { q.append(URLQueryItem(name: "project", value: project)) }
-        guard let (data, _) = try? await fetch("api/decisions", q),
-              let list = try? Self.decoder.decode(AgentDecisions.self, from: data) else { return [] }
+        guard let (data, resp) = try? await fetch("api/decisions", q),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let list = try? Self.decoder.decode(AgentDecisions.self, from: data) else { return nil }
         return list.decisions
     }
 

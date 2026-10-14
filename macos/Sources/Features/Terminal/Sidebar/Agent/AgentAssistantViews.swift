@@ -328,20 +328,26 @@ struct AgentChatView: View {
     let project: String
     @StateObject private var model: AgentChatModel
     @ObservedObject private var lang = LanguageManager.shared
-    @State private var draft = ""
+    @State private var draft: String
     @State private var showTools = false
-    @State private var tab = Tab.chat
+    @State private var tab: Tab
     @FocusState private var inputFocused: Bool
     @EnvironmentObject private var client: AgentDaemonClient
+    @StateObject private var follow = AgentFollow()
 
     enum Tab { case chat, conversations }
 
     @ObservedObject var uiState: SidebarUIState
+    /// Key for this host + project in the draft store.
+    private let storeKey: String
 
     init(project: String, client: AgentDaemonClient, uiState: SidebarUIState) {
         self.project = project
         self.uiState = uiState
+        storeKey = "\(client.hostKey)|\(project)"
         _model = StateObject(wrappedValue: AgentChatModel(project: project, client: client))
+        _draft = State(initialValue: AgentDraftStore.shared.draft(storeKey))
+        _tab = State(initialValue: AgentDraftStore.shared.flag(storeKey + "|conversations") ? .conversations : .chat)
     }
 
     private var visible: [AgentChatItem] {
@@ -377,6 +383,8 @@ struct AgentChatView: View {
             inputFocused = true
         }
         .onDisappear { model.stop() }
+        .onChange(of: draft) { AgentDraftStore.shared.setDraft(storeKey, $0) }
+        .onChange(of: tab) { AgentDraftStore.shared.setFlag(storeKey + "|conversations", $0 == .conversations) }
     }
 
     private var conversationCount: Int? {
@@ -385,6 +393,7 @@ struct AgentChatView: View {
 
     private var chatPane: some View {
         VStack(spacing: 0) {
+            GeometryReader { viewport in
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
@@ -405,14 +414,32 @@ struct AgentChatView: View {
                             }
                             .id(Int.max)
                         }
+                        AgentScrollEndMarker()
                     }
                     .padding(14)
                 }
-                .onChange(of: model.items.last?.seq) { _ in
-                    withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(model.items.last?.seq, anchor: .bottom) }
+                .coordinateSpace(name: AgentFollow.space)
+                .onPreferenceChange(AgentScrollEndKey.self) { y in
+                    follow.endMoved(to: y, viewport: viewport.size.height)
                 }
-                .onChange(of: model.partial) { _ in proxy.scrollTo(Int.max, anchor: .bottom) }
-                .onAppear { proxy.scrollTo(model.items.last?.seq, anchor: .bottom) }
+                // New messages scroll into view only while you're at the
+                // bottom; reading further up, they're counted instead.
+                .onChange(of: model.items.last?.seq) { _ in
+                    if follow.shouldFollow() {
+                        withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(AgentScrollEndMarker.id, anchor: .bottom) }
+                    }
+                }
+                .onChange(of: model.partial) { _ in
+                    if follow.atBottom { proxy.scrollTo(AgentScrollEndMarker.id, anchor: .bottom) }
+                }
+                .onAppear { proxy.scrollTo(AgentScrollEndMarker.id, anchor: .bottom) }
+                .overlay(alignment: .bottom) {
+                    AgentNewMessagesButton(follow: follow) {
+                        follow.unseen = 0
+                        withAnimation { proxy.scrollTo(AgentScrollEndMarker.id, anchor: .bottom) }
+                    }
+                }
+            }
             }
             Divider()
             input
@@ -511,6 +538,7 @@ struct AgentChatView: View {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         draft = ""
+        follow.followNext = true
         model.send(text) { failed in
             // Only if nothing new was typed meanwhile.
             if draft.isEmpty { draft = failed }
@@ -798,7 +826,7 @@ private struct AgentRightColumn: View {
 
     var body: some View {
         if let project, let id = uiState.focusedWorkerID {
-            AgentWorkerConversationView(project: project, workerID: id) {
+            AgentWorkerConversationView(project: project, workerID: id, hostKey: client.hostKey) {
                 uiState.focusedWorkerID = nil
             }
             .id(id)
@@ -850,6 +878,8 @@ private struct AgentWorkersList: View {
     @State private var workers: [(project: String, worker: AgentWorker)] = []
     @State private var expanded: Set<String> = []
     @State private var asked: String?
+    @State private var loaded = false
+    @State private var loadFailed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -864,9 +894,23 @@ private struct AgentWorkersList: View {
                     .buttonStyle(.borderless)
                     .help(L("Refresh"))
             }
-            if workers.isEmpty {
-                Text(L("No conversations in this project yet."))
-                    .agentFont(.callout).foregroundColor(.secondary)
+            if loadFailed {
+                HStack(spacing: 8) {
+                    Label(workers.isEmpty ? L("Couldn't load the conversations.")
+                                          : L("Couldn't refresh — showing what was loaded before. Retrying…"),
+                          systemImage: "exclamationmark.triangle")
+                        .agentFont(.caption).foregroundColor(.orange)
+                    Button(L("Retry")) { Task { await reload() } }.controlSize(.small)
+                }
+            }
+            if !loaded {
+                ProgressView().controlSize(.small)
+                Spacer(minLength: 0)
+            } else if workers.isEmpty {
+                if !loadFailed {
+                    Text(L("No conversations in this project yet."))
+                        .agentFont(.callout).foregroundColor(.secondary)
+                }
                 Spacer(minLength: 0)
             } else {
                 List(workers, id: \.worker.id) { item in
@@ -900,12 +944,21 @@ private struct AgentWorkersList: View {
     private func reload() async {
         let wanted = project
         var out: [(String, AgentWorker)] = []
+        var anyFailed = false
         let names = project.map { [$0] } ?? client.projects.map(\.name)
         for name in names {
-            for w in await client.workers(project: name) { out.append((name, w)) }
+            guard let list = await client.workers(project: name) else {
+                anyFailed = true
+                continue
+            }
+            for w in list { out.append((name, w)) }
         }
         out.sort { $0.1.updatedAt > $1.1.updatedAt }
         guard wanted == project else { return }
+        loaded = true
+        loadFailed = anyFailed
+        // On failure keep what was there rather than emptying the list.
+        if anyFailed && out.isEmpty { return }
         workers = out.map { (project: $0.0, worker: $0.1) }
     }
 
@@ -1017,6 +1070,7 @@ private struct AgentHistoryList: View {
     @State private var records: [AgentDecisionRecord] = []
     @State private var showRules = false
     @State private var closed: Set<String> = []
+    @State private var historyFailed = false
     @State private var expanded: Set<String> = []
 
     private var shown: [AgentDecisionRecord] {
@@ -1032,9 +1086,17 @@ private struct AgentHistoryList: View {
                     .agentFont(.caption)
                     .help(L("Also list the L0/L1 requests the rules allowed by themselves"))
             }
+            if historyFailed {
+                Label(records.isEmpty ? L("Couldn't load the decision history.")
+                                      : L("Couldn't refresh — showing what was loaded before. Retrying…"),
+                      systemImage: "exclamationmark.triangle")
+                    .agentFont(.caption).foregroundColor(.orange)
+            }
             if shown.isEmpty {
-                Text(L("No decisions yet."))
-                    .agentFont(.callout).foregroundColor(.secondary)
+                if !historyFailed {
+                    Text(L("No decisions yet."))
+                        .agentFont(.callout).foregroundColor(.secondary)
+                }
                 Spacer(minLength: 0)
             } else {
                 List(shown) { r in
@@ -1061,7 +1123,13 @@ private struct AgentHistoryList: View {
             let wanted = project
             let fresh = await client.decisions(project: wanted)
             // A late answer for a project we've since left is dropped.
-            if wanted == project { records = fresh }
+            guard wanted == project else { return }
+            if let fresh {
+                records = fresh
+                historyFailed = false
+            } else {
+                historyFailed = true
+            }
         }
         .onChange(of: project) { _ in
             records = []
@@ -1161,10 +1229,22 @@ private struct AgentWorkerConversationView: View {
     @EnvironmentObject private var client: AgentDaemonClient
     @State private var worker: AgentWorker?
     @State private var messages: [AgentWorkerMessage] = []
-    @State private var draft = ""
+    @State private var draft: String
     @State private var sending = false
     @State private var note: String?
     @State private var loaded = false
+    /// The last refresh failed (what's shown is from before).
+    @State private var failed = false
+    @StateObject private var follow = AgentFollow()
+    private let storeKey: String
+
+    init(project: String, workerID: String, hostKey: String, onClose: @escaping () -> Void) {
+        self.project = project
+        self.workerID = workerID
+        self.onClose = onClose
+        storeKey = "\(hostKey)|\(project)|w:\(workerID)"
+        _draft = State(initialValue: AgentDraftStore.shared.draft(storeKey))
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1183,10 +1263,15 @@ private struct AgentWorkerConversationView: View {
             }
             .padding(10)
             Divider()
+            GeometryReader { viewport in
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
-                        if loaded && messages.isEmpty {
+                        if !loaded {
+                            ProgressView().controlSize(.small)
+                        } else if failed && messages.isEmpty {
+                            loadFailed
+                        } else if messages.isEmpty {
                             Text(L("Nothing to show for this conversation."))
                                 .agentFont(.callout).foregroundColor(.secondary)
                         }
@@ -1204,12 +1289,30 @@ private struct AgentWorkerConversationView: View {
                                 AgentBubble(text: m.text, mine: false)
                             }
                         }
-                        Color.clear.frame(height: 1).id("end")
+                        AgentScrollEndMarker()
                     }
                     .padding(10)
                 }
-                .onChange(of: messages.last?.id) { _ in proxy.scrollTo("end", anchor: .bottom) }
-                .onAppear { proxy.scrollTo("end", anchor: .bottom) }
+                .coordinateSpace(name: AgentFollow.space)
+                .onPreferenceChange(AgentScrollEndKey.self) { y in
+                    follow.endMoved(to: y, viewport: viewport.size.height)
+                }
+                .onChange(of: messages.last?.id) { _ in
+                    if follow.shouldFollow() { proxy.scrollTo(AgentScrollEndMarker.id, anchor: .bottom) }
+                }
+                .onAppear { proxy.scrollTo(AgentScrollEndMarker.id, anchor: .bottom) }
+                .overlay(alignment: .bottom) {
+                    AgentNewMessagesButton(follow: follow) {
+                        follow.unseen = 0
+                        withAnimation { proxy.scrollTo(AgentScrollEndMarker.id, anchor: .bottom) }
+                    }
+                }
+            }
+            }
+            if failed && !messages.isEmpty {
+                Text(L("Couldn't refresh — showing what was loaded before. Retrying…"))
+                    .agentFont(.caption).foregroundColor(.orange)
+                    .padding(.horizontal, 10)
             }
             Divider()
             VStack(alignment: .leading, spacing: 4) {
@@ -1239,15 +1342,34 @@ private struct AgentWorkerConversationView: View {
             .padding(8)
         }
         .task { await poll() }
+        .onChange(of: draft) { AgentDraftStore.shared.setDraft(storeKey, $0) }
+    }
+
+    private var loadFailed: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(L("Couldn't load this conversation."), systemImage: "exclamationmark.triangle")
+                .agentFont(.callout).foregroundColor(.orange)
+            Button(L("Retry")) { Task { await refresh() } }
+                .controlSize(.small)
+        }
+    }
+
+    @discardableResult
+    private func refresh() async -> Bool {
+        if let log = await client.workerLog(project: project, id: workerID) {
+            worker = log.worker
+            if log.messages != messages { messages = log.messages }
+            failed = false
+        } else {
+            failed = true
+        }
+        loaded = true
+        return !failed
     }
 
     private func poll() async {
         while !Task.isCancelled {
-            if let log = await client.workerLog(project: project, id: workerID) {
-                worker = log.worker
-                if log.messages != messages { messages = log.messages }
-            }
-            loaded = true
+            await refresh()
             try? await Task.sleep(nanoseconds: (worker?.isWorking == true ? 2 : 4) * 1_000_000_000)
         }
     }
@@ -1256,6 +1378,7 @@ private struct AgentWorkerConversationView: View {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !sending else { return }
         sending = true
+        follow.followNext = true
         note = L("Sending…")
         Task {
             if let err = await client.workerSend(project: project, id: workerID, text: text) {

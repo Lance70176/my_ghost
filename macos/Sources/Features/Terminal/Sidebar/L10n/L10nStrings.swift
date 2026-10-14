@@ -10,6 +10,12 @@ enum L10nStrings {
 
     static let table: [String: [AppLanguage: String]] = [
         // MARK: ghost-agentd decisions
+        "Couldn't load the conversations.": t("載入不了工作對話清單。", "载入不了工作对话清单。", "会話の一覧を読み込めませんでした。"),
+        "Couldn't load the decision history.": t("載入不了決策紀錄。", "载入不了决策记录。", "判断の履歴を読み込めませんでした。"),
+        "%d new messages": t("%d 則新訊息", "%d 条新消息", "新着 %d 件"),
+        "Couldn't refresh — showing what was loaded before. Retrying…": t("更新失敗，先顯示之前載入的內容，稍後自動重試…", "更新失败，先显示之前载入的内容，稍后自动重试…", "更新できませんでした。前回の内容を表示中、再試行します…"),
+        "Couldn't load this conversation.": t("載入不了這個對話。", "载入不了这个对话。", "この会話を読み込めませんでした。"),
+        "Retry": t("重試", "重试", "再試行"),
         "Show details": t("顯示詳情", "显示详情", "詳細を表示"),
         "Working": t("執行中", "执行中", "実行中"),
         "Failed": t("失敗", "失败", "失敗"),
