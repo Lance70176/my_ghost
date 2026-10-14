@@ -73,6 +73,10 @@ def main() -> int:
             if w.transport.start():
                 accounts[p.name] = w
                 broker.listeners.append(w)
+    from .watchcmd import WatchCommands
+    watch_commands = WatchCommands(accounts)
+    for bot in bots:
+        bot.watch_commands = watch_commands
     from .sources import Sources
     sources = Sources(projects, assistants)
     sources.reload()

@@ -69,6 +69,7 @@ class Bot:
         self.offset = 0
         self.me: dict = {}
         self.assistants = None  # AssistantManager, set by main
+        self.watch_commands = None  # WatchCommands, set by main
 
     def chat_for(self, project: str) -> int | None:
         return self.routes.get(project)
@@ -119,6 +120,18 @@ class Bot:
             else:
                 self.broker.tg_projects.add(project)
         log(f"telegram: {self.name} serving {', '.join(self.routes)}")
+        try:  # what Telegram suggests after "/"
+            self.call("setMyCommands", commands=[
+                {"command": "pending", "description": "待決策的卡片"},
+                {"command": "status", "description": "工作對話狀態"},
+                {"command": "watches", "description": "工作帳號的監看規則"},
+                {"command": "watch", "description": "新增監看群組：/watch 群名 [kw:關鍵字]"},
+                {"command": "unwatch", "description": "移除監看群組"},
+                {"command": "pause", "description": "暫停轉訊息給助手：/pause 2h"},
+                {"command": "resume", "description": "恢復轉訊息給助手"},
+                {"command": "chatid", "description": "顯示 chat_id／user_id"}])
+        except Exception as e:
+            log(f"telegram: setMyCommands failed: {e!r}")
         threading.Thread(target=self._worker, name="tg-out", daemon=True).start()
         threading.Thread(target=self._poll, name="tg-in", daemon=True).start()
 
@@ -279,7 +292,15 @@ class Bot:
             if not self._authorized(cq.get("from") or {}, chat):
                 self.call("answerCallbackQuery", callback_query_id=cq["id"], text="你沒有權限")
                 return
-            parts = (cq.get("data") or "").split(":")
+            data = cq.get("data") or ""
+            if data.startswith("w:") and self.watch_commands is not None:
+                text, rows, toast = self.watch_commands.callback(data, self._projects_in(chat))
+                self.call("answerCallbackQuery", callback_query_id=cq["id"], text=toast or None)
+                if text:
+                    self.call("editMessageText", chat_id=chat["id"], message_id=cq["message"]["message_id"],
+                              text=text, reply_markup={"inline_keyboard": rows} if rows else None)
+                return
+            parts = data.split(":")
             if len(parts) != 3 or parts[0] != "g":
                 return
             p = self.broker.get(parts[1])
@@ -318,6 +339,14 @@ class Bot:
                           text="目前沒有待決策的請求 👍")
             for p in pend:  # re-send so buttons are at the bottom of the chat
                 self.jobs.put((self._send_card, (p,)))
+            return
+        if self.watch_commands is not None and self.watch_commands.handles(text):
+            if len(mine) != 1:
+                self.call("sendMessage", chat_id=chat["id"], text="請在專案的群組裡下這個指令。")
+                return
+            reply_text, rows = self.watch_commands.command(mine[0], text)
+            self.call("sendMessage", chat_id=chat["id"], text=reply_text,
+                      reply_markup={"inline_keyboard": rows} if rows else None)
             return
         if text and not text.startswith("/") and self.assistants is not None and len(mine) == 1 \
                 and chat.get("type") != "private":
