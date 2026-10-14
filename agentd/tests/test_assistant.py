@@ -46,7 +46,7 @@ def test_conversation_and_context_probe(manager):
     a.send("你好", "myghost")
     wait_for(lambda: ("assistant", "回覆：你好") in roles(a))
     # The /context probe after the turn is invisible but sets the usage.
-    wait_for(lambda: a.context_pct == 10 and not a._queue)
+    wait_for(lambda: a.context_pct == 10 and a._inflight is None and not a._outbox)
     assert all("Context" not in t for _, t in roles(a))
     assert ("tool", "read_state") in roles(a)
     assert not a.busy
@@ -132,3 +132,16 @@ def test_interrupt(manager):
     assert a.interrupt()
     wait_for(lambda: not a.busy)
     assert any(r == "notice" and "已停止" in t for r, t in roles(a))
+
+
+def test_one_message_at_a_time(manager):
+    """A message sent mid-turn waits for that turn to end, so every reply
+    lands on its own message and the /context probe never shows."""
+    a = manager.get("fq")
+    a.send("SLOW", "myghost")
+    wait_for(lambda: a._inflight is False)
+    a.send("第二則", "myghost")
+    assert a._outbox and a.busy  # held back, not written into the running turn
+    wait_for(lambda: ("assistant", "回覆：第二則") in roles(a), timeout=12)
+    wait_for(lambda: not a.busy and not a._outbox and a._inflight is None)
+    assert all("Context" not in t for _, t in roles(a))

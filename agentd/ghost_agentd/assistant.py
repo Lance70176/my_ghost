@@ -88,9 +88,15 @@ class Assistant:
         self.items: list[ChatItem] = []
         self.seq = 0
         self.partial = ""  # streaming text of the reply in progress
-        # One flag per message sent and not yet answered: True = internal
-        # (our /context probe, compaction steps), False = a real message.
-        self._queue: list[bool] = []
+        # One message goes in at a time: the next waits in the outbox until
+        # the turn before it ends. (Claude Code folds a message that arrives
+        # mid-turn into that turn — one result for two messages — so
+        # counting results against messages sent drifts and then shows our
+        # /context probe as a reply and hides the real one.)
+        # _inflight: None = idle, True = an internal message (the /context
+        # probe, compaction steps), False = a real one.
+        self._outbox: list[tuple[object, bool]] = []
+        self._inflight: bool | None = None
         self.context_pct: int | None = None
         self.last_activity = 0.0
         self.restarts: list[float] = []
@@ -150,12 +156,12 @@ class Assistant:
 
     @property
     def busy(self) -> bool:
-        return any(not internal for internal in self._queue)
+        return self._inflight is False or any(not internal for _, internal in self._outbox)
 
     @property
     def _internal(self) -> bool:
         """The turn being answered now is one of ours, not the user's."""
-        return bool(self._queue) and self._queue[0]
+        return self._inflight is True
 
     @property
     def running(self) -> bool:
@@ -213,12 +219,16 @@ class Assistant:
         threading.Thread(target=self._read, args=(proc,), name=f"asst-{self.project.name}", daemon=True).start()
         threading.Thread(target=self._read_err, args=(proc,), daemon=True).start()
         log(f"assistant {self.project.name}: started ({'resume' if resume else 'new'} {sid[:8]})")
+        with self.lock:
+            self._pump()  # anything that waited for the restart
         self._touch()
 
     def stop(self, reason: str = "") -> None:
         with self.lock:
             proc, self.proc = self.proc, None
-            self._queue.clear()
+            self._inflight = None
+            # Our own housekeeping isn't worth carrying over; his messages are.
+            self._outbox = [m for m in self._outbox if not m[1]]
             self.partial = ""
         if proc and proc.poll() is None:
             try:
@@ -244,18 +254,27 @@ class Assistant:
         self.add("notice", "已停止這一輪回覆。", source="myghost")
         return True
 
-    def _write(self, obj: dict) -> None:
+    def _write(self, obj: dict) -> bool:
         proc = self.proc
         if proc is None or proc.stdin is None or proc.stdin.closed:
             log(f"assistant {self.project.name}: dropped a message, process not running")
-            if self._queue:
-                self._queue.pop()
-            return
+            return False
         try:
             proc.stdin.write(json.dumps(obj, ensure_ascii=False) + "\n")
             proc.stdin.flush()
+            return True
         except (BrokenPipeError, OSError) as e:
             log(f"assistant {self.project.name}: write failed {e!r}")
+            return False
+
+    def _pump(self) -> None:
+        """Send the next waiting message if no turn is in progress (lock held)."""
+        if self._inflight is not None or not self._outbox or not self.running:
+            return
+        content, internal = self._outbox.pop(0)
+        self._inflight = internal
+        if not self._write({"type": "user", "message": {"role": "user", "content": content}}):
+            self._inflight = None
 
     @property
     def uploads(self) -> Path:
@@ -275,10 +294,9 @@ class Assistant:
         if text.startswith("/"):
             prefix = ""  # a slash command must start the message to be one
         with self.lock:
-            self._queue.append(internal)
             self.last_activity = time.time()
-            content = uploads.content_blocks(prefix + text if text else "", files)
-            self._write({"type": "user", "message": {"role": "user", "content": content}})
+            self._outbox.append((uploads.content_blocks(prefix + text if text else "", files), internal))
+            self._pump()
         self._touch()
 
     # ------------------------------------------------------------- events
@@ -304,7 +322,7 @@ class Assistant:
             unexpected = self.proc is proc
             if unexpected:
                 self.proc = None
-            self._queue.clear()
+            self._inflight = None  # what's waiting goes after the restart
             self.partial = ""
         if unexpected:
             log(f"assistant {self.project.name}: exited with {code}")
@@ -341,7 +359,8 @@ class Assistant:
             return
         if t == "result":
             with self.lock:
-                internal = self._queue.pop(0) if self._queue else False
+                internal = bool(self._inflight)
+                self._inflight = None
                 self.partial = ""
                 self.last_activity = time.time()
             if ev.get("is_error") and not internal:
@@ -349,6 +368,8 @@ class Assistant:
                          source="system")
             self.m.on_turn_end(self, internal)
             self._after_turn(internal)
+            with self.lock:
+                self._pump()
             self._touch()
 
     # --------------------------------------------------- context & lifecycle
