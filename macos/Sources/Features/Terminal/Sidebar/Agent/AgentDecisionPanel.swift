@@ -170,9 +170,53 @@ struct AgentDecisionCard: View {
         return max(0, Int(end.timeIntervalSince(now)) / 60)
     }
 
-    private var accent: Color { p.isHighRisk ? .red : (p.level >= 2 ? .orange : .green) }
+    private var accent: Color {
+        p.isChoice ? .accentColor : (p.isHighRisk ? .red : (p.level >= 2 ? .orange : .green))
+    }
 
     var body: some View {
+        Group {
+            if p.isChoice { choiceBody } else { permissionBody }
+        }
+        .padding(10)
+        .frame(width: width, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(.regularMaterial)
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(accent.opacity(0.6), lineWidth: 1))
+        )
+        .onReceive(tick) { now = $0 }
+        .onAppear { deadline = Date().addingTimeInterval(TimeInterval(p.remaining)) }
+    }
+
+    /// An assistant's multiple-choice question: one button per option.
+    private var choiceBody: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Image(systemName: "questionmark.bubble.fill").foregroundColor(.accentColor)
+                Text(L("%@ assistant asks", p.project))
+                    .font(.callout.weight(.semibold))
+                Spacer(minLength: 4)
+                Button {
+                    AgentAssistantNav.show(project: p.project)
+                } label: {
+                    Image(systemName: "bubble.left.and.text.bubble.right")
+                }
+                .buttonStyle(.borderless)
+                .help(L("Open the assistant conversation"))
+            }
+            Text(p.summary)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            AgentChoiceButtons(choiceId: p.id, options: p.options ?? [], busy: $busy, error: $error)
+            if let error {
+                Text(error).font(.caption).foregroundColor(.red)
+            }
+        }
+    }
+
+    private var permissionBody: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: p.isHighRisk ? "exclamationmark.shield.fill" : "lock.shield")
@@ -280,15 +324,6 @@ struct AgentDecisionCard: View {
                 Text(error).font(.caption).foregroundColor(.red)
             }
         }
-        .padding(10)
-        .frame(width: width, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(.regularMaterial)
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(accent.opacity(0.6), lineWidth: 1))
-        )
-        .onReceive(tick) { now = $0 }
-        .onAppear { deadline = Date().addingTimeInterval(TimeInterval(p.remaining)) }
     }
 
     private func send(_ action: String, _ message: String = "") {
@@ -298,9 +333,9 @@ struct AgentDecisionCard: View {
             let err = await AgentDaemonClient.shared.decide(p, action: action, message: message)
             busy = false
             error = err
-            // Discussing happens in the project's assistant window.
+            // Discussing happens in the project's assistant conversation.
             if action == "discuss", err == nil {
-                AgentAssistantWindows.open(project: p.project)
+                AgentAssistantNav.show(project: p.project)
             }
         }
     }

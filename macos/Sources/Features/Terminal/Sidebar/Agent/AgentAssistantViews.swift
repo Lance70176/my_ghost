@@ -1,12 +1,34 @@
 import AppKit
 import SwiftUI
 
+// MARK: - Navigation
+
+/// Shows an assistant in the main window: switches the sidebar to the ✦ mode
+/// and puts that assistant (nil = the all-projects overview) where the
+/// terminal was.
+@MainActor
+enum AgentAssistantNav {
+    static func show(project: String?) {
+        let windows = NSApp.orderedWindows.filter { $0.windowController is SidebarTerminalController }
+        guard let window = windows.first(where: \.isKeyWindow) ?? windows.first,
+              let controller = window.windowController as? SidebarTerminalController else { return }
+        controller.sidebarUIState.assistantProject = project
+        controller.sidebarUIState.sidebarMode = .assistant
+        if controller.sidebarUIState.isSidebarCollapsed {
+            controller.sidebarUIState.isSidebarCollapsed = false
+        }
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
 // MARK: - Sidebar list (the ✦ AI assistant sidebar mode)
 
 /// The assistant list shown when the sidebar is in `.assistant` mode: an
 /// "All projects" row, then one row per project assistant — resident ones
-/// first. Clicking a row opens that assistant's own window.
+/// first. Clicking a row shows it in the main area.
 struct AgentAssistantSidebarList: View {
+    @ObservedObject var uiState: SidebarUIState
     @ObservedObject private var client = AgentDaemonClient.shared
     @ObservedObject private var lang = LanguageManager.shared
 
@@ -25,7 +47,7 @@ struct AgentAssistantSidebarList: View {
                     .padding(10)
                 }
 
-                Button { AgentAssistantWindows.open(project: nil) } label: {
+                row(selected: uiState.assistantProject == nil) {
                     HStack {
                         Image(systemName: "square.grid.2x2")
                         Text(L("All projects")).fontWeight(.semibold)
@@ -34,27 +56,37 @@ struct AgentAssistantSidebarList: View {
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 7)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
+                } action: { uiState.assistantProject = nil }
 
                 Divider().padding(.horizontal, 8)
 
                 ForEach(client.projects) { p in
-                    Button { AgentAssistantWindows.open(project: p.name) } label: {
-                        AgentProjectRow(project: p)
-                    }
-                    .buttonStyle(.plain)
+                    row(selected: uiState.assistantProject == p.name) {
+                        AgentProjectRow(project: p, assistant: client.assistants[p.name])
+                    } action: { uiState.assistantProject = p.name }
                 }
             }
             .padding(.vertical, 6)
+            .padding(.horizontal, 4)
         }
         .task { await client.refreshProjects() }
+    }
+
+    private func row<Content: View>(selected: Bool, @ViewBuilder content: () -> Content,
+                                    action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            content()
+                .contentShape(Rectangle())
+                .background(RoundedRectangle(cornerRadius: 6)
+                    .fill(selected ? Color.accentColor.opacity(0.22) : Color.clear))
+        }
+        .buttonStyle(.plain)
     }
 }
 
 private struct AgentProjectRow: View {
     let project: AgentProject
+    let assistant: AgentAssistantStatus?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -68,8 +100,8 @@ private struct AgentProjectRow: View {
                 Spacer()
                 if project.pending > 0 {
                     CountBadge(count: project.pending)
-                } else if project.waiting > 0 {
-                    Text(L("Needs you")).font(.caption2).foregroundColor(.orange)
+                } else if assistant?.busy == true {
+                    ProgressView().controlSize(.mini)
                 }
             }
             Text(statusLine)
@@ -79,18 +111,19 @@ private struct AgentProjectRow: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .contentShape(Rectangle())
     }
 
     private var statusLine: String {
-        let mode = project.resident ? L("Resident") : L("Wakes on events")
-        if project.sessions == 0 { return mode }
-        return mode + " · " + L("%d conversations", project.sessions)
-            + (project.running > 0 ? " · " + L("%d running", project.running) : "")
+        var parts = [project.resident ? L("Resident") : L("Wakes on events")]
+        if let a = assistant {
+            parts.append(a.busy ? L("Replying…") : (a.running ? L("Ready") : L("Asleep")))
+        }
+        if project.sessions > 0 { parts.append(L("%d conversations", project.sessions)) }
+        return parts.joined(separator: " · ")
     }
 }
 
-private struct CountBadge: View {
+struct CountBadge: View {
     let count: Int
     var body: some View {
         Text("\(count)")
@@ -102,152 +135,443 @@ private struct CountBadge: View {
     }
 }
 
-// MARK: - Windows
+// MARK: - Main area
 
-/// One window per assistant (nil = the all-projects overview); opening an
-/// assistant that already has a window brings that window forward.
-@MainActor
-enum AgentAssistantWindows {
-    private static var windows: [String: NSWindow] = [:]
-
-    static func open(project: String?) {
-        let key = project ?? "*"
-        if let win = windows[key] {
-            win.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-        let root = AgentAssistantWindowView(project: project)
-        let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 980, height: 640),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered, defer: false)
-        win.title = project.map { L("AI Assistant · %@", $0 == "_default" ? L("Other conversations") : $0) }
-            ?? L("AI Assistants · All projects")
-        win.contentView = NSHostingView(rootView: root)
-        win.isReleasedWhenClosed = false
-        win.setFrameAutosaveName("MyGhostAssistant-\(key)")
-        if !win.setFrameUsingName("MyGhostAssistant-\(key)") { win.center() }
-        windows[key] = win
-        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: win, queue: .main) { _ in
-            Task { @MainActor in windows[key] = nil }
-        }
-        win.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-}
-
-/// Assistant window: the conversation (or, for all projects, the overview)
-/// in the middle, pending decisions and the decision history on the right.
-private struct AgentAssistantWindowView: View {
-    let project: String?
-    @ObservedObject private var client = AgentDaemonClient.shared
-    @ObservedObject private var lang = LanguageManager.shared
+/// What replaces the terminal in `.assistant` mode: the conversation (or the
+/// overview) in the middle, pending decisions and history on the right.
+struct AgentAssistantMainView: View {
+    @ObservedObject var uiState: SidebarUIState
 
     var body: some View {
         HSplitView {
             Group {
-                if let project {
-                    AgentConversationPlaceholder(project: project)
+                if let project = uiState.assistantProject {
+                    AgentChatView(project: project)
+                        .id(project)
                 } else {
-                    AgentOverview()
+                    AgentOverview(uiState: uiState)
                 }
             }
             .frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
 
-            AgentRightColumn(project: project)
-                .frame(minWidth: 320, idealWidth: 360, maxWidth: 480, maxHeight: .infinity)
+            AgentRightColumn(project: uiState.assistantProject)
+                .frame(minWidth: 300, idealWidth: 340, maxWidth: 460, maxHeight: .infinity)
         }
-        .frame(minWidth: 720, minHeight: 440)
     }
 }
 
-// MARK: - Middle: conversation (P2) / overview
+// MARK: - Conversation
 
-/// The conversation pane. The assistant itself arrives in P2; until then this
-/// says so and shows what the project's conversations are doing.
-private struct AgentConversationPlaceholder: View {
+/// Long-polls one assistant's chat while its view is on screen.
+@MainActor
+final class AgentChatModel: ObservableObject {
+    let project: String
+    @Published private(set) var items: [AgentChatItem] = []
+    @Published private(set) var partial = ""
+    @Published private(set) var status: AgentAssistantStatus?
+    @Published var error: String?
+    private var task: Task<Void, Never>?
+
+    init(project: String) { self.project = project }
+
+    func start() {
+        guard task == nil else { return }
+        task = Task { [weak self] in
+            var since = 0
+            while !Task.isCancelled {
+                guard let self else { return }
+                if let chunk = await AgentDaemonClient.shared.chat(project: self.project, since: since, wait: 25) {
+                    if !chunk.items.isEmpty {
+                        self.items.append(contentsOf: chunk.items)
+                        if self.items.count > 600 { self.items.removeFirst(self.items.count - 600) }
+                        since = chunk.items.last!.seq
+                    }
+                    if chunk.partial != self.partial { self.partial = chunk.partial }
+                    if chunk.status != self.status { self.status = chunk.status }
+                } else {
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                }
+            }
+        }
+    }
+
+    func stop() {
+        task?.cancel()
+        task = nil
+    }
+
+    func send(_ text: String) {
+        Task {
+            error = await AgentDaemonClient.shared.sendMessage(project: project, text: text)
+        }
+    }
+
+    func interrupt() {
+        Task { await AgentDaemonClient.shared.stopAssistant(project: project) }
+    }
+}
+
+struct AgentChatView: View {
+    let project: String
+    @StateObject private var model: AgentChatModel
+    @ObservedObject private var lang = LanguageManager.shared
+    @State private var draft = ""
+    @State private var showTools = false
+    @FocusState private var inputFocused: Bool
+
+    init(project: String) {
+        self.project = project
+        _model = StateObject(wrappedValue: AgentChatModel(project: project))
+    }
+
+    private var visible: [AgentChatItem] {
+        model.items.filter { item in
+            if item.role == "tool" {
+                // Claude Code loading its own tools isn't worth a line.
+                return showTools && !item.text.hasPrefix("ToolSearch")
+            }
+            return true
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        if model.items.isEmpty {
+                            emptyHint
+                        }
+                        ForEach(visible) { item in
+                            AgentChatRow(item: item, project: project)
+                                .id(item.seq)
+                        }
+                        if !model.partial.isEmpty {
+                            AgentBubble(text: model.partial, mine: false, streaming: true)
+                                .id(Int.max)
+                        } else if model.status?.busy == true {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.small)
+                                Text(L("Thinking…")).font(.caption).foregroundColor(.secondary)
+                            }
+                            .id(Int.max)
+                        }
+                    }
+                    .padding(14)
+                }
+                .onChange(of: model.items.count) { _ in
+                    withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(model.items.last?.seq, anchor: .bottom) }
+                }
+                .onChange(of: model.partial) { _ in proxy.scrollTo(Int.max, anchor: .bottom) }
+                .onAppear { proxy.scrollTo(model.items.last?.seq, anchor: .bottom) }
+            }
+            Divider()
+            input
+        }
+        .onAppear {
+            model.start()
+            inputFocused = true
+        }
+        .onDisappear { model.stop() }
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "sparkles").foregroundColor(.accentColor)
+            Text(L("%@ assistant", project == "_default" ? L("Other conversations") : project))
+                .font(.headline)
+            if let s = model.status {
+                Text(s.resident ? L("Resident") : L("Wakes on events"))
+                    .font(.caption).foregroundColor(.secondary)
+                Text(s.busy ? L("Replying…") : (s.running ? L("Ready") : L("Asleep")))
+                    .font(.caption)
+                    .foregroundColor(s.busy ? .orange : (s.running ? .green : .secondary))
+            }
+            Spacer()
+            Toggle(L("Show tool calls"), isOn: $showTools)
+                .toggleStyle(.checkbox)
+                .font(.caption)
+            if let s = model.status {
+                if let pct = s.contextPct {
+                    Text(L("Context %d%%", pct)).font(.caption.monospacedDigit())
+                        .foregroundColor(pct >= 80 ? .orange : .secondary)
+                }
+                Text(L("Woken %d× today", s.wakesToday)).font(.caption).foregroundColor(.secondary)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+    }
+
+    private var emptyHint: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(L("Ask this project's assistant anything — e.g. \"What's still unfinished?\""))
+                .font(.callout)
+            Text(L("Replies also go to the project's Telegram group, and what you say there shows up here."))
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        .padding(.vertical, 20)
+    }
+
+    private var input: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .bottom, spacing: 8) {
+                ZStack(alignment: .topLeading) {
+                    if draft.isEmpty {
+                        Text(L("Message the %@ assistant… (Return sends, ⇧Return for a new line)", project))
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 8)
+                            .allowsHitTesting(false)
+                    }
+                    AgentInputField(text: $draft, onSubmit: submit)
+                        .focused($inputFocused)
+                        .frame(minHeight: 34, maxHeight: 140)
+                }
+                .padding(.horizontal, 6)
+                .background(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.35)))
+
+                if model.status?.busy == true {
+                    Button { model.interrupt() } label: {
+                        Image(systemName: "stop.circle.fill").font(.title2)
+                    }
+                    .buttonStyle(.borderless)
+                    .help(L("Stop this reply"))
+                }
+                Button(action: submit) {
+                    Image(systemName: "paperplane.fill").font(.title3)
+                }
+                .buttonStyle(.borderless)
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .help(L("Send"))
+            }
+            if let error = model.error {
+                Text(error).font(.caption).foregroundColor(.red)
+            }
+        }
+        .padding(10)
+    }
+
+    private func submit() {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        draft = ""
+        model.send(text)
+    }
+}
+
+/// A multi-line text field where Return sends and Shift-Return breaks the line.
+private struct AgentInputField: NSViewRepresentable {
+    @Binding var text: String
+    let onSubmit: () -> Void
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        let tv = scroll.documentView as! NSTextView
+        tv.delegate = context.coordinator
+        tv.isRichText = false
+        tv.font = .systemFont(ofSize: NSFont.systemFontSize)
+        tv.drawsBackground = false
+        tv.textContainerInset = NSSize(width: 0, height: 8)
+        tv.isAutomaticQuoteSubstitutionEnabled = false
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        let tv = scroll.documentView as! NSTextView
+        if tv.string != text { tv.string = text }
+        context.coordinator.parent = self
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: AgentInputField
+        init(_ parent: AgentInputField) { self.parent = parent }
+
+        func textDidChange(_ note: Notification) {
+            guard let tv = note.object as? NSTextView else { return }
+            parent.text = tv.string
+        }
+
+        func textView(_ tv: NSTextView, doCommandBy selector: Selector) -> Bool {
+            guard selector == #selector(NSResponder.insertNewline(_:)) else { return false }
+            // Composing with an input method: Return confirms the candidate.
+            if tv.hasMarkedText() { return false }
+            if NSEvent.modifierFlags.contains(.shift) {
+                tv.insertNewlineIgnoringFieldEditor(nil)
+                return true
+            }
+            parent.onSubmit()
+            return true
+        }
+    }
+}
+
+private struct AgentChatRow: View {
+    let item: AgentChatItem
     let project: String
     @ObservedObject private var client = AgentDaemonClient.shared
 
-    private var info: AgentProject? { client.projects.first { $0.name == project } }
-    private var discussing: [AgentPending] {
-        client.pending.filter { $0.project == project && $0.isDiscussing }
-    }
+    private static let time: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f
+    }()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 8) {
-                Image(systemName: "sparkles").font(.title2).foregroundColor(.accentColor)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(L("%@ assistant", project == "_default" ? L("Other conversations") : project))
-                        .font(.title3.weight(.semibold))
-                    Text(info?.resident == true ? L("Resident") : L("Wakes on events"))
-                        .font(.caption).foregroundColor(.secondary)
+        switch item.role {
+        case "user":
+            VStack(alignment: .trailing, spacing: 2) {
+                if item.source == "tg" || item.source == "web" {
+                    Text(item.source == "tg" ? L("From Telegram") : L("From the phone page"))
+                        .font(.caption2).foregroundColor(.blue)
+                }
+                AgentBubble(text: item.text, mine: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        case "assistant":
+            AgentBubble(text: item.text, mine: false)
+        case "tool":
+            Label(item.text, systemImage: "wrench.and.screwdriver")
+                .font(.system(.caption, design: .monospaced))
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        case "choice":
+            VStack(alignment: .leading, spacing: 6) {
+                Label(item.text, systemImage: "questionmark.bubble.fill")
+                    .font(.callout.weight(.semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+                if !item.chosen.isEmpty {
+                    Text(L("You chose: %@", item.chosen)).font(.caption).foregroundColor(.secondary)
+                } else if client.pending.contains(where: { $0.id == item.choiceId }) {
+                    AgentChoiceButtons(choiceId: item.choiceId, options: item.options,
+                                       busy: .constant(false), error: .constant(nil))
+                } else {
+                    Text(L("Answered")).font(.caption).foregroundColor(.secondary)
                 }
             }
-
-            if !discussing.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Label(L("Under discussion"), systemImage: "bubble.left.and.bubble.right.fill")
-                        .font(.headline)
-                        .foregroundColor(.blue)
-                    Text(L("These requests stay open without a time limit. Once the assistant runs it will talk them through with you here; for now, decide when you're ready."))
-                        .font(.callout)
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 8) {
-                            ForEach(discussing) { p in
-                                AgentDecisionCard(p: p, width: 440)
-                            }
-                        }
-                    }
-                    .frame(maxHeight: 360)
+            .padding(10)
+            .frame(maxWidth: 520, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10).stroke(Color.accentColor.opacity(0.6)))
+        case "discuss":
+            VStack(alignment: .leading, spacing: 6) {
+                Label(L("Discussing this request"), systemImage: "bubble.left.and.bubble.right.fill")
+                    .font(.caption.weight(.semibold)).foregroundColor(.blue)
+                Text(item.text)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                if let card = client.pending.first(where: { $0.id == item.cardId }) {
+                    AgentDecisionCard(p: card, width: 460)
+                } else {
+                    Text(L("Already decided")).font(.caption).foregroundColor(.secondary)
                 }
             }
-
-            GroupBox {
-                VStack(alignment: .leading, spacing: 6) {
-                    Label(L("The assistant conversation arrives with phase 2"), systemImage: "hourglass")
-                        .font(.callout.weight(.semibold))
-                    Text(L("Once the Opus 5.5 assistant runs for this project you'll talk to it here, its multiple-choice questions become buttons, and Discuss brings a pending decision into the conversation. Until then the decisions on the right already work."))
-                        .font(.callout)
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(4)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            if let info {
-                HStack(spacing: 18) {
-                    StatTile(value: info.pending, label: L("Pending decisions"), tint: .orange)
-                    StatTile(value: info.waiting, label: L("Waiting for you"), tint: .orange)
-                    StatTile(value: info.running, label: L("Running"), tint: .blue)
-                    StatTile(value: info.sessions, label: L("Conversations"), tint: .secondary)
-                }
-            }
-            Spacer()
-        }
-        .padding(18)
-    }
-}
-
-private struct StatTile: View {
-    let value: Int
-    let label: String
-    let tint: Color
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("\(value)").font(.title2.weight(.semibold)).foregroundColor(value > 0 ? tint : .secondary)
-            Text(label).font(.caption).foregroundColor(.secondary)
+            .padding(10)
+            .frame(maxWidth: 520, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color.blue.opacity(0.08)))
+        default:  // notice
+            Text(item.text)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .frame(maxWidth: .infinity, alignment: .center)
         }
     }
 }
 
-/// Every project at a glance; a row opens that project's assistant.
+struct AgentBubble: View {
+    let text: String
+    let mine: Bool
+    var streaming = false
+
+    var body: some View {
+        Text(LocalizedStringKey(text))
+            .textSelection(.enabled)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 12)
+                .fill(mine ? Color.accentColor.opacity(0.22) : Color.primary.opacity(0.06)))
+            .overlay(alignment: .bottomTrailing) {
+                if streaming {
+                    ProgressView().controlSize(.mini).padding(4)
+                }
+            }
+            .frame(maxWidth: 620, alignment: mine ? .trailing : .leading)
+            .frame(maxWidth: .infinity, alignment: mine ? .trailing : .leading)
+    }
+}
+
+/// The option buttons of an assistant's question.
+struct AgentChoiceButtons: View {
+    let choiceId: String
+    let options: [AgentChoiceOption]
+    @Binding var busy: Bool
+    @Binding var error: String?
+    @State private var working = false
+
+    var body: some View {
+        FlowRow(spacing: 6) {
+            ForEach(Array(options.enumerated()), id: \.offset) { i, o in
+                Button(o.label) { pick("o\(i)") }
+                    .buttonStyle(.borderedProminent)
+                    .tint(o.action == "deny" ? .red : (o.action == "allow" ? .green : .accentColor))
+                    .controlSize(.small)
+            }
+            Button(L("Skip")) { pick("deny") }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+        }
+        .disabled(working || busy)
+    }
+
+    private func pick(_ action: String) {
+        working = true
+        Task {
+            error = await AgentDaemonClient.shared.decide(id: choiceId, action: action)
+            working = false
+        }
+    }
+}
+
+/// Lays buttons out left to right, wrapping like text.
+private struct FlowRow: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? 400
+        var x: CGFloat = 0, y: CGFloat = 0, line: CGFloat = 0
+        for v in subviews {
+            let s = v.sizeThatFits(.unspecified)
+            if x > 0 && x + s.width > width { x = 0; y += line + spacing; line = 0 }
+            x += s.width + spacing
+            line = max(line, s.height)
+        }
+        return CGSize(width: width, height: y + line)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX, y = bounds.minY, line: CGFloat = 0
+        for v in subviews {
+            let s = v.sizeThatFits(.unspecified)
+            if x > bounds.minX && x + s.width > bounds.maxX { x = bounds.minX; y += line + spacing; line = 0 }
+            v.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(s))
+            x += s.width + spacing
+            line = max(line, s.height)
+        }
+    }
+}
+
+// MARK: - Overview
+
+/// Every project at a glance; a row shows that project's assistant.
 private struct AgentOverview: View {
+    @ObservedObject var uiState: SidebarUIState
     @ObservedObject private var client = AgentDaemonClient.shared
 
     var body: some View {
@@ -262,7 +586,10 @@ private struct AgentOverview: View {
                     }
                 }
                 TableColumn(L("Assistant")) { p in
-                    Text(p.resident ? L("Resident") : L("Wakes on events")).foregroundColor(.secondary)
+                    let a = client.assistants[p.name]
+                    Text(a?.busy == true ? L("Replying…") : (a?.running == true ? L("Ready")
+                         : (p.resident ? L("Resident") : L("Wakes on events"))))
+                        .foregroundColor(.secondary)
                 }
                 TableColumn(L("Pending")) { p in
                     Text("\(p.pending)").foregroundColor(p.pending > 0 ? .orange : .secondary)
@@ -278,7 +605,7 @@ private struct AgentOverview: View {
                 }
                 .width(90)
                 TableColumn("") { p in
-                    Button(L("Open")) { AgentAssistantWindows.open(project: p.name) }
+                    Button(L("Open")) { uiState.assistantProject = p.name }
                         .controlSize(.small)
                 }
                 .width(60)

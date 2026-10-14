@@ -66,6 +66,7 @@ class Bot:
         self.jobs: queue.Queue = queue.Queue()
         self.offset = 0
         self.me: dict = {}
+        self.assistants = None  # AssistantManager, set by main
 
     def chat_for(self, project: str) -> int | None:
         return self.routes.get(project)
@@ -129,9 +130,32 @@ class Bot:
         if self.chat_for(project.name) is not None:
             self.jobs.put((self._send_notice, (project, text)))
 
+    def on_chat(self, project: Project, item) -> None:
+        """Mirror the assistant conversation into the project's group."""
+        if self.chat_for(project.name) is None:
+            return
+        if item.role == "assistant" and item.text.strip():
+            text = item.text
+        elif item.role == "user" and item.source in ("myghost", "web") and self.cfg.sync_chat_to_tg:
+            text = f"🖥 你在 MyGhost：{item.text}"
+        else:
+            return
+        for i in range(0, len(text), 3900):
+            self.jobs.put((self._send_plain, (project, text[i:i + 3900])))
+
+    def _send_plain(self, project: Project, text: str) -> None:
+        self.call("sendMessage", chat_id=self.chat_for(project.name), text=text,
+                  disable_web_page_preview=True)
+
     # ---------------------------------------------------------------- render
 
     def card_text(self, p: Pending) -> str:
+        if p.kind == "choice":
+            lines = [f"❓ <b>{esc(p.project)} 助手問你</b>", esc(p.summary[:900])]
+            if not p.open:
+                pick = p.options[p.chosen]["label"] if p.chosen is not None else "（略過）"
+                lines.append(f"<b>你選了：{esc(pick)}</b>（{esc(SOURCE_TEXT.get(p.decided_by, p.decided_by))}）")
+            return "\n".join(lines)
         who = esc(p.tab_title or p.session_id[:8] or "?")
         head = f"{LEVEL_ICON[p.level]} <b>{LEVEL_NAMES[p.level]}</b> · {esc(p.project)} · {who}"
         lines = [head, f"<pre>{esc(p.summary[:900])}</pre>", esc(p.reason)]
@@ -154,6 +178,10 @@ class Bot:
         if not p.open:
             return None
         b = lambda text, action: {"text": text, "callback_data": f"g:{p.id}:{action}"}
+        if p.kind == "choice":
+            rows = [[b(o["label"][:60], f"o{i}")] for i, o in enumerate(p.options)]
+            rows.append([b("略過", "deny")])
+            return {"inline_keyboard": rows}
         if p.state == "confirming":
             rows = [[b("⚠️ 確定同意", "confirm"), b("↩︎ 取消", "cancel")], [b("❌ 拒絕", "deny")]]
         elif p.level >= L3:
@@ -268,6 +296,11 @@ class Bot:
                           text="目前沒有待決策的請求 👍")
             for p in pend:  # re-send so buttons are at the bottom of the chat
                 self.jobs.put((self._send_card, (p,)))
+            return
+        if text and not text.startswith("/") and self.assistants is not None and len(mine) == 1 \
+                and chat.get("type") != "private":
+            # A message from the commander in a project group: for its assistant.
+            self.assistants.get(mine[0]).send(text, "tg")
             return
         if text.startswith("/status"):
             rows = [s for s in self.broker.list_sessions() if s["project"] in mine][:20]

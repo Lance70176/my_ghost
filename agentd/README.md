@@ -26,6 +26,42 @@ only turns L2 into L1 and is stored in `projects/<name>/always_allow.json`.
 Timeout (30 min by default) denies. Replying to a card on Telegram denies it
 and passes your text to the conversation as the reason.
 
+## Project assistants (P2) · 專案助手
+
+Each project can have an Opus 5.5 assistant: one long-lived
+`claude -p --input-format stream-json --output-format stream-json` per project,
+run by the daemon with the project root as its cwd (`assistant.py`). Resident
+projects (`resident: true`) start with the daemon; others start on the first
+message and stop after 30 idle minutes. The conversation survives restarts
+(`--session-id` / `--resume`), the daily 04:00 restart, and compaction: after
+every turn the daemon reads `/context`, and at 80% it has the assistant write
+its memory (`state.md`) and then sends `/compact`.
+
+每個專案一個常駐的 Claude（stream-json 雙向串流）。對話存在
+`projects/<name>/chat.jsonl`，助手的記憶在 `state.md`，報告在 `reports/`。
+
+- **MyGhost**: the ✦ sidebar mode replaces the terminal area with the
+  assistant — chat in the middle, pending decisions and history on the right.
+  「💬 討論」 on any card switches there and hands the card to the assistant.
+- **Telegram**: the commander's messages in a project group go to that
+  project's assistant; its replies (and what you type in MyGhost) go back.
+- **Tools** (`hooks/ghost_tools.py`, MCP over stdio): `ask_decision`,
+  `read_state`, `update_state`, `list_workers`, `read_worker_log`,
+  `share_report`, `tg_send`. Read-only by design in P2: no code changes, no
+  dispatch.
+- **It can't decide for you**: `ask_decision` options may carry an
+  `allow`/`deny` action for the card under discussion; only your click applies
+  it (L3 still needs the second confirmation).
+
+Another Mac's MyGhost can use the mini's assistants: set `remote.token` in
+`config.yaml` (the daemon then listens beyond loopback and requires the token
+from non-loopback clients), and on that Mac:
+
+```bash
+defaults write com.local.my-ghost GhostAgentdURL http://<mini>:7788
+defaults write com.local.my-ghost GhostAgentdToken <remote.token>
+```
+
 ## Telegram
 
 - **Commander** — your personal TG account(s), `telegram.commander_user_ids`
@@ -84,7 +120,10 @@ environment to bypass it entirely.
 | `POST /hook/permission` | hook payload → blocks → `{"behavior": "allow"/"deny"/"ask"}` |
 | `POST /hook/event` | Notification / Stop / UserPromptSubmit / SessionEnd |
 | `GET /api/state?since=N&wait=25&client=myghost` | pending cards + session status, long-polled |
-| `POST /api/decisions/<id>` | `{"action": "allow"/"deny"/"always"/"confirm"/"cancel", "message": "…"}` |
+| `POST /api/decisions/<id>` | `{"action": "allow"/"deny"/"always"/"confirm"/"cancel"/"discuss"/"o<N>", "message": "…"}` |
+| `GET /api/assistants` | every assistant's status |
+| `GET /api/assistants/<p>/chat?since=N&wait=25` | chat items, long-polled |
+| `POST /api/assistants/<p>/messages` / `stop` / `start` | talk to / interrupt / wake an assistant |
 
 POSTs need the `X-Ghost: 1` header so a web page can't approve through
 localhost. The phone page reaches these through `web/server.js`

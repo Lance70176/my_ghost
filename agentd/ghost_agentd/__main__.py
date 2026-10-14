@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -13,7 +14,9 @@ import time
 from . import config as cfgmod
 from .broker import Broker, log
 from .server import serve
+from .assistant import AssistantManager
 from .telegram import build_bots
+from .tools import Tools
 
 
 def check() -> int:
@@ -37,12 +40,23 @@ def main() -> int:
     cfg = cfgmod.load_config()
     projects = cfgmod.Projects()
     broker = Broker(cfg, projects)
+    assistants = AssistantManager(broker, cfg.port)
+    broker.listeners.append(assistants)
     bots = build_bots(cfg, broker)
     if not bots:
         log("telegram: no bot configured — cards only in MyGhost / the phone page")
     for bot in bots:
+        bot.assistants = assistants
         broker.listeners.append(bot)
+        assistants.listeners.append(bot)
         bot.start()
+
+    def bot_for(project: str):
+        return next((b for b in bots if b.chat_for(project) is not None), None)
+
+    tools = Tools(broker, assistants, bot_for)
+    if os.environ.get("GHOST_NO_ASSISTANTS") != "1":
+        threading.Timer(2, assistants.start_residents).start()
 
     def ticker():
         while True:
@@ -51,9 +65,13 @@ def main() -> int:
                 broker.flush_digests()
             except Exception as e:
                 log(f"digest failed: {e!r}")
+            assistants.tick()
 
     threading.Thread(target=ticker, name="ticker", daemon=True).start()
-    httpd = serve(broker, cfg.host, cfg.port)
+    # With a remote token set, other Macs' MyGhost can reach us (over
+    # Tailscale); without one we stay on loopback.
+    host = "0.0.0.0" if cfg.remote_token else cfg.host
+    httpd = serve(broker, host, cfg.port, assistants, tools, cfg.remote_token)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

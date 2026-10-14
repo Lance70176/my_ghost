@@ -20,6 +20,13 @@ struct AgentPending: Decodable, Identifiable, Equatable {
     let remaining: Int
     /// Taken into a discussion: never times out until someone decides.
     let discussing: Bool?
+    /// "permission" (a conversation waits on it) or "choice" (an assistant's
+    /// question with options).
+    let kind: String?
+    let options: [AgentChoiceOption]?
+    let cardId: String?
+
+    var isChoice: Bool { kind == "choice" }
 
     var isConfirming: Bool { state == "confirming" }
     var isDiscussing: Bool { discussing ?? false }
@@ -30,6 +37,46 @@ struct AgentPending: Decodable, Identifiable, Equatable {
         a.id == b.id && a.state == b.state && a.discussing == b.discussing
     }
     var isHighRisk: Bool { level >= 3 }
+}
+
+struct AgentChoiceOption: Decodable, Equatable, Hashable {
+    let label: String
+    /// "allow" / "deny" when picking it decides the card under discussion.
+    let action: String?
+}
+
+/// One line of an assistant conversation (chat.jsonl).
+struct AgentChatItem: Decodable, Identifiable, Equatable {
+    let seq: Int
+    let ts: Double
+    /// user | assistant | tool | notice | choice | discuss
+    let role: String
+    let text: String
+    let source: String
+    let tool: String
+    let choiceId: String
+    let options: [AgentChoiceOption]
+    let cardId: String
+    let chosen: String
+
+    var id: Int { seq }
+}
+
+struct AgentAssistantStatus: Decodable, Equatable {
+    let project: String
+    let resident: Bool
+    let running: Bool
+    let busy: Bool
+    let contextPct: Int?
+    let wakesToday: Int
+    let compacting: Bool
+    let model: String
+}
+
+struct AgentChatChunk: Decodable {
+    let items: [AgentChatItem]
+    let partial: String
+    let status: AgentAssistantStatus
 }
 
 /// A Claude Code conversation the daemon has heard from through its hooks.
@@ -84,6 +131,7 @@ struct AgentDecisionRecord: Decodable, Identifiable, Equatable {
 }
 
 private struct AgentProjects: Decodable { let projects: [AgentProject] }
+private struct AgentAssistantList: Decodable { let assistants: [AgentAssistantStatus] }
 private struct AgentDecisions: Decodable { let decisions: [AgentDecisionRecord] }
 
 private struct AgentState: Decodable {
@@ -107,14 +155,45 @@ final class AgentDaemonClient: ObservableObject {
     @Published private(set) var statusByTmux: [String: String] = [:]
     @Published private(set) var online = false
     @Published private(set) var projects: [AgentProject] = []
+    /// Assistant status per project name.
+    @Published private(set) var assistants: [String: AgentAssistantStatus] = [:]
     /// Bumped whenever the daemon's state changes, so open history lists know
     /// to reload.
     @Published private(set) var changeCount = 0
 
     var totalPending: Int { pending.count }
 
-    private let base = URL(string: ProcessInfo.processInfo.environment["GHOST_AGENTD_URL"]
+    /// Where ghost-agentd runs: this Mac by default, or another one set with
+    /// `defaults write com.local.my-ghost GhostAgentdURL http://mini:7788`
+    /// (plus `GhostAgentdToken`, the daemon's remote.token).
+    private let base = URL(string: UserDefaults.standard.string(forKey: "GhostAgentdURL")
+                           ?? ProcessInfo.processInfo.environment["GHOST_AGENTD_URL"]
                            ?? "http://127.0.0.1:7788")!
+    private let token = UserDefaults.standard.string(forKey: "GhostAgentdToken") ?? ""
+
+    private func fetch(_ url: URL) async throws -> (Data, URLResponse) {
+        var req = URLRequest(url: url)
+        if !token.isEmpty { req.setValue(token, forHTTPHeaderField: "X-Ghost-Token") }
+        return try await session.data(for: req)
+    }
+
+    /// POST with the headers the daemon wants; returns (ok, message).
+    func post(_ path: String, _ body: [String: Any]) async -> (Bool, String?) {
+        var req = URLRequest(url: base.appendingPathComponent(path))
+        req.httpMethod = "POST"
+        req.setValue("1", forHTTPHeaderField: "X-Ghost")
+        if !token.isEmpty { req.setValue(token, forHTTPHeaderField: "X-Ghost-Token") }
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            let (data, resp) = try await session.data(for: req)
+            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let ok = (resp as? HTTPURLResponse)?.statusCode == 200
+            return (ok, obj?["message"] as? String)
+        } catch {
+            return (false, L("ghost-agentd is not reachable"))
+        }
+    }
     private var version = -1
     private var task: Task<Void, Never>?
 
@@ -180,7 +259,7 @@ final class AgentDaemonClient: ObservableObject {
             URLQueryItem(name: "wait", value: "25"),
         ]
         do {
-            let (data, resp) = try await session.data(from: comps.url!)
+            let (data, resp) = try await fetch(comps.url!)
             guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
             let state = try Self.decoder.decode(AgentState.self, from: data)
             apply(state)
@@ -212,9 +291,14 @@ final class AgentDaemonClient: ObservableObject {
     }
 
     func refreshProjects() async {
-        guard let (data, _) = try? await session.data(from: base.appendingPathComponent("api/projects")),
+        guard let (data, _) = try? await fetch(base.appendingPathComponent("api/projects")),
               let list = try? Self.decoder.decode(AgentProjects.self, from: data) else { return }
         if list.projects != projects { projects = list.projects }
+        if let (data, _) = try? await fetch(base.appendingPathComponent("api/assistants")),
+           let a = try? Self.decoder.decode(AgentAssistantList.self, from: data) {
+            let map = Dictionary(a.assistants.map { ($0.project, $0) }, uniquingKeysWith: { x, _ in x })
+            if map != assistants { assistants = map }
+        }
     }
 
     /// Newest first; nil project means every project.
@@ -222,30 +306,44 @@ final class AgentDaemonClient: ObservableObject {
         var comps = URLComponents(url: base.appendingPathComponent("api/decisions"), resolvingAgainstBaseURL: false)!
         comps.queryItems = [URLQueryItem(name: "limit", value: String(limit))]
         if let project { comps.queryItems?.append(URLQueryItem(name: "project", value: project)) }
-        guard let (data, _) = try? await session.data(from: comps.url!),
+        guard let (data, _) = try? await fetch(comps.url!),
               let list = try? Self.decoder.decode(AgentDecisions.self, from: data) else { return [] }
         return list.decisions
+    }
+
+    /// Chat items after `since`, long-polling up to `wait` seconds.
+    func chat(project: String, since: Int, wait: Int) async -> AgentChatChunk? {
+        var comps = URLComponents(url: base.appendingPathComponent("api/assistants/\(project)/chat"),
+                                  resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "since", value: String(since)),
+                            URLQueryItem(name: "wait", value: String(wait))]
+        guard let (data, resp) = try? await fetch(comps.url!),
+              (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return try? Self.decoder.decode(AgentChatChunk.self, from: data)
+    }
+
+    @discardableResult
+    func sendMessage(project: String, text: String) async -> String? {
+        let (ok, msg) = await post("api/assistants/\(project)/messages", ["text": text, "source": "myghost"])
+        return ok ? nil : (msg ?? L("ghost-agentd refused the request"))
+    }
+
+    func stopAssistant(project: String) async {
+        _ = await post("api/assistants/\(project)/stop", [:])
+    }
+
+    /// Decide any card by id (e.g. pick a choice option: action "o2").
+    @discardableResult
+    func decide(id: String, action: String, message: String = "") async -> String? {
+        let (ok, msg) = await post("api/decisions/\(id)", ["action": action, "by": "myghost", "message": message])
+        return ok ? nil : (msg ?? L("ghost-agentd refused the request"))
     }
 
     /// action: allow | deny | always | confirm | cancel | discuss. Returns the daemon's
     /// explanation when it refused (already handled, needs confirmation…).
     @discardableResult
     func decide(_ p: AgentPending, action: String, message: String = "") async -> String? {
-        var req = URLRequest(url: base.appendingPathComponent("api/decisions/\(p.id)"))
-        req.httpMethod = "POST"
-        req.setValue("1", forHTTPHeaderField: "X-Ghost")
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: [
-            "action": action, "by": "myghost", "message": message,
-        ])
-        do {
-            let (data, resp) = try await session.data(for: req)
-            if (resp as? HTTPURLResponse)?.statusCode == 200 { return nil }
-            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            return obj?["message"] as? String ?? L("ghost-agentd refused the request")
-        } catch {
-            return L("ghost-agentd is not reachable")
-        }
+        await decide(id: p.id, action: action, message: message)
     }
 }
 

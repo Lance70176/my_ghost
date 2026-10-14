@@ -8,6 +8,17 @@
                                "by": "myghost"|"web", "message": "..."}
     GET  /api/health
 
+    GET  /api/assistants                       every project assistant's status
+    GET  /api/assistants/<p>/chat?since=N&wait=25
+    POST /api/assistants/<p>/messages          {"text": "...", "source": "myghost"}
+    POST /api/assistants/<p>/stop              interrupt the current turn
+    POST /api/assistants/<p>/start
+    POST /assistant-tools/<name>               {"project": p, "args": {...}} (ghost-tools)
+
+Remote clients (MyGhost on another Mac, over Tailscale) must also send
+`X-Ghost-Token` matching config `remote.token`; loopback needs no token.
+The hook and tool endpoints are loopback-only.
+
 Every POST must carry `X-Ghost: 1`. A browser can't add a custom header to a
 cross-origin request without a CORS preflight we never answer, so a web page
 can't click "allow" on the user's behalf through localhost.
@@ -23,9 +34,12 @@ from urllib.parse import parse_qs, urlparse
 from .broker import Broker, log
 
 DECIDE = re.compile(r"^/api/decisions/([0-9a-f]{8})$")
+ASSISTANT = re.compile(r"^/api/assistants/([A-Za-z0-9_.-]+)/(chat|messages|stop|start)$")
+TOOL = re.compile(r"^/assistant-tools/([a-z_]+)$")
+LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
 
-def make_handler(broker: Broker):
+def make_handler(broker: Broker, assistants=None, tools=None, remote_token: str = ""):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -50,7 +64,17 @@ def make_handler(broker: Broker):
             return {"version": broker.version, "pending": broker.list_pending(),
                     "sessions": broker.list_sessions(), "surfaces": broker.surfaces()}
 
+        def _local(self) -> bool:
+            return self.client_address[0] in LOOPBACK
+
+        def _allowed(self) -> bool:
+            if self._local():
+                return True
+            return bool(remote_token) and self.headers.get("X-Ghost-Token") == remote_token
+
         def do_GET(self):
+            if not self._allowed():
+                return self._send(401, {"error": "token required"})
             try:
                 self._get()
             except Exception as e:
@@ -58,6 +82,8 @@ def make_handler(broker: Broker):
                 self._send(500, {"error": str(e)})
 
         def do_POST(self):
+            if not self._allowed():
+                return self._send(401, {"error": "token required"})
             try:
                 self._post()
             except Exception as e:
@@ -85,6 +111,13 @@ def make_handler(broker: Broker):
                 if wait > 0 and since == broker.version:
                     broker.wait_change(since, wait)
                 return self._send(200, self._state())
+            if u.path == "/api/assistants" and assistants:
+                return self._send(200, {"assistants": assistants.list()})
+            m = ASSISTANT.match(u.path)
+            if m and m.group(2) == "chat" and assistants:
+                since = int((q.get("since") or ["0"])[0])
+                wait = min(float((q.get("wait") or ["0"])[0]), 55)
+                return self._send(200, assistants.chat(m.group(1), since, wait))
             self._send(404, {"error": "not found"})
 
         def _post(self):
@@ -95,11 +128,34 @@ def make_handler(broker: Broker):
                 body = self._body()
             except ValueError:
                 return self._send(400, {"error": "bad json"})
+            if u.path in ("/hook/permission", "/hook/event") or u.path.startswith("/assistant-tools/"):
+                if not self._local():
+                    return self._send(403, {"error": "local only"})
             if u.path == "/hook/permission":
                 return self._send(200, broker.request_permission(body))
             if u.path == "/hook/event":
                 broker.hook_event(body)
                 return self._send(200, {"ok": True})
+            m = TOOL.match(u.path)
+            if m and tools:
+                text = tools.call(str(body.get("project", "")), m.group(1), body.get("args") or {})
+                return self._send(200, {"text": text})
+            m = ASSISTANT.match(u.path)
+            if m and assistants:
+                name, verb = m.groups()
+                a = assistants.get(name)
+                if verb == "messages":
+                    text = str(body.get("text") or "").strip()
+                    if not text:
+                        return self._send(400, {"error": "empty"})
+                    src = body.get("source") if body.get("source") in ("myghost", "web") else "myghost"
+                    a.send(text[:20000], src)
+                    return self._send(200, {"ok": True, "seq": a.seq})
+                if verb == "stop":
+                    return self._send(200, {"ok": a.interrupt()})
+                if verb == "start":
+                    a.start()
+                    return self._send(200, {"ok": True})
             m = DECIDE.match(u.path)
             if m:
                 by = body.get("by") if body.get("by") in ("myghost", "web") else "myghost"
@@ -111,8 +167,9 @@ def make_handler(broker: Broker):
     return Handler
 
 
-def serve(broker: Broker, host: str, port: int) -> ThreadingHTTPServer:
-    httpd = ThreadingHTTPServer((host, port), make_handler(broker))
+def serve(broker: Broker, host: str, port: int, assistants=None, tools=None,
+          remote_token: str = "") -> ThreadingHTTPServer:
+    httpd = ThreadingHTTPServer((host, port), make_handler(broker, assistants, tools, remote_token))
     httpd.daemon_threads = True
     log(f"http: listening on {host}:{port}")
     return httpd

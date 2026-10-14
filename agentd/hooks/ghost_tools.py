@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""ghost-tools: the MCP (stdio) server a project assistant gets. stdlib only.
+
+Each tool call is forwarded to ghost-agentd, which does the work; this file
+only speaks MCP. GHOST_PROJECT names the assistant's project.
+"""
+
+import json
+import os
+import sys
+import urllib.request
+
+URL = os.environ.get("GHOST_AGENTD_URL", "http://127.0.0.1:7788")
+PROJECT = os.environ.get("GHOST_PROJECT", "")
+
+TOOLS = [
+    {"name": "ask_decision",
+     "description": "問專案負責人一個選擇題（2–5 個選項），選項會變成 MyGhost 和 TG 上的按鈕。立即返回；"
+                    "他選好後你會收到一則新訊息。討論決策卡時帶 card_id，並在同意／拒絕的選項上標 action。",
+     "inputSchema": {"type": "object", "properties": {
+         "question": {"type": "string"},
+         "options": {"type": "array", "items": {"type": "object", "properties": {
+             "label": {"type": "string"},
+             "action": {"type": "string", "enum": ["allow", "deny"],
+                        "description": "只在討論決策卡時使用：選了這個選項就同意或拒絕那張卡"}},
+             "required": ["label"]}},
+         "card_id": {"type": "string", "description": "正在討論的決策卡 id（沒有就省略）"}},
+         "required": ["question", "options"]}},
+    {"name": "read_state", "description": "讀你自己的記憶 state.md。",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "update_state",
+     "description": "用完整內容覆寫你的記憶 state.md（進行中的事、誰負責什麼、待他決定的事、他的偏好）。",
+     "inputSchema": {"type": "object", "properties": {"content": {"type": "string"}},
+                     "required": ["content"]}},
+    {"name": "list_workers",
+     "description": "列出這個專案最近的工作對話（Claude Code 分頁）：標題、狀態、分支、最後回覆摘要、待決策數。",
+     "inputSchema": {"type": "object", "properties": {"days": {"type": "number", "description": "往回幾天，預設 2"}}}},
+    {"name": "read_worker_log", "description": "讀某個工作對話最近的訊息（他說的話與工作對話的回覆）。",
+     "inputSchema": {"type": "object", "properties": {
+         "session_id": {"type": "string"}, "max_messages": {"type": "integer", "description": "預設 30"}},
+         "required": ["session_id"]}},
+    {"name": "share_report",
+     "description": "把 HTML/PDF 報告用 share 產生對外連結（保留 90 天），並在本機永久存檔。回傳連結。",
+     "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
+    {"name": "tg_send", "description": "發一則訊息到這個專案的 TG 群組（只有這個群組）。",
+     "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}},
+]
+
+
+def call(name, args):
+    req = urllib.request.Request(
+        f"{URL}/assistant-tools/{name}",
+        data=json.dumps({"project": PROJECT, "args": args}).encode(),
+        headers={"Content-Type": "application/json", "X-Ghost": "1"})
+    try:
+        with urllib.request.urlopen(req, timeout=300) as r:
+            return json.loads(r.read()).get("text", "")
+    except Exception as e:
+        return f"ghost-agentd 沒有回應：{e}"
+
+
+def reply(i, result):
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": i, "result": result}, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
+def main():
+    for line in sys.stdin:
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        m, i = msg.get("method"), msg.get("id")
+        if m == "initialize":
+            reply(i, {"protocolVersion": (msg.get("params") or {}).get("protocolVersion", "2025-06-18"),
+                      "capabilities": {"tools": {}}, "serverInfo": {"name": "ghost-tools", "version": "1"}})
+        elif m == "tools/list":
+            reply(i, {"tools": TOOLS})
+        elif m == "tools/call":
+            p = msg.get("params") or {}
+            text = call(p.get("name", ""), p.get("arguments") or {})
+            reply(i, {"content": [{"type": "text", "text": text}]})
+        elif i is not None:
+            reply(i, {})
+
+
+if __name__ == "__main__":
+    main()

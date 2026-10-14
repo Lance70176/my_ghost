@@ -2522,6 +2522,10 @@ class SidebarTerminalController: BaseTerminalController {
 class SidebarUIState: ObservableObject {
     @Published var sidebarMode: SidebarMode = .terminal
 
+    /// The assistant shown in the main area in `.assistant` mode; nil is the
+    /// all-projects overview.
+    @Published var assistantProject: String?
+
     /// Hides the tab/file sidebar so the terminal fills the window. Remembered
     /// across launches — it's a layout preference, not per-window state.
     @Published var isSidebarCollapsed: Bool = UserDefaults.standard.bool(
@@ -2580,10 +2584,17 @@ private struct SidebarRootView: View {
                 TerminalView(ghostty: controller.ghostty, viewModel: controller, delegate: controller)
                     .splitPaneTitleBar(true)
                     .padding(.leading, 4)
-                    .opacity(uiState.sidebarMode == .editor ? 0 : 1)
+                    .opacity(uiState.sidebarMode == .editor || uiState.sidebarMode == .assistant ? 0 : 1)
 
                 if uiState.sidebarMode == .editor {
                     EditorMainPane(state: editorState)
+                        .padding(.leading, 4)
+                }
+
+                // The project assistant takes the terminal's place; the
+                // terminal stays mounted underneath, as for the editor.
+                if uiState.sidebarMode == .assistant {
+                    AgentAssistantMainView(uiState: uiState)
                         .padding(.leading, 4)
                 }
             }
@@ -2602,6 +2613,9 @@ private struct SidebarRootView: View {
                         doc.textView.window?.makeFirstResponder(doc.textView)
                     }
                 }
+            } else if mode == .assistant {
+                // The chat input takes focus itself; handing it to the hidden
+                // terminal would send typing there.
             } else if let surface = controller.focusedSurface {
                 DispatchQueue.main.async {
                     Ghostty.moveFocus(to: surface)

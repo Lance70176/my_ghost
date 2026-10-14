@@ -83,6 +83,9 @@ def main():
     except ValueError:
         return
     payload["tmux_session"], payload["tab_title"] = tmux_info()
+    if os.environ.get("GHOST_ASSISTANT"):
+        # The project assistant itself (run by ghost-agentd, not in a tab).
+        payload["tab_title"] = os.environ["GHOST_ASSISTANT"] + " 助手"
     event = payload.get("hook_event_name", "")
 
     if event == "PermissionRequest":

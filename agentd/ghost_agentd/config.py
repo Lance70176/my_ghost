@@ -48,6 +48,11 @@ class Config:
     digest_l0: bool = True  # include silent L0 allows in the digest
     notify_idle: bool = False  # TG message when a session goes idle
     mirror_to_myghost: bool = True
+    # Other Macs' MyGhost (over Tailscale): bind beyond loopback and require
+    # this token from non-loopback clients. Empty token = loopback only.
+    remote_token: str = ""
+    # Mirror MyGhost-side chat into the project's TG group.
+    sync_chat_to_tg: bool = True
 
 
 @dataclass
@@ -86,6 +91,8 @@ def load_config() -> Config:
         digest_seconds=int(raw.get("digest_seconds", 60)),
         digest_l0=bool(raw.get("digest_l0", True)),
         notify_idle=bool(raw.get("notify_idle", False)),
+        remote_token=str((raw.get("remote") or {}).get("token") or ""),
+        sync_chat_to_tg=bool(raw.get("sync_chat_to_tg", True)),
     )
 
 

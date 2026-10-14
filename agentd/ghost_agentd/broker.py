@@ -25,6 +25,9 @@ class Listener(Protocol):
     def on_pending(self, p: "Pending") -> None: ...
     def on_update(self, p: "Pending") -> None: ...
     def on_notice(self, project: Project, text: str) -> None: ...
+    # Optional: a choice was answered / a card was taken into discussion.
+    # def on_choice(self, p: "Pending", option: dict) -> None: ...
+    # def on_discuss(self, p: "Pending") -> None: ...
 
 
 @dataclass
@@ -52,6 +55,15 @@ class Pending:
     resolved_at: float = 0.0
     # Taken into a discussion ("💬 討論"): never times out, still decidable.
     discussing: bool = False
+    # "permission" (a hook is waiting) or "choice" (an assistant's question:
+    # options to pick from, nothing blocked, never times out).
+    kind: str = "permission"
+    # choice: [{"label": str, "action": "allow"|"deny"|None}]
+    options: list = field(default_factory=list)
+    # choice about a permission card: picking an option with an action
+    # applies it to that card — the assistant itself can't decide anything.
+    card_id: str | None = None
+    chosen: int | None = None
     event: threading.Event = field(default_factory=threading.Event, repr=False)
 
     @property
@@ -62,7 +74,11 @@ class Pending:
         d = {f.name: getattr(self, f.name) for f in fields(self) if f.name != "event"}
         d["level_name"] = LEVEL_NAMES[self.level]
         d["can_always"] = self.level == L2 and bool(self.always_pattern)
-        d["remaining"] = -1 if self.discussing else max(0, int(self.deadline - time.time()))
+        d["remaining"] = -1 if (self.discussing or self.kind == "choice") \
+            else max(0, int(self.deadline - time.time()))
+        if self.kind == "choice":
+            d["level_name"] = "選擇"
+            d["can_always"] = False
         return d
 
 
@@ -119,8 +135,11 @@ class Broker:
 
     def _emit(self, method: str, *args) -> None:
         for l in list(self.listeners):
+            fn = getattr(l, method, None)
+            if fn is None:
+                continue
             try:
-                getattr(l, method)(*args)
+                fn(*args)
             except Exception as e:  # a broken TG must never block a decision
                 log(f"listener {type(l).__name__}.{method} failed: {e!r}")
 
@@ -244,9 +263,57 @@ class Broker:
         msg = p.deny_message or "使用者拒絕了這個操作。"
         return {"behavior": "deny", "message": msg, "id": p.id}
 
+    def create_choice(self, project: str, question: str, options: list, card_id: str | None = None,
+                      session_id: str = "") -> Pending:
+        """An assistant's multiple-choice question. Options with an action
+        ("allow"/"deny") decide card_id when picked."""
+        clean = []
+        for o in options[:8]:
+            o = o if isinstance(o, dict) else {"label": str(o)}
+            act = o.get("action") if o.get("action") in ("allow", "deny") else None
+            clean.append({"label": str(o.get("label", ""))[:80], "action": act if card_id else None})
+        now = time.time()
+        with self.lock:
+            p = Pending(
+                id=secrets.token_hex(4), key="choice-" + secrets.token_hex(6), project=project,
+                session_id=session_id, tmux_session="", tab_title=f"{project} 助手", cwd="",
+                tool_name="ask_decision", tool_input={}, summary=question[:900],
+                level=L1, reason="助手的選擇題", always_pattern=None,
+                created=now, deadline=now + 30 * 86400, kind="choice", options=clean, card_id=card_id,
+            )
+            self.pending[p.id] = p
+            self.by_key[p.key] = p
+            self._bump()
+            self._emit("on_pending", p)
+        return p
+
     def decide(self, pid: str, action: str, by: str, message: str = "") -> tuple[bool, str]:
-        """action: allow | deny | always | confirm | cancel | discuss.
-        Returns (ok, explanation)."""
+        """action: allow | deny | always | confirm | cancel | discuss, or for
+        a choice o<N> (pick option N) / deny (dismiss). Returns (ok, why)."""
+        card_followup = None
+        with self.lock:
+            p = self.pending.get(pid)
+            if p is None or not p.open:
+                return False, "這個請求已經處理過了"
+            if p.kind == "choice":
+                if action == "deny":
+                    self._resolve(p, "denied", by)
+                    self._emit("on_choice", p, None)
+                    return True, "已略過這個問題"
+                if not action.startswith("o") or not action[1:].isdigit() \
+                        or int(action[1:]) >= len(p.options):
+                    return False, "請選一個選項"
+                p.chosen = int(action[1:])
+                opt = p.options[p.chosen]
+                p.deny_message = ""
+                self._resolve(p, "allowed", by)
+                self._emit("on_choice", p, opt)
+                if not (opt.get("action") and p.card_id):
+                    return True, f"已選擇：{opt['label']}"
+                card_followup = (p.card_id, opt["action"])
+        if card_followup:
+            ok, why = self.decide(card_followup[0], card_followup[1], by)
+            return True, f"已選擇；授權卡：{why}"
         with self.lock:
             p = self.pending.get(pid)
             if p is None or not p.open:
@@ -279,6 +346,7 @@ class Broker:
                 p.discussing = True
                 self._bump()
                 self._emit("on_update", p)
+                self._emit("on_discuss", p)
                 return True, "已標成討論中，不會逾時；決定後再按同意或拒絕"
             if action == "cancel" and p.state == "confirming":
                 p.state = "pending"
@@ -298,6 +366,8 @@ class Broker:
             "summary": p.summary, "level": LEVEL_NAMES[p.level], "reason": p.reason,
             "state": state, "by": by, "always_added": p.always_added,
             "discussed": p.discussing, "deny_message": p.deny_message if state != "allowed" else "",
+            "kind": p.kind,
+            "chosen": p.options[p.chosen]["label"] if p.kind == "choice" and p.chosen is not None else None,
             "wait_seconds": round(time.time() - p.created, 1),
         })
         was_pending = self.pending.pop(p.id, None) is not None

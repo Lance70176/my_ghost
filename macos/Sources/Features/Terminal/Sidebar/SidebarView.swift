@@ -437,7 +437,7 @@ struct SidebarView: View {
                 EditorSidebarList(state: TextEditorManager.shared.state)
 
             case .assistant:
-                AgentAssistantSidebarList()
+                AgentAssistantSidebarList(uiState: controller.sidebarUIState)
             }
         }
         .frame(minWidth: 150, idealWidth: 200)

@@ -655,6 +655,16 @@
         el.onclick = fn;
         btns.appendChild(el);
       };
+      if (p.kind === "choice") {
+        why.textContent = "助手的選擇題";
+        left.textContent = "";
+        (p.options || []).forEach((o, i) =>
+          b(o.label, o.action === "deny" ? "no" : "ok", () => decide(p, "o" + i)));
+        b("略過", "", () => decide(p, "deny"));
+        card.append(head, cmd, why, btns);
+        box.appendChild(card);
+        continue;
+      }
       if (p.state === "confirming") {
         b("⚠️ 確定同意", "ok", () => decide(p, "confirm"));
         b("取消", "", () => decide(p, "cancel"));

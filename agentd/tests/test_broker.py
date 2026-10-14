@@ -175,7 +175,7 @@ def test_http_and_hook_end_to_end(home, tmp_path):
     """Real daemon process + real hook script, decision made over the API."""
     port = 17788
     (home / "config.yaml").write_text(f"port: {port}\ndecision_timeout: 20\n")
-    env = dict(os.environ, MYGHOST_HOME=str(home), PYTHONPATH=str(ROOT))
+    env = dict(os.environ, MYGHOST_HOME=str(home), PYTHONPATH=str(ROOT), GHOST_NO_ASSISTANTS="1")
     daemon = subprocess.Popen([sys.executable, "-m", "ghost_agentd"], env=env,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     try:
