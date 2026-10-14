@@ -43,12 +43,14 @@ from .broker import Broker, log
 DECIDE = re.compile(r"^/api/decisions/([0-9a-f]{8})$")
 ASSISTANT = re.compile(r"^/api/assistants/([A-Za-z0-9_.-]+)/(chat|messages|stop|start|file)$")
 TOOL = re.compile(r"^/assistant-tools/([a-z_]+)$")
+HELP = re.compile(r"^/api/help/([0-9a-f]{6})$")
 WORKERS = re.compile(r"^/api/projects/([A-Za-z0-9_.-]+)/workers$")
 WORKER = re.compile(r"^/api/projects/([A-Za-z0-9_.-]+)/workers/([0-9a-f]{8})/(log|send)$")
 LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
 
-def make_handler(broker: Broker, assistants=None, tools=None, remote_token: str = "", dispatcher=None):
+def make_handler(broker: Broker, assistants=None, tools=None, remote_token: str = "", dispatcher=None,
+                 helpdesk=None):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -133,6 +135,11 @@ def make_handler(broker: Broker, assistants=None, tools=None, remote_token: str 
         def _get(self):
             u = urlparse(self.path)
             q = parse_qs(u.query)
+            m = HELP.match(u.path)
+            if m and helpdesk:
+                if not self._local():
+                    return self._send(403, {"error": "local only"})
+                return self._send(200, helpdesk.answers(m.group(1)))
             if u.path == "/api/health":
                 return self._send(200, {"ok": True, "version": broker.version,
                                         "surfaces": broker.surfaces()})
@@ -204,9 +211,17 @@ def make_handler(broker: Broker, assistants=None, tools=None, remote_token: str 
                 body = self._body()
             except ValueError:
                 return self._send(400, {"error": "bad json"})
-            if u.path in ("/hook/permission", "/hook/event") or u.path.startswith("/assistant-tools/"):
+            if u.path in ("/hook/permission", "/hook/event", "/hook/context", "/api/help") \
+                    or u.path.startswith("/assistant-tools/"):
                 if not self._local():
                     return self._send(403, {"error": "local only"})
+            if u.path == "/hook/context":
+                return self._send(200, {"context": helpdesk.context_for(str(body.get("cwd") or "")) if helpdesk else ""})
+            if u.path == "/api/help":
+                if helpdesk is None:
+                    return self._send(404, {"ok": False, "message": "沒有啟用求助"})
+                r = helpdesk.ask(body)
+                return self._send(200 if r.get("ok") else 400, r)
             if u.path == "/hook/permission":
                 return self._send(200, broker.request_permission(body))
             if u.path == "/hook/event":
@@ -263,8 +278,9 @@ def make_handler(broker: Broker, assistants=None, tools=None, remote_token: str 
 
 
 def serve(broker: Broker, host: str, port: int, assistants=None, tools=None,
-          remote_token: str = "", dispatcher=None) -> ThreadingHTTPServer:
-    httpd = ThreadingHTTPServer((host, port), make_handler(broker, assistants, tools, remote_token, dispatcher))
+          remote_token: str = "", dispatcher=None, helpdesk=None) -> ThreadingHTTPServer:
+    httpd = ThreadingHTTPServer((host, port), make_handler(broker, assistants, tools, remote_token, dispatcher,
+                                                           helpdesk))
     httpd.daemon_threads = True
     log(f"http: listening on {host}:{port}")
     return httpd

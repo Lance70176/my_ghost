@@ -63,6 +63,11 @@ TOOLS = [
          "branch": {"type": "string", "description": "新分支名稱（省略則自動產生 feature/...）"},
          "source": {"type": "string", "description": "來源，例如 ClickUp 單號或訊息 ref"}},
          "required": ["title", "repo", "task"]}},
+    {"name": "reply_worker",
+     "description": "回覆工作對話的求助（用求助 id）。回覆會直接打進那個對話。涉及正式環境、發佈、權限等，"
+                    "要先用 ask_decision 取得負責人同意再回覆它可以做。",
+     "inputSchema": {"type": "object", "properties": {
+         "help_id": {"type": "string"}, "text": {"type": "string"}}, "required": ["help_id", "text"]}},
     {"name": "message_worker",
      "description": "傳訊息給你派出、還在進行中的工作對話（回答它的問題、補充說明）。只能傳給你派出的。",
      "inputSchema": {"type": "object", "properties": {

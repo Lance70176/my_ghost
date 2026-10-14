@@ -88,6 +88,20 @@ def main():
         payload["tab_title"] = os.environ["GHOST_ASSISTANT"] + " 助手"
     event = payload.get("hook_event_name", "")
 
+    if event == "SessionStart":
+        # Tell conversations in a project how to reach its assistant
+        # (not the assistant itself).
+        if os.environ.get("GHOST_ASSISTANT"):
+            return
+        try:
+            ctx = post("/hook/context", {"cwd": payload.get("cwd", "")}, timeout=3).get("context")
+        except Exception:
+            return
+        if ctx:
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "SessionStart", "additionalContext": ctx}}, ensure_ascii=False))
+        return
+
     if event == "PermissionRequest":
         # Don't forward the transcript path's contents, just the request.
         result = permission(payload)

@@ -36,6 +36,9 @@ for ev in list(hooks):
 if mode == "add":
     hooks.setdefault("PermissionRequest", []).append(
         {"hooks": [{"type": "command", "command": cmd, "timeout": 604800}]})
+    # Tells conversations in a project about ghost-ask (needs its output).
+    hooks.setdefault("SessionStart", []).append(
+        {"hooks": [{"type": "command", "command": cmd, "timeout": 5}]})
     for ev in ("Notification", "Stop", "UserPromptSubmit", "SessionEnd"):
         hooks.setdefault(ev, []).append(
             {"hooks": [{"type": "command", "command": cmd, "timeout": 5, "async": True}]})
@@ -62,7 +65,7 @@ mkdir -p "$DEST" "$HOME_DIR/projects/fq" "$HOME_DIR/projects/lts" "$HOME/Library
 rsync -a --delete --exclude .venv --exclude __pycache__ --exclude .pytest_cache \
   --exclude tests --exclude uv.lock "$SRC/" "$DEST/"
 (cd "$DEST" && uv sync -q --no-dev)
-chmod +x "$HOOK"
+chmod +x "$HOOK" "$DEST/hooks/ghost-ask"
 
 if [[ ! -f "$HOME_DIR/config.yaml" ]]; then
   cat > "$HOME_DIR/config.yaml" <<'YAML'

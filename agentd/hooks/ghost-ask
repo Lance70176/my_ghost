@@ -1,0 +1,84 @@
+#!/usr/bin/python3 -I
+"""ghost-ask: ask this project's MyGhost assistant for help.
+
+    ghost-ask "需要把 bc-api 發到測試環境，分支 feature/x，已合併 develop"
+
+Run from a Claude Code conversation inside a project folder. The assistant's
+answer is typed into this conversation when it comes; a conversation it
+can't type into (not a MyGhost tab or background job) gets it here instead —
+this waits up to 9 minutes for it.
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.request
+
+URL = os.environ.get("GHOST_AGENTD_URL", "http://127.0.0.1:7788")
+
+
+def call(path, body=None, timeout=10):
+    req = urllib.request.Request(URL + path, data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Content-Type": "application/json", "X-Ghost": "1"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read())
+
+
+def tmux_session():
+    pane = os.environ.get("TMUX_PANE")
+    if not pane or not os.environ.get("TMUX"):
+        return ""
+    for tmux in ("/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "tmux"):
+        try:
+            return subprocess.run([tmux, "display-message", "-p", "-t", pane, "#{session_name}"],
+                                  capture_output=True, text=True, timeout=3).stdout.strip()
+        except OSError:
+            continue
+    return ""
+
+
+def main():
+    text = " ".join(sys.argv[1:]).strip() or (sys.stdin.read().strip() if not sys.stdin.isatty() else "")
+    if not text:
+        print(__doc__.strip())
+        return 2
+    job = os.path.basename(os.environ.get("CLAUDE_JOB_DIR", "").rstrip("/"))
+    try:
+        r = call("/api/help", {
+            "text": text, "cwd": os.getcwd(), "session_id": os.environ.get("CLAUDE_CODE_SESSION_ID", ""),
+            "job": job if re.match(r"^[0-9a-f]{8}$", job) else "", "tmux": tmux_session()})
+    except Exception as e:
+        print(f"找不到 MyGhost 的專案助手（ghost-agentd 沒有回應：{e}）。請直接問使用者。")
+        return 1
+    if not r.get("ok"):
+        print(r.get("message") or "求助沒有送出。")
+        return 1
+    if r.get("deliverable"):
+        print(f"已交給 {r['project']} 專案助手（求助 #{r['id']}）。它的回覆會直接傳進這個對話，"
+              "開頭是「[" + r["project"] + " 專案助手回覆你的求助 #" + r["id"] + "]」。"
+              "在那之前可以先做不受影響的部分，或結束這一輪等回覆；不要自己去做你求助的那件事。")
+        return 0
+    print(f"已交給 {r['project']} 專案助手（求助 #{r['id']}），等它回覆中…", flush=True)
+    end = time.time() + 540
+    while time.time() < end:
+        time.sleep(5)
+        try:
+            a = call(f"/api/help/{r['id']}")
+        except Exception:
+            continue
+        if a.get("answers"):
+            print("專案助手回覆：\n" + "\n---\n".join(a["answers"]))
+            return 0
+    print(f"9 分鐘內沒有回覆（求助 #{r['id']}）。可以稍後再執行 `{sys.argv[0]} --check {r['id']}`，或直接問使用者。")
+    return 1
+
+
+if __name__ == "__main__":
+    if sys.argv[1:2] == ["--check"] and len(sys.argv) > 2:
+        a = call(f"/api/help/{sys.argv[2]}")
+        print("\n---\n".join(a.get("answers") or []) or "還沒有回覆。")
+        sys.exit(0)
+    sys.exit(main())

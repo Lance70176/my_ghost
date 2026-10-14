@@ -310,13 +310,15 @@ def close_idle_attachments(max_idle: float = 1800) -> None:
 
 
 class Tools:
-    def __init__(self, broker, assistants, bots_for, accounts=None, sources=None, dispatcher=None):
+    def __init__(self, broker, assistants, bots_for, accounts=None, sources=None, dispatcher=None,
+                 helpdesk=None):
         self.broker = broker
         self.assistants = assistants
         self.bots_for = bots_for  # project name -> Bot or None
         self.accounts = accounts if accounts is not None else {}  # project name -> AccountWatcher
         self.sources = sources  # Sources (requirement sources), or None
         self.dispatcher = dispatcher  # Dispatcher, or None
+        self.helpdesk = helpdesk  # HelpDesk, or None
 
     def call(self, project: str, name: str, args: dict) -> str:
         fn = getattr(self, "t_" + name, None)
@@ -489,3 +491,8 @@ class Tools:
 
     def t_list_dispatches(self, p, args) -> str:
         return self.dispatcher.list_for(p) if self.dispatcher else "派工沒有啟用。"
+
+    def t_reply_worker(self, p, args) -> str:
+        if self.helpdesk is None:
+            return "求助沒有啟用。"
+        return self.helpdesk.reply(p.name, str(args.get("help_id") or ""), str(args.get("text") or ""))

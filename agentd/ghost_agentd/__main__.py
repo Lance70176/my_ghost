@@ -79,7 +79,9 @@ def main() -> int:
     from .dispatch import Dispatcher
     dispatcher = Dispatcher(broker, assistants)
     broker.listeners.append(dispatcher)
-    tools = Tools(broker, assistants, bot_for, accounts, sources, dispatcher)
+    from .helpdesk import HelpDesk
+    helpdesk = HelpDesk(broker, assistants)
+    tools = Tools(broker, assistants, bot_for, accounts, sources, dispatcher, helpdesk)
     if os.environ.get("GHOST_NO_ASSISTANTS") != "1":
         threading.Timer(2, assistants.start_residents).start()
 
@@ -110,7 +112,7 @@ def main() -> int:
     # With a remote token set, other Macs' MyGhost can reach us (over
     # Tailscale); without one we stay on loopback.
     host = "0.0.0.0" if cfg.remote_token else cfg.host
-    httpd = serve(broker, host, cfg.port, assistants, tools, cfg.remote_token, dispatcher)
+    httpd = serve(broker, host, cfg.port, assistants, tools, cfg.remote_token, dispatcher, helpdesk)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
