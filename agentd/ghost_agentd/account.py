@@ -195,14 +195,18 @@ class AccountWatcher:
         self.transport = transport
         self.lock = threading.RLock()
         self.inbox: dict[str, Incoming] = {}
-        self.batch: list[Incoming] = []
-        self.batch_due = 0.0
-        self.held: list[tuple[Incoming, Window]] = []
-        self.last_mine: dict[int, float] = {}  # chat -> when I last wrote there
+        # Refs of messages waiting to go to the assistant — for the batch
+        # minute, or for their window to open. Kept on disk so a restart
+        # loses none, and judged against watch.yaml as it is when they go.
+        self.queue: list[str] = []
         self.me = ""
         self._watch_at = 0.0
         self._watch: Watch | None = None
         self._load_inbox()
+        try:
+            self.queue = [r for r in json.loads(self.queue_file.read_text()) if r in self.inbox]
+        except (OSError, ValueError):
+            self.queue = []
         self.watch()  # writes the default watch.yaml so it's there to edit
 
     # ----------------------------------------------------------- storage
@@ -210,6 +214,15 @@ class AccountWatcher:
     @property
     def inbox_file(self) -> Path:
         return self.project.dir / "account_inbox.jsonl"
+
+    @property
+    def queue_file(self) -> Path:
+        return self.project.dir / "account_queue.json"
+
+    def _save_queue(self) -> None:
+        tmp = self.queue_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self.queue))
+        tmp.replace(self.queue_file)
 
     def _load_inbox(self) -> None:
         if not self.inbox_file.exists():
@@ -245,19 +258,19 @@ class AccountWatcher:
                 fh.write(json.dumps(asdict(m), ensure_ascii=False) + "\n")
             if win.expired(m.ts):
                 return False
-            if not win.open_at(m.ts):
-                self.held.append((m, win))
-                return True
-            self.batch.append(m)
-            if self.batch_due == 0:
-                self.batch_due = time.time() + self.watch().batch
+            self.queue.append(m.ref)
+            self._save_queue()
         return True
 
     def on_mine(self, chat_id: int, ts: float | None = None) -> None:
         """The owner wrote in a chat themselves: they're handling it."""
         ts = ts or time.time()
         with self.lock:
-            self.last_mine[chat_id] = ts
+            # Waiting messages of that chat it answered are no longer news.
+            keep = [r for r in self.queue if not (self.inbox[r].chat_id == chat_id and self.inbox[r].ts <= ts)]
+            if keep != self.queue:
+                self.queue = keep
+                self._save_queue()
         for p in list(self.broker.pending.values()):
             r = getattr(p, "reply", None)
             if p.project == self.project.name and r and r.get("chat_id") == chat_id:
@@ -266,21 +279,23 @@ class AccountWatcher:
                     "notice", f"你已經在 TG 上自己回了「{r.get('chat', '')}」，草擬的回覆卡已收掉。", source="system")
 
     def tick(self) -> None:
+        """Hand the assistant what's ready: messages whose window is open,
+        once the oldest has waited the batch time (one wake for a burst)."""
         now = time.time()
-        due: list[Incoming] = []
+        w = self.watch()
         with self.lock:
-            still = []
-            for m, win in self.held:
-                if win.open_at(now):
-                    due.append(m)
-                elif not win.expired(now):
-                    still.append((m, win))
-            self.held = still
-            if self.batch and now >= self.batch_due:
-                due += self.batch
-                self.batch, self.batch_due = [], 0.0
-            # Answered meanwhile by the owner: nothing to do.
-            due = [m for m in due if self.last_mine.get(m.chat_id, 0) < m.ts]
+            ready, later = [], []
+            for ref in self.queue:
+                m = self.inbox.get(ref)
+                win = w.match(m) if m else None
+                if win is None or win.expired(now):
+                    continue  # no longer watched, or its window is over
+                (ready if win.open_at(now) else later).append(m if win.open_at(now) else ref)
+            due = ready if ready and min(m.ts for m in ready) + w.batch <= now else []
+            queue = later + ([] if due else [m.ref for m in ready])
+            if queue != self.queue:
+                self.queue = queue
+                self._save_queue()
         if due:
             self._hand_over(due)
 

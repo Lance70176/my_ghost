@@ -117,21 +117,55 @@ def test_skip_and_self_reply_send_nothing(broker, manager):
     assert w.transport.sent == []
 
 
-def test_held_until_window_and_dropped_if_answered(broker, manager):
-    w = watcher(broker, manager)
+def closed_window(w):
     (w.project.dir / "watch.yaml").write_text("window: mon-mon 00:00-00:01\nbatch: 0\n")
     w._watch = None
-    now = time.time()
-    if Window.parse("mon-mon 00:00-00:01").open_at(now):
+    return not Window.parse("mon-mon 00:00-00:01").open_at(time.time())
+
+
+def test_waits_for_window_survives_restart_and_follows_edits(broker, manager):
+    w = watcher(broker, manager)
+    if not closed_window(w):
         return  # the one minute a week this can't be tested
+    w.on_message(msg(private=True, chat_id=5, text="第一則"))
+    w.tick()
+    assert len(w.queue) == 1  # outside the window: waits
+    # A restart keeps it.
+    w2 = AccountWatcher(broker, manager, w.project, FakeTransport())
+    assert w2.queue == w.queue
+    # Opening the window in watch.yaml applies to what's waiting.
+    (w.project.dir / "watch.yaml").write_text("window: always\nbatch: 0\n")
+    w2._watch = None
+    w2.tick()
+    assert not w2.queue
+    wait_for(lambda: any(r == "user" and "第一則" in t for r, t in roles(manager.get("fq"))))
+
+
+def test_waiting_message_dropped_if_answered(broker, manager):
+    w = watcher(broker, manager)
+    if not closed_window(w):
+        return
+    now = time.time()
     w.on_message(msg(private=True, chat_id=5, ts=now))
-    w.tick()
-    assert len(w.held) == 1 and not w.batch
     w.on_mine(5, now + 1)  # answered before the window opened
-    w.held = [(m, Window()) for m, _ in w.held]  # the window opens
+    assert not w.queue
+    (w.project.dir / "watch.yaml").write_text("window: always\nbatch: 0\n")
+    w._watch = None
     w.tick()
-    assert not w.held
     assert not any(r == "user" for r, _ in roles(manager.get("fq")))
+
+
+def test_batch_gathers_a_burst(broker, manager):
+    w = watcher(broker, manager)
+    (w.project.dir / "watch.yaml").write_text("window: always\nbatch: 60\n")
+    w._watch = None
+    now = time.time()
+    w.on_message(msg(private=True, chat_id=8, text="一", ts=now - 70))
+    w.on_message(msg(private=True, chat_id=9, text="二", ts=now - 5))
+    w.tick()  # the oldest has waited a minute: both go, in one message
+    assert not w.queue
+    a = manager.get("fq")
+    wait_for(lambda: any(r == "user" and "一" in t and "二" in t for r, t in roles(a)))
 
 
 def test_tools_need_an_account(broker, manager):
