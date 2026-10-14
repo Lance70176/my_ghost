@@ -43,6 +43,7 @@ def setup(broker, manager, tmp_path, monkeypatch):
     p.paths[:] = [str(root)]
     tm = FakeTmux()
     monkeypatch.setattr(dispatch, "_tmux", tm)
+    monkeypatch.setattr(dispatch, "agent_view_for", lambda path: None)  # no agent view: tabs
     d = dispatch.Dispatcher(broker, manager)
     broker.listeners.append(d)
     return p, root, d, tm
@@ -94,6 +95,40 @@ def test_drop_and_follow_ups(broker, manager, tmp_path, monkeypatch):
     assert d.message(p, item.id, "用方案 B") == "已送出。"
     assert any(c[:2] == ("paste-buffer", "-p") and item.tmux in c for c in tm.calls)
     # Its stops are reported to the assistant.
-    d.on_stop(item.tmux, "做完了，還沒 push")
+    d.on_stop(item.tmux, "", "做完了，還沒 push")
     a = manager.get("fq")
     wait_for(lambda: any(r == "user" and "做完了，還沒 push" in t for r, t in roles(a)))
+
+
+def test_into_an_open_agent_view_as_a_background_job(broker, manager, tmp_path, monkeypatch):
+    """With `claude agents` open on the project, the work becomes a background
+    job there, with the permission mode its jobs use."""
+    p, root, d, tm = setup(broker, manager, tmp_path, monkeypatch)
+    monkeypatch.setattr(dispatch, "agent_view_for", lambda path: str(root))
+    jobs = tmp_path / "jobs"
+    from ghost_agentd import tools
+    monkeypatch.setattr(tools, "JOBS", jobs)
+    ran = []
+
+    def fake_run(cmd, **kw):
+        if cmd[0] != dispatch.CLAUDE:
+            return real_run(cmd, **kw)
+        ran.append((cmd, kw["cwd"]))
+        (jobs / "abcd1234").mkdir(parents=True)
+        (jobs / "abcd1234" / "state.json").write_text('{"sessionId": "sess-1"}')
+        return subprocess.CompletedProcess(cmd, 0, "backgrounded · abcd1234 · 背景示範\n", "")
+
+    real_run = subprocess.run
+    monkeypatch.setattr(dispatch.subprocess, "run", fake_run)
+    d.propose(p, "背景示範", "platform", "做 X", branch="feature/bg")
+    card = next(x for x in broker.pending.values() if getattr(x, "dispatch", None))
+    assert "claude agents" in card.summary and "略過權限確認" in card.summary
+    broker.decide(card.id, "o0", "tg")
+    item = next(iter(d.items.values()))
+    wait_for(lambda: item.state == "started")
+    cmd, cwd = ran[0]
+    assert cmd[1:5] == ["--bg", "-n", "背景示範", "--permission-mode"] and cmd[5] == "bypassPermissions"
+    assert cwd == item.worktree and item.job_id == "abcd1234" and item.session_id == "sess-1"
+    assert not any("new-session" in c for c in tm.calls) and d.live() == []  # no tab
+    d.on_stop("", "sess-1", "做好了")
+    wait_for(lambda: any(r == "user" and "做好了" in t for r, t in roles(manager.get("fq"))))

@@ -527,8 +527,8 @@ class Broker:
             elif ev == "Stop":
                 self._touch_session(payload, project, "waiting" if has_pending else "done",
                                     payload.get("last_assistant_message") or "")
-                if payload.get("tmux_session"):
-                    self._emit("on_stop", payload["tmux_session"], payload.get("last_assistant_message") or "")
+                self._emit("on_stop", payload.get("tmux_session") or "", payload.get("session_id") or "",
+                           payload.get("last_assistant_message") or "")
             elif ev == "SessionEnd":
                 self._touch_session(payload, project, "ended")
             elif ev == "Notification":

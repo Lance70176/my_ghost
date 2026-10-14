@@ -69,6 +69,9 @@ class Project:
     # The project's work account (a real Telegram user) to watch and reply
     # from (P3): {api_id, api_hash, phone}; None = not watched.
     tg_account: dict | None = None
+    # Permission mode for work dispatched into a `claude agents` view
+    # (default there: bypassPermissions, like the commander's own views).
+    dispatch_permission: str = ""
 
     @property
     def dir(self) -> Path:
@@ -131,6 +134,7 @@ class Projects:
                 tg_chat_id=int(tg["chat_id"]) if tg.get("chat_id") not in (None, "") else None,
                 resident=bool(raw.get("resident", False)),
                 tg_account=tg.get("account") if isinstance(tg.get("account"), dict) else None,
+                dispatch_permission=str(raw.get("dispatch_permission") or ""),
                 policy=ProjectPolicy(
                     root_paths=paths,
                     allow=list(pol.get("allow") or []),

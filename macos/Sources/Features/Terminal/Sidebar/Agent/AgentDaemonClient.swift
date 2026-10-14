@@ -50,6 +50,9 @@ struct AgentDispatchDraft: Decodable, Equatable {
     let branch: String?
     let base: String?
     let task: String?
+    /// Where it will run, and with which permissions, in words.
+    let place: String?
+    let permNote: String?
 }
 
 struct AgentReplyDraft: Decodable, Equatable {

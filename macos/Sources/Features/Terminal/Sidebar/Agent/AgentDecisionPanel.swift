@@ -342,7 +342,11 @@ struct AgentDecisionCard: View {
                 Label(L("New branch %@ from %@", d.branch ?? "", d.base ?? ""), systemImage: "arrow.triangle.branch")
                     .agentFont(.callout)
                     .fixedSize(horizontal: false, vertical: true)
-                Label(L("Asks you before push, merge, deleting, installing or touching a database"),
+                if let place = d.place {
+                    Label(place, systemImage: "mappin.and.ellipse").agentFont(.callout)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Label(d.permNote ?? L("Asks you before push, merge, deleting, installing or touching a database"),
                       systemImage: "lock.shield")
                     .agentFont(.caption).foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
