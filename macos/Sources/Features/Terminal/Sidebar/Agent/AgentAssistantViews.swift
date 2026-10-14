@@ -575,6 +575,32 @@ final class AgentPlaceholderTextView: NSTextView {
         super.paste(sender)
     }
 
+    /// A plain-text view disables Paste when the pasteboard holds only an
+    /// image, so ⌘V never reached paste(_:) above.
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(paste(_:)), onAttach != nil,
+           AgentPasteboard.attachments(.general) != nil {
+            return true
+        }
+        return super.validateUserInterfaceItem(item)
+    }
+
+    /// Likewise it would refuse an image dragged in.
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if onAttach != nil, AgentPasteboard.attachments(sender.draggingPasteboard) != nil { return .copy }
+        return super.draggingEntered(sender)
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if onAttach != nil, AgentPasteboard.attachments(sender.draggingPasteboard) != nil { return .copy }
+        return super.draggingUpdated(sender)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if onAttach != nil, AgentPasteboard.attachments(sender.draggingPasteboard) != nil { return true }
+        return super.prepareForDragOperation(sender)
+    }
+
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         if let onAttach, let found = AgentPasteboard.attachments(sender.draggingPasteboard) {
             onAttach(found)
@@ -638,6 +664,7 @@ private struct AgentInputField: NSViewRepresentable {
         tv.placeholder = placeholder
         if onAttach != nil {
             tv.onAttach = { [weak coordinator = context.coordinator] in coordinator?.parent.onAttach?($0) }
+            tv.registerForDraggedTypes([.fileURL, .png, .tiff])
         }
         tv.delegate = context.coordinator
         tv.isRichText = false
