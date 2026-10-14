@@ -135,8 +135,9 @@ class WatchCommands:
     def list_rules(self, w: AccountWatcher) -> str:
         raw = load_raw(w)
         lines = [f"👀 {w.me or '工作帳號'} 的監看規則"]
-        if raw.get("dms", True):
-            lines.append(f"• 私訊：{describe_window(raw.get('window'))}")
+        dms = raw.get("dms", True)
+        if dms:
+            lines.append(f"• 私訊：{describe_window(dms if isinstance(dms, str) else raw.get('window'))}")
         if raw.get("mentions", True):
             lines.append(f"• 任何群組 @我／回覆我：{describe_window(raw.get('window'))}")
         for g in raw["groups"]:

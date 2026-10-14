@@ -52,6 +52,16 @@ ignore: [吵雜群]
     # A missing file gets the default (office hours, DMs and mentions).
     d = Watch.load(tmp_path / "new.yaml")
     assert (tmp_path / "new.yaml").exists() and d.dms and d.mentions and d.window.days == set(range(5))
+    # Private messages can have a window of their own; @me keeps the main one.
+    night = at("2026-10-15 04:10")
+    f.write_text('window: "mon-fri 08:30-18:20"\ndms: always\n')
+    w = Watch.load(f)
+    assert w.match(msg(private=True, chat="Louis")).open_at(night)
+    assert not w.match(msg(mentioned=True)).open_at(night)
+    f.write_text('window: "mon-fri 08:30-18:20"\ndms: true\n')  # true: the main window
+    assert not Watch.load(f).match(msg(private=True)).open_at(night)
+    f.write_text("dms: false\n")
+    assert Watch.load(f).match(msg(private=True)) is None
 
 
 class FakeTransport:

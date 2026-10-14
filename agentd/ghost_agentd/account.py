@@ -57,7 +57,8 @@ DEFAULT_WATCH = """\
 # (dropped if you answered that chat yourself meanwhile).
 window: "mon-fri 08:30-18:20"
 batch: 60            # seconds to gather messages before waking the assistant
-dms: true            # private messages from people (not bots)
+dms: true            # private messages from people (not bots): true (the window above),
+                     # false, or a window of their own
 mentions: true       # @me or replies to my messages, in any group
 groups: []
 #  - group: "FQ 研發群"          # title or chat id
@@ -138,6 +139,8 @@ class Watch:
     window: Window = field(default_factory=Window)
     batch: int = 60
     dms: bool = True
+    # Private messages' own window ("dms: always"); None: the main window.
+    dms_window: Window | None = None
     mentions: bool = True
     groups: list[Rule] = field(default_factory=list)
     ignore: set[str] = field(default_factory=set)
@@ -151,9 +154,12 @@ class Watch:
         except yaml.YAMLError as e:
             log(f"account: {path} is not valid YAML ({e}); using defaults")
             raw = yaml.safe_load(DEFAULT_WATCH)
+        dms = raw.get("dms", True)
         w = cls(window=Window.parse(raw.get("window", "always")),
                 batch=max(0, int(raw.get("batch", 60))),
-                dms=bool(raw.get("dms", True)), mentions=bool(raw.get("mentions", True)),
+                # dms: true | false | a window of their own ("always", "mon-fri …")
+                dms=bool(dms), dms_window=Window.parse(dms) if isinstance(dms, str) else None,
+                mentions=bool(raw.get("mentions", True)),
                 ignore={str(x) for x in raw.get("ignore") or []})
         for g in raw.get("groups") or []:
             if isinstance(g, dict) and g.get("group") not in (None, ""):
@@ -173,7 +179,7 @@ class Watch:
         if m.chat in self.ignore or str(m.chat_id) in self.ignore:
             return None
         if m.private:
-            return self.window if self.dms else None
+            return (self.dms_window or self.window) if self.dms else None
         rule = self._rule(m)
         if rule is not None:
             t = rule.trigger
