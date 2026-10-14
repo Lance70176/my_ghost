@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import SwiftUI
 
 /// One permission request held by ghost-agentd (`agentd/` in this repo),
@@ -140,18 +141,29 @@ private struct AgentState: Decodable {
     let sessions: [AgentSession]
 }
 
-/// Long-polls ghost-agentd for pending decisions and conversation status.
+/// Long-polls one host's ghost-agentd for pending decisions, conversation
+/// status and its assistants.
 ///
-/// While this keeps polling, the daemon counts MyGhost as a place a decision
-/// card can be shown; when the app quits it stops counting it after 90s, and
-/// with no Telegram configured either, sessions fall back to asking in the
-/// terminal instead of waiting on a card nobody can see.
+/// There is one client per host tab: the local Mac's daemon is reached at
+/// 127.0.0.1:7788, a remote host's through an SSH port forward to that
+/// host's own 127.0.0.1:7788 — so every daemon stays loopback-only, and the
+/// assistant follows whichever host is selected in the window.
+///
+/// While a client keeps polling, its daemon counts MyGhost as a place a
+/// decision card can be shown; when the app quits it stops counting it after
+/// 90s, and with no Telegram configured either, sessions fall back to asking
+/// in the terminal instead of waiting on a card nobody can see.
 @MainActor
 final class AgentDaemonClient: ObservableObject {
-    static let shared = AgentDaemonClient()
+    /// "local", or the ssh target of a remote host (SidebarHostEntry.key).
+    let hostKey: String
+    let hostName: String
+    let target: String?
+    let sshOptions: [String]
+    var isLocal: Bool { target == nil }
 
     @Published private(set) var pending: [AgentPending] = []
-    /// Status per tmux session name (`myghost_…`), the key sidebar tabs know.
+    /// Status per tmux session name (`myghost_…` / `myghostr_…`).
     @Published private(set) var statusByTmux: [String: String] = [:]
     @Published private(set) var online = false
     @Published private(set) var projects: [AgentProject] = []
@@ -163,39 +175,12 @@ final class AgentDaemonClient: ObservableObject {
 
     var totalPending: Int { pending.count }
 
-    /// Where ghost-agentd runs: this Mac by default, or another one set with
-    /// `defaults write com.local.my-ghost GhostAgentdURL http://mini:7788`
-    /// (plus `GhostAgentdToken`, the daemon's remote.token).
-    private let base = URL(string: UserDefaults.standard.string(forKey: "GhostAgentdURL")
-                           ?? ProcessInfo.processInfo.environment["GHOST_AGENTD_URL"]
-                           ?? "http://127.0.0.1:7788")!
-    private let token = UserDefaults.standard.string(forKey: "GhostAgentdToken") ?? ""
-
-    private func fetch(_ url: URL) async throws -> (Data, URLResponse) {
-        var req = URLRequest(url: url)
-        if !token.isEmpty { req.setValue(token, forHTTPHeaderField: "X-Ghost-Token") }
-        return try await session.data(for: req)
-    }
-
-    /// POST with the headers the daemon wants; returns (ok, message).
-    func post(_ path: String, _ body: [String: Any]) async -> (Bool, String?) {
-        var req = URLRequest(url: base.appendingPathComponent(path))
-        req.httpMethod = "POST"
-        req.setValue("1", forHTTPHeaderField: "X-Ghost")
-        if !token.isEmpty { req.setValue(token, forHTTPHeaderField: "X-Ghost-Token") }
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        do {
-            let (data, resp) = try await session.data(for: req)
-            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            let ok = (resp as? HTTPURLResponse)?.statusCode == 200
-            return (ok, obj?["message"] as? String)
-        } catch {
-            return (false, L("ghost-agentd is not reachable"))
-        }
-    }
+    private var base: URL?
+    private var tunnel: Process?
     private var version = -1
     private var task: Task<Void, Never>?
+    private var lastSuccess = Date()
+    private var stopped = false
 
     private let session: URLSession = {
         let c = URLSessionConfiguration.ephemeral
@@ -210,34 +195,123 @@ final class AgentDaemonClient: ObservableObject {
         return d
     }()
 
-    private init() {}
+    init(hostKey: String, hostName: String, target: String?, sshOptions: [String]) {
+        self.hostKey = hostKey
+        self.hostName = hostName
+        self.target = target
+        self.sshOptions = sshOptions
+        if target == nil {
+            base = URL(string: ProcessInfo.processInfo.environment["GHOST_AGENTD_URL"] ?? "http://127.0.0.1:7788")
+        }
+    }
 
-    /// Keeps App Nap off while we poll. Napped, a window left hidden or a
-    /// screen left locked overnight stopped polling altogether, so the daemon
-    /// stopped counting MyGhost as a place to show cards.
-    private var activity: NSObjectProtocol?
-    private var lastSuccess = Date()
-    private var watchdog: Timer?
+    // MARK: Endpoint
 
-    func start() {
-        guard task == nil else { return }
-        activity = ProcessInfo.processInfo.beginActivity(
-            options: [.userInitiatedAllowingIdleSystemSleep],
-            reason: "Waiting for ghost-agentd permission requests")
-        startLoop()
-        // Belt and braces: a loop that hasn't succeeded for a minute while
-        // the daemon is up gets restarted.
-        let timer = Timer(timeInterval: 30, repeats: true) { _ in
-            Task { @MainActor in
-                let client = AgentDaemonClient.shared
-                guard Date().timeIntervalSince(client.lastSuccess) > 60 else { return }
-                client.task?.cancel()
-                client.startLoop()
+    /// The daemon's URL, opening the SSH forward first for a remote host.
+    private func endpoint() async -> URL? {
+        if isLocal { return base }
+        if let base, let tunnel, tunnel.isRunning { return base }
+        return await openTunnel()
+    }
+
+    private func openTunnel() async -> URL? {
+        guard let target else { return nil }
+        tunnel?.terminate()
+        guard let port = Self.freePort() else { return nil }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        p.arguments = ["-N", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                       "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15",
+                       "-o", "ServerAliveCountMax=3",
+                       "-L", "127.0.0.1:\(port):127.0.0.1:7788"] + sshOptions + [target]
+        p.standardInput = FileHandle.nullDevice
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        do {
+            try p.run()
+        } catch {
+            return nil
+        }
+        tunnel = p
+        let url = URL(string: "http://127.0.0.1:\(port)")!
+        // Wait for the forward to come up (the daemon answers /api/health).
+        for _ in 0..<40 {
+            if !p.isRunning { return nil }
+            if let (_, resp) = try? await session.data(from: url.appendingPathComponent("api/health")),
+               (resp as? HTTPURLResponse)?.statusCode == 200 {
+                base = url
+                return url
+            }
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+        p.terminate()
+        return nil
+    }
+
+    private static func freePort() -> Int? {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        addr.sin_port = 0
+        var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let bound = withUnsafeMutablePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(fd, $0, len) == 0 && getsockname(fd, $0, &len) == 0
             }
         }
-        timer.tolerance = 5
-        RunLoop.main.add(timer, forMode: .common)
-        watchdog = timer
+        return bound ? Int(UInt16(bigEndian: addr.sin_port)) : nil
+    }
+
+    private func fetch(_ path: String, _ query: [URLQueryItem] = []) async throws -> (Data, URLResponse) {
+        guard let base = await endpoint() else { throw URLError(.cannotConnectToHost) }
+        var comps = URLComponents(url: base.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
+        if !query.isEmpty { comps.queryItems = query }
+        return try await session.data(from: comps.url!)
+    }
+
+    /// POST with the headers the daemon wants; returns (ok, message).
+    func post(_ path: String, _ body: [String: Any]) async -> (Bool, String?) {
+        guard let base = await endpoint() else { return (false, L("ghost-agentd is not reachable")) }
+        var req = URLRequest(url: base.appendingPathComponent(path))
+        req.httpMethod = "POST"
+        req.setValue("1", forHTTPHeaderField: "X-Ghost")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        do {
+            let (data, resp) = try await session.data(for: req)
+            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let ok = (resp as? HTTPURLResponse)?.statusCode == 200
+            return (ok, obj?["message"] as? String)
+        } catch {
+            return (false, L("ghost-agentd is not reachable"))
+        }
+    }
+
+    // MARK: Polling
+
+    func start() {
+        guard task == nil, !stopped else { return }
+        startLoop()
+    }
+
+    /// The host tab was closed: stop polling and drop the forward.
+    func shutdown() {
+        stopped = true
+        task?.cancel()
+        task = nil
+        tunnel?.terminate()
+        tunnel = nil
+    }
+
+    /// Restart a loop that hasn't succeeded for a minute (called by the hub).
+    func checkHealth() {
+        guard !stopped, Date().timeIntervalSince(lastSuccess) > 60 else { return }
+        task?.cancel()
+        if !isLocal { tunnel?.terminate() }
+        startLoop()
     }
 
     private func startLoop() {
@@ -246,20 +320,19 @@ final class AgentDaemonClient: ObservableObject {
             while !Task.isCancelled {
                 guard let self else { return }
                 let ok = await self.pollOnce()
-                if !ok { try? await Task.sleep(nanoseconds: 5_000_000_000) }
+                // A host without a daemon is retried slowly.
+                if !ok { try? await Task.sleep(nanoseconds: (self.isLocal ? 5 : 15) * 1_000_000_000) }
             }
         }
     }
 
     private func pollOnce() async -> Bool {
-        var comps = URLComponents(url: base.appendingPathComponent("api/state"), resolvingAgainstBaseURL: false)!
-        comps.queryItems = [
-            URLQueryItem(name: "client", value: "myghost"),
-            URLQueryItem(name: "since", value: String(version)),
-            URLQueryItem(name: "wait", value: "25"),
-        ]
         do {
-            let (data, resp) = try await fetch(comps.url!)
+            let (data, resp) = try await fetch("api/state", [
+                URLQueryItem(name: "client", value: "myghost"),
+                URLQueryItem(name: "since", value: String(version)),
+                URLQueryItem(name: "wait", value: "25"),
+            ])
             guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
             let state = try Self.decoder.decode(AgentState.self, from: data)
             apply(state)
@@ -270,8 +343,10 @@ final class AgentDaemonClient: ObservableObject {
                 online = false
                 pending = []
                 statusByTmux = [:]
+                AgentHub.shared.clientChanged()
             }
             version = -1
+            if !isLocal { tunnel?.terminate() }
             return false
         }
     }
@@ -281,7 +356,10 @@ final class AgentDaemonClient: ObservableObject {
         if state.version != version { changeCount += 1 }
         version = state.version
         Task { await refreshProjects() }
-        if state.pending != pending { pending = state.pending }
+        if state.pending != pending {
+            pending = state.pending
+            AgentHub.shared.clientChanged()
+        }
         var map: [String: String] = [:]
         // The daemon lists newest first; let the newest conversation in a tab win.
         for s in state.sessions.reversed() where !s.tmuxSession.isEmpty && s.status != "ended" {
@@ -290,11 +368,13 @@ final class AgentDaemonClient: ObservableObject {
         if map != statusByTmux { statusByTmux = map }
     }
 
+    // MARK: Requests
+
     func refreshProjects() async {
-        guard let (data, _) = try? await fetch(base.appendingPathComponent("api/projects")),
+        guard let (data, _) = try? await fetch("api/projects"),
               let list = try? Self.decoder.decode(AgentProjects.self, from: data) else { return }
         if list.projects != projects { projects = list.projects }
-        if let (data, _) = try? await fetch(base.appendingPathComponent("api/assistants")),
+        if let (data, _) = try? await fetch("api/assistants"),
            let a = try? Self.decoder.decode(AgentAssistantList.self, from: data) {
             let map = Dictionary(a.assistants.map { ($0.project, $0) }, uniquingKeysWith: { x, _ in x })
             if map != assistants { assistants = map }
@@ -303,22 +383,19 @@ final class AgentDaemonClient: ObservableObject {
 
     /// Newest first; nil project means every project.
     func decisions(project: String?, limit: Int = 300) async -> [AgentDecisionRecord] {
-        var comps = URLComponents(url: base.appendingPathComponent("api/decisions"), resolvingAgainstBaseURL: false)!
-        comps.queryItems = [URLQueryItem(name: "limit", value: String(limit))]
-        if let project { comps.queryItems?.append(URLQueryItem(name: "project", value: project)) }
-        guard let (data, _) = try? await fetch(comps.url!),
+        var q = [URLQueryItem(name: "limit", value: String(limit))]
+        if let project { q.append(URLQueryItem(name: "project", value: project)) }
+        guard let (data, _) = try? await fetch("api/decisions", q),
               let list = try? Self.decoder.decode(AgentDecisions.self, from: data) else { return [] }
         return list.decisions
     }
 
     /// Chat items after `since`, long-polling up to `wait` seconds.
     func chat(project: String, since: Int, wait: Int) async -> AgentChatChunk? {
-        var comps = URLComponents(url: base.appendingPathComponent("api/assistants/\(project)/chat"),
-                                  resolvingAgainstBaseURL: false)!
-        comps.queryItems = [URLQueryItem(name: "since", value: String(since)),
-                            URLQueryItem(name: "wait", value: String(wait))]
-        guard let (data, resp) = try? await fetch(comps.url!),
-              (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        guard let (data, resp) = try? await fetch("api/assistants/\(project)/chat", [
+            URLQueryItem(name: "since", value: String(since)),
+            URLQueryItem(name: "wait", value: String(wait)),
+        ]), (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
         return try? Self.decoder.decode(AgentChatChunk.self, from: data)
     }
 
@@ -347,10 +424,128 @@ final class AgentDaemonClient: ObservableObject {
     }
 }
 
+/// A pending card together with the host it came from.
+struct AgentHostPending: Identifiable, Equatable {
+    let client: AgentDaemonClient
+    let pending: AgentPending
+    var id: String { client.hostKey + "/" + pending.id }
+
+    static func == (a: AgentHostPending, b: AgentHostPending) -> Bool {
+        a.id == b.id && a.pending == b.pending
+    }
+}
+
+/// Every host's ghost-agentd client, kept in step with the host tabs open in
+/// MyGhost's windows (the local Mac always has one).
+@MainActor
+final class AgentHub: ObservableObject {
+    static let shared = AgentHub()
+
+    /// Not @Published: clients are created while views are being built (a
+    /// sidebar badge asks for its host's), and publishing then is not allowed.
+    /// Changes are announced on the next main-queue turn instead.
+    private(set) var clients: [String: AgentDaemonClient] = [:]
+    /// Pending cards from every host, oldest first.
+    @Published private(set) var allPending: [AgentHostPending] = []
+
+    /// Keeps App Nap off while we poll. Napped, a window left hidden or a
+    /// screen left locked overnight stopped polling altogether, so the daemon
+    /// stopped counting MyGhost as a place to show cards.
+    private var activity: NSObjectProtocol?
+    private var timer: Timer?
+
+    private init() {}
+
+    func start() {
+        guard timer == nil else { return }
+        activity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiatedAllowingIdleSystemSleep],
+            reason: "Waiting for ghost-agentd permission requests")
+        _ = client(key: SidebarHostEntry.localKey, name: L("This Mac"), target: nil, options: [])
+        sync()
+        let t = Timer(timeInterval: 5, repeats: true) { _ in
+            Task { @MainActor in AgentHub.shared.tick() }
+        }
+        t.tolerance = 2
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+    }
+
+    private var ticks = 0
+
+    private func tick() {
+        sync()
+        ticks += 1
+        if ticks % 6 == 0 {
+            for c in clients.values { c.checkHealth() }
+        }
+    }
+
+    /// Open a client for each host tab, close the ones whose tab is gone.
+    func sync() {
+        var open: [String: SidebarHostEntry] = [:]
+        for window in NSApp.windows {
+            guard let controller = window.windowController as? SidebarTerminalController else { continue }
+            for host in controller.hostTabs { open[host.key] = host }
+        }
+        for (key, host) in open where clients[key] == nil {
+            _ = client(key: key, name: host.name, target: host.target, options: host.sshOptions)
+        }
+        for (key, c) in clients where key != SidebarHostEntry.localKey && open[key] == nil {
+            c.shutdown()
+            clients[key] = nil
+            objectWillChange.send()
+            clientChanged()
+        }
+    }
+
+    /// The client for a host, created (and started) on first use.
+    func client(key: String, name: String, target: String?, options: [String]) -> AgentDaemonClient {
+        if let c = clients[key] { return c }
+        let c = AgentDaemonClient(hostKey: key, hostName: name, target: target, sshOptions: options)
+        clients[key] = c
+        c.start()
+        DispatchQueue.main.async { self.objectWillChange.send() }
+        return c
+    }
+
+    func client(for host: SidebarHostEntry?) -> AgentDaemonClient {
+        guard let host else { return local }
+        return client(key: host.key, name: host.name, target: host.target, options: host.sshOptions)
+    }
+
+    /// The client for the host a tab runs on.
+    func client(for tab: SidebarTabEntry) -> AgentDaemonClient {
+        let entry = tab.isGroup ? (tab.children.first ?? tab) : tab
+        guard let target = entry.remoteTarget else { return local }
+        return client(key: target, name: entry.remoteDisplayName ?? target, target: target,
+                      options: entry.remoteSSHOptions)
+    }
+
+    var local: AgentDaemonClient {
+        client(key: SidebarHostEntry.localKey, name: L("This Mac"), target: nil, options: [])
+    }
+
+    var totalPending: Int { allPending.count }
+
+    func clientChanged() {
+        let next = clients.values
+            .flatMap { c in c.pending.map { AgentHostPending(client: c, pending: $0) } }
+        if next.map(\.id) != allPending.map(\.id) || next != allPending {
+            allPending = next
+        }
+    }
+}
+
 /// The small "waiting for you / running / done" capsule on a sidebar row.
 struct AgentStatusBadge: View {
-    @ObservedObject private var client = AgentDaemonClient.shared
+    @ObservedObject var client: AgentDaemonClient
     let sessionName: String?
+
+    init(tab: SidebarTabEntry) {
+        client = AgentHub.shared.client(for: tab)
+        sessionName = tab.screenSessionName
+    }
 
     var body: some View {
         if let name = sessionName, let status = client.statusByTmux[name] {

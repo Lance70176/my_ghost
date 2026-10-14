@@ -10,6 +10,10 @@ enum L10nStrings {
 
     static let table: [String: [AppLanguage: String]] = [
         // MARK: ghost-agentd decisions
+        "This Mac": t("這台 Mac", "这台 Mac", "この Mac"),
+        "ghost-agentd isn't running on this Mac": t("這台 Mac 沒有執行 ghost-agentd", "这台 Mac 没有运行 ghost-agentd", "この Mac では ghost-agentd が動いていません"),
+        "Can't reach ghost-agentd on %@": t("連不到 %@ 上的 ghost-agentd", "连不到 %@ 上的 ghost-agentd", "%@ の ghost-agentd に接続できません"),
+        "It's reached over SSH; install it on that host with agentd/install.sh.": t("透過 SSH 連線；請在那台主機用 agentd/install.sh 安裝。", "通过 SSH 连接；请在那台主机用 agentd/install.sh 安装。", "SSH 経由で接続します。そのホストで agentd/install.sh でインストールしてください。"),
         "Replying…": t("回覆中…", "回复中…", "返信中…"),
         "Ready": t("待命", "待命", "待機中"),
         "Asleep": t("休眠", "休眠", "休止中"),

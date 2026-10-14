@@ -53,14 +53,19 @@ its memory (`state.md`) and then sends `/compact`.
   `allow`/`deny` action for the card under discussion; only your click applies
   it (L3 still needs the second confirmation).
 
-Another Mac's MyGhost can use the mini's assistants: set `remote.token` in
-`config.yaml` (the daemon then listens beyond loopback and requires the token
-from non-loopback clients), and on that Mac:
+The assistant follows the host: MyGhost keeps one ghost-agentd client per
+host tab. The local Mac's daemon is reached at `127.0.0.1:7788`; a remote
+host's through an SSH forward (`ssh -N -L <port>:127.0.0.1:7788 <host>`, the
+same ssh target and options the host tab uses), so every daemon stays
+loopback-only. Switch the window to a host and ✦ shows that host's
+assistants, cards and history; cards from all open hosts appear bottom-right,
+labelled with their host.
 
-```bash
-defaults write com.local.my-ghost GhostAgentdURL http://<mini host name>:7788   # a name, not an IP: ATS blocks plain HTTP to IPs
-defaults write com.local.my-ghost GhostAgentdToken <remote.token>
-```
+助手跟著主機走：每個主機分頁各自透過 SSH 轉發連到那台的 ghost-agentd，服務
+本身只綁 127.0.0.1。
+
+(`remote.token` in `config.yaml` still makes the daemon listen beyond
+loopback for clients that can't use SSH; MyGhost doesn't need it.)
 
 ## Telegram
 

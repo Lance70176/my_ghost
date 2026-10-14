@@ -2594,7 +2594,7 @@ private struct SidebarRootView: View {
                 // The project assistant takes the terminal's place; the
                 // terminal stays mounted underneath, as for the editor.
                 if uiState.sidebarMode == .assistant {
-                    AgentAssistantMainView(uiState: uiState)
+                    AgentAssistantMainView(uiState: uiState, controller: controller)
                         .padding(.leading, 4)
                 }
             }

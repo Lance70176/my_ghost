@@ -238,7 +238,12 @@ struct SidebarView: View {
     @StateObject private var fileBrowserState = FileBrowserState()
 
     /// ghost-agentd: pending decisions count on the assistant button.
-    @ObservedObject private var agentClient = AgentDaemonClient.shared
+    @ObservedObject private var agentHub = AgentHub.shared
+
+    /// Pending cards on the host this window is showing.
+    private var hostPending: Int {
+        agentHub.allPending.filter { $0.client.hostKey == controller.currentHostKey }.count
+    }
 
     /// AI quota accounts and their latest usage, shown above the menu.
     @ObservedObject private var quotaManager = AIQuotaManager.shared
@@ -319,8 +324,8 @@ struct SidebarView: View {
                     Image(systemName: "sparkles")
                         .font(.system(size: 15))
                         .overlay(alignment: .topTrailing) {
-                            if agentClient.totalPending > 0 {
-                                Text("\(agentClient.totalPending)")
+                            if hostPending > 0 {
+                                Text("\(hostPending)")
                                     .font(.system(size: 9, weight: .bold))
                                     .foregroundColor(.white)
                                     .padding(.horizontal, 4)
@@ -437,7 +442,7 @@ struct SidebarView: View {
                 EditorSidebarList(state: TextEditorManager.shared.state)
 
             case .assistant:
-                AgentAssistantSidebarList(uiState: controller.sidebarUIState)
+                AgentAssistantSidebarList(uiState: controller.sidebarUIState, controller: controller)
             }
         }
         .frame(minWidth: 150, idealWidth: 200)
@@ -828,7 +833,7 @@ private struct SidebarStandaloneTabRow: View {
 
             Spacer()
 
-            AgentStatusBadge(sessionName: tab.screenSessionName)
+            AgentStatusBadge(tab: tab)
 
             if tab.bell {
                 Image(systemName: "bell.fill")
@@ -1051,7 +1056,7 @@ private struct SidebarGroupChildRow: View {
 
             Spacer()
 
-            AgentStatusBadge(sessionName: child.screenSessionName)
+            AgentStatusBadge(tab: child)
 
             if isActiveChild {
                 Image(systemName: "circle.fill")

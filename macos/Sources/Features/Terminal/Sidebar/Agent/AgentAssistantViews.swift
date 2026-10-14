@@ -8,10 +8,17 @@ import SwiftUI
 /// terminal was.
 @MainActor
 enum AgentAssistantNav {
-    static func show(project: String?) {
+    static func show(project: String?, hostKey: String) {
         let windows = NSApp.orderedWindows.filter { $0.windowController is SidebarTerminalController }
-        guard let window = windows.first(where: \.isKeyWindow) ?? windows.first,
+        // Prefer a window that has this host open.
+        let withHost = windows.first { w in
+            (w.windowController as? SidebarTerminalController)?.hostTabs.contains { $0.key == hostKey } ?? false
+        }
+        guard let window = withHost ?? windows.first(where: \.isKeyWindow) ?? windows.first,
               let controller = window.windowController as? SidebarTerminalController else { return }
+        if let host = controller.hostTabs.first(where: { $0.key == hostKey }) {
+            controller.selectHost(host)
+        }
         controller.sidebarUIState.assistantProject = project
         controller.sidebarUIState.sidebarMode = .assistant
         if controller.sidebarUIState.isSidebarCollapsed {
@@ -29,18 +36,37 @@ enum AgentAssistantNav {
 /// first. Clicking a row shows it in the main area.
 struct AgentAssistantSidebarList: View {
     @ObservedObject var uiState: SidebarUIState
-    @ObservedObject private var client = AgentDaemonClient.shared
+    @ObservedObject var controller: SidebarTerminalController
+
+    var body: some View {
+        let client = AgentHub.shared.client(for: controller.currentHost)
+        AgentAssistantSidebarContent(uiState: uiState, client: client)
+            .id(client.hostKey)
+    }
+}
+
+private struct AgentAssistantSidebarContent: View {
+    @ObservedObject var uiState: SidebarUIState
+    @ObservedObject var client: AgentDaemonClient
     @ObservedObject private var lang = LanguageManager.shared
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 4) {
+                Label(client.hostName, systemImage: client.isLocal ? "laptopcomputer" : "server.rack")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.top, 2)
                 if !client.online {
                     VStack(alignment: .leading, spacing: 4) {
-                        Label(L("ghost-agentd is not reachable"), systemImage: "bolt.horizontal.circle")
+                        Label(client.isLocal ? L("ghost-agentd isn't running on this Mac")
+                                             : L("Can't reach ghost-agentd on %@", client.hostName),
+                              systemImage: "bolt.horizontal.circle")
                             .font(.callout)
                             .foregroundColor(.orange)
-                        Text(L("Install it with agentd/install.sh, then this list fills in."))
+                        Text(client.isLocal ? L("Install it with agentd/install.sh, then this list fills in.")
+                                            : L("It's reached over SSH; install it on that host with agentd/install.sh."))
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -141,12 +167,29 @@ struct CountBadge: View {
 /// overview) in the middle, pending decisions and history on the right.
 struct AgentAssistantMainView: View {
     @ObservedObject var uiState: SidebarUIState
+    @ObservedObject var controller: SidebarTerminalController
+
+    var body: some View {
+        let client = AgentHub.shared.client(for: controller.currentHost)
+        AgentAssistantMainContent(uiState: uiState)
+            .environmentObject(client)
+            .id(client.hostKey)
+            .onChange(of: client.hostKey) { _ in
+                // Another host has other projects; start from its overview.
+                uiState.assistantProject = nil
+            }
+    }
+}
+
+private struct AgentAssistantMainContent: View {
+    @ObservedObject var uiState: SidebarUIState
+    @EnvironmentObject private var client: AgentDaemonClient
 
     var body: some View {
         HSplitView {
             Group {
                 if let project = uiState.assistantProject {
-                    AgentChatView(project: project)
+                    AgentChatView(project: project, client: client)
                         .id(project)
                 } else {
                     AgentOverview(uiState: uiState)
@@ -166,13 +209,17 @@ struct AgentAssistantMainView: View {
 @MainActor
 final class AgentChatModel: ObservableObject {
     let project: String
+    let client: AgentDaemonClient
     @Published private(set) var items: [AgentChatItem] = []
     @Published private(set) var partial = ""
     @Published private(set) var status: AgentAssistantStatus?
     @Published var error: String?
     private var task: Task<Void, Never>?
 
-    init(project: String) { self.project = project }
+    init(project: String, client: AgentDaemonClient) {
+        self.project = project
+        self.client = client
+    }
 
     func start() {
         guard task == nil else { return }
@@ -180,7 +227,7 @@ final class AgentChatModel: ObservableObject {
             var since = 0
             while !Task.isCancelled {
                 guard let self else { return }
-                if let chunk = await AgentDaemonClient.shared.chat(project: self.project, since: since, wait: 25) {
+                if let chunk = await self.client.chat(project: self.project, since: since, wait: 25) {
                     if !chunk.items.isEmpty {
                         self.items.append(contentsOf: chunk.items)
                         if self.items.count > 600 { self.items.removeFirst(self.items.count - 600) }
@@ -202,12 +249,12 @@ final class AgentChatModel: ObservableObject {
 
     func send(_ text: String) {
         Task {
-            error = await AgentDaemonClient.shared.sendMessage(project: project, text: text)
+            error = await client.sendMessage(project: project, text: text)
         }
     }
 
     func interrupt() {
-        Task { await AgentDaemonClient.shared.stopAssistant(project: project) }
+        Task { await client.stopAssistant(project: project) }
     }
 }
 
@@ -219,9 +266,9 @@ struct AgentChatView: View {
     @State private var showTools = false
     @FocusState private var inputFocused: Bool
 
-    init(project: String) {
+    init(project: String, client: AgentDaemonClient) {
         self.project = project
-        _model = StateObject(wrappedValue: AgentChatModel(project: project))
+        _model = StateObject(wrappedValue: AgentChatModel(project: project, client: client))
     }
 
     private var visible: [AgentChatItem] {
@@ -416,7 +463,7 @@ private struct AgentInputField: NSViewRepresentable {
 private struct AgentChatRow: View {
     let item: AgentChatItem
     let project: String
-    @ObservedObject private var client = AgentDaemonClient.shared
+    @EnvironmentObject private var client: AgentDaemonClient
 
     private static let time: DateFormatter = {
         let f = DateFormatter()
@@ -509,6 +556,7 @@ struct AgentBubble: View {
 
 /// The option buttons of an assistant's question.
 struct AgentChoiceButtons: View {
+    @EnvironmentObject private var client: AgentDaemonClient
     let choiceId: String
     let options: [AgentChoiceOption]
     @Binding var busy: Bool
@@ -533,7 +581,7 @@ struct AgentChoiceButtons: View {
     private func pick(_ action: String) {
         working = true
         Task {
-            error = await AgentDaemonClient.shared.decide(id: choiceId, action: action)
+            error = await client.decide(id: choiceId, action: action)
             working = false
         }
     }
@@ -572,7 +620,7 @@ private struct FlowRow: Layout {
 /// Every project at a glance; a row shows that project's assistant.
 private struct AgentOverview: View {
     @ObservedObject var uiState: SidebarUIState
-    @ObservedObject private var client = AgentDaemonClient.shared
+    @EnvironmentObject private var client: AgentDaemonClient
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -619,7 +667,7 @@ private struct AgentOverview: View {
 
 private struct AgentRightColumn: View {
     let project: String?
-    @ObservedObject private var client = AgentDaemonClient.shared
+    @EnvironmentObject private var client: AgentDaemonClient
 
     private var pending: [AgentPending] {
         client.pending.filter { project == nil || $0.project == project }
@@ -671,7 +719,7 @@ private struct SectionTitle: View {
 /// request came from — or a note that it has been closed.
 private struct AgentHistoryList: View {
     let project: String?
-    @ObservedObject private var client = AgentDaemonClient.shared
+    @EnvironmentObject private var client: AgentDaemonClient
     @State private var records: [AgentDecisionRecord] = []
     @State private var showRules = false
     @State private var closed: Set<String> = []

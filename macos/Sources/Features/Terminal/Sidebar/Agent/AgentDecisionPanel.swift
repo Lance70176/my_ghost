@@ -18,15 +18,15 @@ final class AgentDecisionPanel {
     private init() {}
 
     func start() {
-        let client = AgentDaemonClient.shared
-        client.start()
-        client.$pending
+        let hub = AgentHub.shared
+        hub.start()
+        hub.$allPending
             .receive(on: DispatchQueue.main)
             .sink { [weak self] pending in self?.update(pending) }
             .store(in: &cancellables)
     }
 
-    private func update(_ pending: [AgentPending]) {
+    private func update(_ pending: [AgentHostPending]) {
         guard !pending.isEmpty else {
             panel?.orderOut(nil)
             seenIDs.removeAll()
@@ -111,16 +111,17 @@ final class AgentDecisionPanel {
 }
 
 private struct AgentDecisionStack: View {
-    @ObservedObject private var client = AgentDaemonClient.shared
+    @ObservedObject private var hub = AgentHub.shared
     @ObservedObject private var lang = LanguageManager.shared
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 8) {
-            ForEach(client.pending.suffix(3)) { p in
-                AgentDecisionCard(p: p)
+            ForEach(hub.allPending.suffix(3)) { hp in
+                AgentDecisionCard(p: hp.pending, showHost: hub.clients.count > 1 || !hp.client.isLocal)
+                    .environmentObject(hp.client)
             }
-            if client.pending.count > 3 {
-                Text(L("%d more waiting", client.pending.count - 3))
+            if hub.allPending.count > 3 {
+                Text(L("%d more waiting", hub.allPending.count - 3))
                     .font(.caption)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 4)
@@ -156,6 +157,9 @@ private final class KeyablePanel: NSPanel {
 struct AgentDecisionCard: View {
     let p: AgentPending
     var width: CGFloat = 344
+    /// Label the card with its host (cards from several Macs share the stack).
+    var showHost = false
+    @EnvironmentObject private var client: AgentDaemonClient
     @State private var closedNotice = false
     @State private var busy = false
     @State private var error: String?
@@ -198,7 +202,7 @@ struct AgentDecisionCard: View {
                     .font(.callout.weight(.semibold))
                 Spacer(minLength: 4)
                 Button {
-                    AgentAssistantNav.show(project: p.project)
+                    AgentAssistantNav.show(project: p.project, hostKey: client.hostKey)
                 } label: {
                     Image(systemName: "bubble.left.and.text.bubble.right")
                 }
@@ -209,6 +213,7 @@ struct AgentDecisionCard: View {
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
+            if showHost { hostLabel }
             AgentChoiceButtons(choiceId: p.id, options: p.options ?? [], busy: $busy, error: $error)
             if let error {
                 Text(error).font(.caption).foregroundColor(.red)
@@ -236,6 +241,7 @@ struct AgentDecisionCard: View {
                 .disabled(p.tmuxSession.isEmpty)
             }
 
+            if showHost { hostLabel }
             Text(p.summary)
                 .font(.system(.caption, design: .monospaced))
                 .lineLimit(4)
@@ -326,16 +332,22 @@ struct AgentDecisionCard: View {
         }
     }
 
+    private var hostLabel: some View {
+        Label(client.hostName, systemImage: client.isLocal ? "laptopcomputer" : "server.rack")
+            .font(.caption2)
+            .foregroundColor(.secondary)
+    }
+
     private func send(_ action: String, _ message: String = "") {
         busy = true
         error = nil
         Task {
-            let err = await AgentDaemonClient.shared.decide(p, action: action, message: message)
+            let err = await client.decide(p, action: action, message: message)
             busy = false
             error = err
             // Discussing happens in the project's assistant conversation.
             if action == "discuss", err == nil {
-                AgentAssistantNav.show(project: p.project)
+                AgentAssistantNav.show(project: p.project, hostKey: client.hostKey)
             }
         }
     }
