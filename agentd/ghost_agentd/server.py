@@ -81,14 +81,16 @@ def make_handler(broker: Broker, assistants=None, tools=None, remote_token: str 
                 return None
             return Path(job["cwd"]) / uploads.WORKER_DIR
 
-        def _files(self, body: dict, folder: Path | None) -> list[Path] | None:
-            """The attachments named in a message, all ours; None if any isn't."""
+        def _files(self, body: dict, folder: Path | None) -> list[uploads.Attached] | None:
+            """The attachments named in a message, all ours; None if any isn't.
+            Each is a path, or {"path", "label"} with its "[Image #1]" mark."""
             out = []
             for f in (body.get("files") or [])[:20]:
-                p = uploads.inside(str(f), folder) if folder else None
+                path, at = (f.get("path"), uploads.label(f.get("label"))) if isinstance(f, dict) else (f, "")
+                p = uploads.inside(str(path or ""), folder) if folder else None
                 if p is None:
                     return None
-                out.append(p)
+                out.append(uploads.Attached(p, at))
             return out
 
         def _body(self) -> dict:

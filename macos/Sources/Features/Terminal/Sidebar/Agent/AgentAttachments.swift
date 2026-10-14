@@ -9,6 +9,9 @@ import UniformTypeIdentifiers
 struct AgentPendingFile: Identifiable {
     let id = UUID()
     let name: String
+    /// Its mark in the text, like Claude Code's "[Image #1]"; empty for one
+    /// that failed before it was added to the text.
+    var label = ""
     let thumbnail: NSImage?
     var uploaded: AgentChatFile?
     var error: String?
@@ -28,6 +31,11 @@ final class AgentAttachmentTray: ObservableObject {
     /// "assistant", or the id of the conversation they're for.
     let target: String
 
+    /// Set by the input field: put marks at the cursor / take one out.
+    var insertLabels: (([String]) -> Void)?
+    var eraseLabel: ((String) -> Void)?
+    private var counter = 0
+
     private static var trays: [String: AgentAttachmentTray] = [:]
 
     static func tray(_ key: String, project: String, target: String) -> AgentAttachmentTray {
@@ -45,41 +53,76 @@ final class AgentAttachmentTray: ObservableObject {
     var isEmpty: Bool { files.isEmpty }
     /// Something is still uploading, or failed and should be removed first.
     var blocking: Bool { files.contains { $0.uploaded == nil } }
-    var paths: [String] { files.compactMap { $0.uploaded?.path } }
-
-    func add(_ found: AgentPasteboard.Found, client: AgentDaemonClient) {
-        for url in found.urls { add(url: url, client: client) }
-        if let (data, image) = found.image {
-            let name = "image-\(Self.stamp.string(from: Date())).png"
-            start(name: name, thumbnail: image, client: client) { data }
-        }
+    /// What to send: each stored file with its mark.
+    var payload: [[String: String]] {
+        files.compactMap { f in f.uploaded.map { ["path": $0.path, "label": f.label] } }
     }
 
-    func add(url: URL, client: AgentDaemonClient) {
+    /// Attach and put their marks at the cursor (paste, drop, the paperclip).
+    func attach(_ found: AgentPasteboard.Found, client: AgentDaemonClient) {
+        var labels: [String] = []
+        for url in found.urls {
+            if let l = add(url: url, client: client) { labels.append(l) }
+        }
+        if let (data, image) = found.image {
+            let name = "image-\(Self.stamp.string(from: Date())).png"
+            labels.append(start(name: name, image: true, thumbnail: image, client: client) { data })
+        }
+        insertLabels?(labels)
+    }
+
+    private func add(url: URL, client: AgentDaemonClient) -> String? {
         let name = url.lastPathComponent
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue else {
             files.append(AgentPendingFile(name: name, thumbnail: nil, error: L("Folders can't be attached.")))
-            return
+            return nil
         }
         let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         guard size <= Self.maxBytes else {
             files.append(AgentPendingFile(name: name, thumbnail: nil, error: L("Larger than 30 MB.")))
-            return
+            return nil
         }
         let isImage = UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true
         let thumb = isImage ? NSImage(contentsOf: url) : NSWorkspace.shared.icon(forFile: url.path)
-        start(name: name, thumbnail: thumb, client: client) { try? Data(contentsOf: url) }
+        return start(name: name, image: isImage, thumbnail: thumb, client: client) { try? Data(contentsOf: url) }
     }
 
-    func remove(_ id: UUID) { files.removeAll { $0.id == id } }
-    func clear() { files = [] }
-    /// Put back what was sent when sending failed.
-    func restore(_ old: [AgentPendingFile]) { files = old + files }
+    /// Remove an attachment (its ✕) and its mark from the text.
+    func remove(_ id: UUID) {
+        guard let f = files.first(where: { $0.id == id }) else { return }
+        files.removeAll { $0.id == id }
+        if !f.label.isEmpty { eraseLabel?(f.label) }
+    }
 
-    private func start(name: String, thumbnail: NSImage?, client: AgentDaemonClient,
-                       read: @escaping @Sendable () -> Data?) {
-        let item = AgentPendingFile(name: name, thumbnail: thumbnail)
+    /// The text changed: an attachment whose mark was deleted goes too.
+    func prune(_ text: String) {
+        files.removeAll { !$0.label.isEmpty && !text.contains($0.label) }
+        if files.isEmpty { counter = 0 }
+    }
+
+    /// Sent: drop them, leaving the text alone.
+    func discard(_ ids: [UUID]) {
+        files.removeAll { ids.contains($0.id) }
+        if files.isEmpty { counter = 0 }
+    }
+
+    func clear() {
+        files = []
+        counter = 0
+    }
+
+    /// Put back what was sent when sending failed.
+    func restore(_ old: [AgentPendingFile]) {
+        files = old + files
+        counter = max(counter, old.count + files.count)
+    }
+
+    private func start(name: String, image: Bool, thumbnail: NSImage?, client: AgentDaemonClient,
+                       read: @escaping @Sendable () -> Data?) -> String {
+        counter += 1
+        let label = image ? "[Image #\(counter)]" : "[File #\(counter)]"
+        let item = AgentPendingFile(name: name, label: label, thumbnail: thumbnail)
         files.append(item)
         let project = project, target = target
         Task {
@@ -94,6 +137,7 @@ final class AgentAttachmentTray: ObservableObject {
                 $0.error = file == nil ? (err ?? L("ghost-agentd refused the request")) : nil
             }
         }
+        return label
     }
 
     private func update(_ id: UUID, _ change: (inout AgentPendingFile) -> Void) {
@@ -146,13 +190,13 @@ enum AgentPasteboard {
                 handled = true
                 _ = p.loadObject(ofClass: URL.self) { url, _ in
                     guard let url else { return }
-                    Task { @MainActor in tray.add(url: url, client: client) }
+                    Task { @MainActor in tray.attach(Found(urls: [url]), client: client) }
                 }
             } else if p.canLoadObject(ofClass: NSImage.self) {
                 handled = true
                 _ = p.loadObject(ofClass: NSImage.self) { obj, _ in
                     guard let image = obj as? NSImage, let png = pngData(image) else { return }
-                    Task { @MainActor in tray.add(Found(image: (png, image)), client: client) }
+                    Task { @MainActor in tray.attach(Found(image: (png, image)), client: client) }
                 }
             }
         }
@@ -182,7 +226,7 @@ struct AgentAttachButton: View {
         panel.canChooseFiles = true
         let done: (NSApplication.ModalResponse) -> Void = { resp in
             guard resp == .OK else { return }
-            for url in panel.urls { tray.add(url: url, client: client) }
+            tray.attach(AgentPasteboard.Found(urls: panel.urls), client: client)
         }
         if let window = NSApp.keyWindow {
             panel.beginSheetModal(for: window, completionHandler: done)
@@ -219,6 +263,9 @@ struct AgentAttachmentStrip: View {
             .frame(width: 30, height: 30)
             .clipShape(RoundedRectangle(cornerRadius: 4))
             VStack(alignment: .leading, spacing: 1) {
+                if !f.label.isEmpty {
+                    Text(f.label).agentFont(.caption2, weight: .semibold).foregroundColor(.accentColor)
+                }
                 Text(f.name).agentFont(.caption).lineLimit(1).truncationMode(.middle)
                 if let error = f.error {
                     Text(error).agentFont(.caption2).foregroundColor(.red).lineLimit(1)
@@ -286,19 +333,91 @@ struct AgentSentFiles: View {
                     ForEach(images, id: \.path) { AgentRemoteImage(file: $0, project: project) }
                 }
             }
-            ForEach(others, id: \.path) { f in
-                AgentOpenAttachment(file: f, project: project) {
-                    Label(f.name, systemImage: "doc")
-                        .agentFont(.callout)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
-                }
-            }
+            ForEach(others, id: \.path) { AgentSentFileChip(file: $0, project: project) }
         }
         .frame(maxWidth: .infinity, alignment: mine ? .trailing : .leading)
+    }
+}
+
+private struct AgentSentFileChip: View {
+    let file: AgentChatFile
+    let project: String
+
+    var body: some View {
+        AgentOpenAttachment(file: file, project: project) {
+            Label(file.name, systemImage: "doc")
+                .agentFont(.callout)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
+        }
+    }
+}
+
+/// Your message with its attachments where their "[Image #1]" marks were,
+/// as you wrote it; attachments without a mark go above.
+struct AgentUserMessage: View {
+    let text: String
+    let files: [AgentChatFile]
+    let project: String
+
+    private enum Part {
+        case text(String)
+        case file(AgentChatFile)
+    }
+
+    private var placed: [AgentChatFile] {
+        files.filter { !($0.label ?? "").isEmpty && text.contains($0.label ?? "") }
+    }
+
+    private var parts: [Part] {
+        var out: [Part] = []
+        var rest = Substring(text)
+        while true {
+            let hits = placed.compactMap { f in rest.range(of: f.label ?? "").map { ($0, f) } }
+            guard let (range, f) = hits.min(by: { $0.0.lowerBound < $1.0.lowerBound }) else { break }
+            let before = rest[..<range.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+            if !before.isEmpty { out.append(.text(before)) }
+            out.append(.file(f))
+            rest = rest[range.upperBound...]
+        }
+        let tail = rest.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !tail.isEmpty { out.append(.text(tail)) }
+        return out
+    }
+
+    var body: some View {
+        let loose = files.filter { f in !placed.contains(where: { $0.path == f.path }) }
+        VStack(alignment: .trailing, spacing: 4) {
+            if !loose.isEmpty {
+                AgentSentFiles(files: loose, project: project)
+            }
+            if placed.isEmpty {
+                if !text.isEmpty { AgentBubble(text: text, mine: true) }
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
+                        switch part {
+                        case .text(let s):
+                            Text(LocalizedStringKey(s)).agentFont(.body).textSelection(.enabled)
+                        case .file(let f):
+                            if f.kind == "image" {
+                                AgentRemoteImage(file: f, project: project)
+                            } else {
+                                AgentSentFileChip(file: f, project: project)
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 11)
+                .padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: 12).fill(Color.accentColor.opacity(0.22)))
+                .frame(maxWidth: 620, alignment: .trailing)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
     }
 }
 

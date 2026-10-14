@@ -74,7 +74,7 @@ class ChatItem:
     options: list = field(default_factory=list)
     card_id: str = ""
     chosen: str = ""
-    files: list = field(default_factory=list)  # attachments: [{name, path, kind, size}]
+    files: list = field(default_factory=list)  # attachments: [{name, path, kind, size, label}]
 
 
 class Assistant:
@@ -262,14 +262,14 @@ class Assistant:
         return self.dir / "uploads"
 
     def send(self, text: str, source: str, show: bool = True, internal: bool = False,
-             files: list[Path] | None = None) -> None:
+             files: "list[uploads.Attached] | None" = None) -> None:
         """Hand the assistant a message. `show` adds it to the visible chat;
         `files` are attachments already saved in `uploads`."""
         files = files or []
         if not self.running:
             self.start()
         if show:
-            self.add("user", text, source=source, files=[uploads.describe(f) for f in files])
+            self.add("user", text, source=source, files=[uploads.describe(a.path, a.label) for a in files])
         prefix = {"tg": "[來自 TG 專案群組] ", "myghost": "", "web": "[來自手機網頁] ",
                   "system": "[系統] "}.get(source, "")
         if text.startswith("/"):

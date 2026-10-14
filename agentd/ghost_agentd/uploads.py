@@ -13,6 +13,7 @@ import os
 import re
 import secrets
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 MAX_BYTES = 30 * 1024 * 1024
@@ -21,6 +22,19 @@ INLINE_IMAGE_BYTES = 3_700_000
 IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                ".gif": "image/gif", ".webp": "image/webp"}
 WORKER_DIR = ".myghost-uploads"
+# Where an attachment sits in the message text, like Claude Code's "[Image #1]".
+LABEL = re.compile(r"^\[(Image|File) #\d{1,3}\]$")
+
+
+@dataclass
+class Attached:
+    path: Path
+    label: str = ""  # "[Image #1]" when the text says where it goes
+
+
+def label(value) -> str:
+    value = str(value or "")
+    return value if LABEL.match(value) else ""
 
 
 def safe_name(name: str) -> str:
@@ -47,10 +61,10 @@ def shown_name(path: Path) -> str:
     return m.group(1) if m else path.name
 
 
-def describe(path: Path) -> dict:
+def describe(path: Path, at: str = "") -> dict:
     """What MyGhost shows for an attachment."""
     return {"name": shown_name(path), "path": str(path), "kind": kind(path),
-            "size": path.stat().st_size if path.exists() else 0}
+            "size": path.stat().st_size if path.exists() else 0, "label": at}
 
 
 def inside(path: str, folder: Path) -> Path | None:
@@ -65,25 +79,37 @@ def inside(path: str, folder: Path) -> Path | None:
     return None
 
 
-def content_blocks(text: str, files: list[Path]) -> list[dict] | str:
-    """A user message in stream-json form: the text, a list of the files (so
-    they can be opened again later), and small images inline so they are seen
-    straight away."""
+def content_blocks(text: str, files: list[Attached]) -> list[dict] | str:
+    """A user message in stream-json form: the text (whose "[Image #1]" marks
+    say where each attachment belongs), a list of the files (so they can be
+    opened again later), and small images inline, each led by its mark so
+    it's clear which is which."""
     if not files:
         return text
     lines = [text] if text else []
-    lines.append("附件（已存檔，需要時可用 Read 開啟）：")
-    lines += [f"- {shown_name(f)}：{f}" for f in files]
+    lines.append("附件（已存檔，需要時可用 Read 開啟；文字中的 [Image #N]／[File #N] 標出它們的位置）：")
+    lines += [f"- {(a.label + ' ') if a.label else ''}{shown_name(a.path)}：{a.path}" for a in files]
     blocks: list[dict] = [{"type": "text", "text": "\n".join(lines)}]
-    for f in files:
-        media = IMAGE_TYPES.get(f.suffix.lower())
-        if media and f.stat().st_size <= INLINE_IMAGE_BYTES:
+    for a in files:
+        media = IMAGE_TYPES.get(a.path.suffix.lower())
+        if media and a.path.stat().st_size <= INLINE_IMAGE_BYTES:
+            if a.label:
+                blocks.append({"type": "text", "text": a.label})
             blocks.append({"type": "image", "source": {
                 "type": "base64", "media_type": media,
-                "data": base64.b64encode(f.read_bytes()).decode()}})
+                "data": base64.b64encode(a.path.read_bytes()).decode()}})
     return blocks
 
 
-def worker_text(text: str, files: list[Path]) -> str:
-    """What gets typed into a conversation: the message, then the paths."""
-    return "\n".join([t for t in [text] if t] + [str(f) for f in files])
+def worker_text(text: str, files: list[Attached]) -> str:
+    """What gets typed into a conversation: each mark replaced by the file's
+    path where it stands (Claude Code turns an image path back into an
+    image there); files without a mark go after the text."""
+    rest = []
+    for a in files:
+        if a.label and a.label in text:
+            text = text.replace(a.label, f" {a.path} ", 1)
+        else:
+            rest.append(str(a.path))
+    text = re.sub(r"[ \t]{2,}", " ", text).strip()
+    return "\n".join([t for t in [text] if t] + rest)

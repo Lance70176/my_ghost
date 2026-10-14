@@ -72,6 +72,8 @@ struct AgentChatFile: Decodable, Equatable, Hashable {
     /// image | file
     let kind: String
     let size: Int?
+    /// Its "[Image #1]" mark in the message text, if it has one.
+    let label: String?
 }
 
 struct AgentAssistantStatus: Decodable, Equatable {
@@ -495,7 +497,7 @@ final class AgentDaemonClient: ObservableObject {
     }
 
     /// Type a message into a Claude Code conversation. nil when sent.
-    func workerSend(project: String, id: String, text: String, files: [String] = []) async -> String? {
+    func workerSend(project: String, id: String, text: String, files: [[String: String]] = []) async -> String? {
         let (ok, msg) = await post("api/projects/\(project)/workers/\(id)/send", ["text": text, "files": files])
         return ok ? nil : (msg ?? L("ghost-agentd refused the request"))
     }
@@ -521,7 +523,7 @@ final class AgentDaemonClient: ObservableObject {
     }
 
     @discardableResult
-    func sendMessage(project: String, text: String, files: [String] = []) async -> String? {
+    func sendMessage(project: String, text: String, files: [[String: String]] = []) async -> String? {
         let (ok, msg) = await post("api/assistants/\(project)/messages",
                                    ["text": text, "source": "myghost", "files": files])
         return ok ? nil : (msg ?? L("ghost-agentd refused the request"))

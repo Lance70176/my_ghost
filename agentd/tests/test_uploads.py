@@ -19,11 +19,17 @@ def test_names_and_blocks(tmp_path):
     assert uploads.describe(f)["name"] == "畫面 1.png"
     assert uploads.describe(f)["kind"] == "image"
     doc = uploads.save(tmp_path, "notes.txt", b"hi")
-    blocks = uploads.content_blocks("看這個", [f, doc])
+    A = uploads.Attached
+    blocks = uploads.content_blocks("看 [Image #1] 和這份", [A(f, "[Image #1]"), A(doc)])
     assert blocks[0]["type"] == "text" and str(doc) in blocks[0]["text"]
-    assert [b["type"] for b in blocks] == ["text", "image"]  # only the image goes inline
+    assert "[Image #1] 畫面 1.png" in blocks[0]["text"]
+    # Only the image goes inline, led by its mark.
+    assert [b["type"] for b in blocks] == ["text", "text", "image"] and blocks[1]["text"] == "[Image #1]"
     assert uploads.content_blocks("純文字", []) == "純文字"
-    assert uploads.worker_text("看", [doc]) == f"看\n{doc}"
+    assert uploads.worker_text("看", [A(doc)]) == f"看\n{doc}"
+    # A mark becomes the path where it stands.
+    assert uploads.worker_text("先看[Image #1]再說", [A(f, "[Image #1]")]) == f"先看 {f} 再說"
+    assert uploads.label("[Image #2]") == "[Image #2]" and uploads.label("$(rm)") == ""
 
 
 def test_inside_refuses_escapes(tmp_path):
@@ -58,12 +64,13 @@ def test_upload_then_send_to_assistant(broker, manager):
         assert code == 200
         info = json.loads(body)
         assert info["kind"] == "image" and info["name"] == "shot.png"
-        code, _ = _post(f"{base}/api/assistants/fq/messages", {"text": "看圖", "files": [info["path"]]})
+        code, _ = _post(f"{base}/api/assistants/fq/messages",
+                        {"text": "看圖 [Image #1]", "files": [{"path": info["path"], "label": "[Image #1]"}]})
         assert code == 200
         a = manager.get("fq")
         wait_for(lambda: any(i.role == "assistant" and "[圖1]" in i.text for i in a.items))
         user = next(i for i in a.items if i.role == "user")
-        assert user.files[0]["name"] == "shot.png"
+        assert user.files[0]["name"] == "shot.png" and user.files[0]["label"] == "[Image #1]"
         # The preview endpoint serves it back; anything else is refused.
         with urllib.request.urlopen(f"{base}/api/assistants/fq/file?path={info['path']}") as r:
             assert r.read() == PNG

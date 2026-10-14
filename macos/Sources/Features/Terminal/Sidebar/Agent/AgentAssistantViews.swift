@@ -312,7 +312,7 @@ final class AgentChatModel: ObservableObject {
     }
 
     /// Sends; on failure hands the text back so it isn't lost.
-    func send(_ text: String, files: [String] = [], restore: ((String) -> Void)? = nil) {
+    func send(_ text: String, files: [[String: String]] = [], restore: ((String) -> Void)? = nil) {
         Task {
             error = await client.sendMessage(project: project, text: text, files: files)
             if error != nil { restore?(text) }
@@ -509,8 +509,7 @@ struct AgentChatView: View {
                     .padding(.bottom, 7)
                 AgentInputField(text: $draft,
                                 placeholder: L("Message the %@ assistant… (Return sends, ⇧Return for a new line)", project),
-                                onSubmit: submit, autoFocus: true,
-                                onAttach: { tray.add($0, client: client) })
+                                onSubmit: submit, autoFocus: true, tray: tray)
                     .frame(minHeight: 34, maxHeight: 140)
                 .padding(.horizontal, 6)
                 .background(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.35)))
@@ -544,10 +543,11 @@ struct AgentChatView: View {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSubmit else { return }
         let sent = tray.files
+        let files = tray.payload
         draft = ""
         tray.clear()
         follow.followNext = true
-        model.send(text, files: sent.compactMap { $0.uploaded?.path }) { failed in
+        model.send(text, files: files) { failed in
             // Only if nothing new was typed meanwhile.
             if draft.isEmpty { draft = failed }
             tray.restore(sent)
@@ -566,6 +566,33 @@ final class AgentPlaceholderTextView: NSTextView {
     }
     /// Files or an image pasted or dropped here; text still goes in as text.
     var onAttach: ((AgentPasteboard.Found) -> Void)?
+
+    /// Put attachment marks ("[Image #1]") at the cursor, spaced from the text.
+    func insertLabels(_ labels: [String]) {
+        guard !labels.isEmpty, !hasMarkedText() else { return }
+        let sel = selectedRange()
+        let ns = string as NSString
+        var s = labels.joined(separator: " ") + " "
+        if sel.location > 0, sel.location <= ns.length,
+           let c = Character(ns.substring(with: NSRange(location: sel.location - 1, length: 1))) as Character?,
+           !c.isWhitespace {
+            s = " " + s
+        }
+        insertText(s, replacementRange: sel)
+        window?.makeFirstResponder(self)
+    }
+
+    /// Take a mark (and the space after it) out of the text.
+    func eraseLabel(_ label: String) {
+        let ns = string as NSString
+        var r = ns.range(of: label)
+        guard r.location != NSNotFound else { return }
+        if NSMaxRange(r) < ns.length, ns.character(at: NSMaxRange(r)) == 0x20 { r.length += 1 }
+        if shouldChangeText(in: r, replacementString: "") {
+            replaceCharacters(in: r, with: "")
+            didChangeText()
+        }
+    }
 
     override func paste(_ sender: Any?) {
         if let onAttach, let found = AgentPasteboard.attachments(.general) {
@@ -646,8 +673,10 @@ private struct AgentInputField: NSViewRepresentable {
     /// Take the keyboard when shown (SwiftUI focus doesn't reach the
     /// NSTextView inside, and the terminal under the assistant must not keep it).
     var autoFocus = false
-    /// Pasted or dropped files and images; nil leaves them to the text view.
-    var onAttach: ((AgentPasteboard.Found) -> Void)?
+    /// Where pasted or dropped files and images go (their marks go in the
+    /// text); nil leaves them to the text view.
+    var tray: AgentAttachmentTray?
+    @EnvironmentObject private var client: AgentDaemonClient
     @Environment(\.agentZoom) private var zoom
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -662,8 +691,11 @@ private struct AgentInputField: NSViewRepresentable {
         tv.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         scroll.documentView = tv
         tv.placeholder = placeholder
-        if onAttach != nil {
-            tv.onAttach = { [weak coordinator = context.coordinator] in coordinator?.parent.onAttach?($0) }
+        if tray != nil {
+            tv.onAttach = { [weak coordinator = context.coordinator] found in
+                guard let parent = coordinator?.parent else { return }
+                parent.tray?.attach(found, client: parent.client)
+            }
             tv.registerForDraggedTypes([.fileURL, .png, .tiff])
         }
         tv.delegate = context.coordinator
@@ -686,6 +718,10 @@ private struct AgentInputField: NSViewRepresentable {
         // committed text, and writing it back would cancel the candidate.
         if !tv.hasMarkedText() && tv.string != text { tv.string = text }
         if tv.placeholder != placeholder { tv.placeholder = placeholder }
+        if let tray {
+            tray.insertLabels = { [weak tv] in tv?.insertLabels($0) }
+            tray.eraseLabel = { [weak tv] in tv?.eraseLabel($0) }
+        }
         let size = NSFont.systemFontSize * zoom
         if tv.font?.pointSize != size { tv.font = .systemFont(ofSize: size) }
         context.coordinator.parent = self
@@ -700,6 +736,8 @@ private struct AgentInputField: NSViewRepresentable {
         func textDidChange(_ note: Notification) {
             guard let tv = note.object as? NSTextView else { return }
             parent.text = tv.string
+            // Deleting "[Image #1]" from the text drops that attachment.
+            parent.tray?.prune(tv.string)
         }
 
         func textView(_ tv: NSTextView, doCommandBy selector: Selector) -> Bool {
@@ -736,12 +774,7 @@ private struct AgentChatRow: View {
                     Text(item.source == "tg" ? L("From Telegram") : L("From the phone page"))
                         .agentFont(.caption2).foregroundColor(.blue)
                 }
-                if let files = item.files, !files.isEmpty {
-                    AgentSentFiles(files: files, project: project)
-                }
-                if !item.text.isEmpty {
-                    AgentBubble(text: item.text, mine: true)
-                }
+                AgentUserMessage(text: item.text, files: item.files ?? [], project: project)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
         case "assistant":
@@ -1439,7 +1472,7 @@ private struct AgentWorkerConversationView: View {
                     AgentAttachButton(tray: tray)
                         .padding(.bottom, 7)
                     AgentInputField(text: $draft, placeholder: L("Type into this conversation… (Return sends)"),
-                                    onSubmit: send, onAttach: { tray.add($0, client: client) })
+                                    onSubmit: send, tray: tray)
                         .frame(minHeight: 34, maxHeight: 120)
                     .padding(.horizontal, 6)
                     .background(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.35)))
@@ -1499,14 +1532,14 @@ private struct AgentWorkerConversationView: View {
         follow.followNext = true
         note = L("Sending…")
         let sent = tray.files
+        let files = tray.payload
         Task {
-            if let err = await client.workerSend(project: project, id: workerID, text: text,
-                                                 files: sent.compactMap { $0.uploaded?.path }) {
+            if let err = await client.workerSend(project: project, id: workerID, text: text, files: files) {
                 note = err
             } else {
                 // Text typed while this one was on its way stays.
                 if draft.trimmingCharacters(in: .whitespacesAndNewlines) == text { draft = "" }
-                for f in sent { tray.remove(f.id) }
+                tray.discard(sent.map(\.id))
                 note = L("Sent. The reply shows up here when it comes.")
             }
             sending = false
