@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -183,6 +184,25 @@ def load_always_allow(p: Project) -> list[str]:
         return list(json.loads(f.read_text()))
     except (OSError, ValueError):
         return []
+
+
+def set_chat_id(p: Project, old: int, new: int) -> bool:
+    """Telegram moved the project's group to a new id (a group becomes a
+    supergroup, e.g. when a bot is made admin): write the new one."""
+    f = HOME / "projects" / p.dir.name / "project.yaml"
+    try:
+        text = f.read_text()
+    except OSError:
+        return False
+    fixed = re.sub(rf"(chat_id:\s*){re.escape(str(old))}(?!\d)", rf"\g<1>{new}", text, count=1)
+    if fixed == text:
+        return False
+    tmp = f.with_suffix(".tmp")
+    tmp.write_text(fixed)
+    os.chmod(tmp, f.stat().st_mode & 0o777)
+    tmp.replace(f)
+    p.tg_chat_id = new
+    return True
 
 
 def add_always_allow(p: Project, pattern: str) -> None:

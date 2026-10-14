@@ -96,3 +96,33 @@ def test_reply_to_card_denies_with_reason(setup):
                             "reply_to_message": {"message_id": p.tg_message_id}}})
     t.join(2)
     assert out[0]["behavior"] == "deny" and "code review" in out[0]["message"]
+
+
+def test_group_upgraded_to_supergroup_is_followed(setup, monkeypatch):
+    """Making a bot admin can turn a group into a supergroup with a new id;
+    the bot follows it and writes the new id to project.yaml."""
+    _, broker, _, _ = setup
+    import io
+    import json as _json
+    import urllib.error
+    from ghost_agentd import telegram as tg
+    p = broker.projects.get("fq")
+    f = p.dir / "project.yaml"
+    f.write_text("name: fq\ntelegram:\n  token: \"t\"\n  chat_id: -111    # group\n")
+    bot = tg.Bot(broker.cfg, broker, "t")
+    bot.routes["fq"] = -111
+    sent = []
+
+    def fake_urlopen(req, timeout=0):
+        body = _json.loads(req.data)
+        sent.append(body["chat_id"])
+        if body["chat_id"] == -111:
+            raise urllib.error.HTTPError(req.full_url, 400, "", {}, io.BytesIO(_json.dumps({
+                "ok": False, "description": "group chat was upgraded to a supergroup chat",
+                "parameters": {"migrate_to_chat_id": -100222}}).encode()))
+        return io.BytesIO(_json.dumps({"ok": True, "result": {"message_id": 1}}).encode())
+
+    monkeypatch.setattr(tg.urllib.request, "urlopen", fake_urlopen)
+    assert bot.call("sendMessage", chat_id=-111, text="hi") == {"message_id": 1}
+    assert sent == [-111, -100222] and bot.chat_for("fq") == -100222
+    assert "chat_id: -100222    # group" in f.read_text()

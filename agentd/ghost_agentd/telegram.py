@@ -24,6 +24,7 @@ import time
 import urllib.error
 import urllib.request
 
+from . import config as cfgmod
 from .broker import Broker, Pending, log
 from .config import DEFAULT_PROJECT, Config, Project
 from .policy import L3, LEVEL_NAMES
@@ -88,8 +89,23 @@ class Bot:
         except urllib.error.HTTPError as e:
             data = json.loads(e.read() or b"{}")
         if not data.get("ok"):
+            moved = (data.get("parameters") or {}).get("migrate_to_chat_id")
+            if moved and params.get("chat_id") is not None and self._migrate(int(params["chat_id"]), int(moved)):
+                params["chat_id"] = moved
+                return self.call(method, timeout, **params)
             raise RuntimeError(f"{method}: {data.get('description', data)}")
         return data["result"]
+
+    def _migrate(self, old: int, new: int) -> bool:
+        """The group became a supergroup with a new id: follow it."""
+        moved = False
+        for project, chat in list(self.routes.items()):
+            if chat == old:
+                self.routes[project] = new
+                cfgmod.set_chat_id(self.broker.projects.get(project), old, new)
+                log(f"telegram: {project}'s group moved {old} -> {new} (supergroup); project.yaml updated")
+                moved = True
+        return moved
 
     def start(self) -> None:
         try:
