@@ -40,7 +40,13 @@ for line in sys.stdin:
     if msg.get("type") == "control_request":
         continue
     content = (msg.get("message") or {}).get("content", "")
-    text = content if isinstance(content, str) else ""
+    if isinstance(content, str):
+        text = content
+    else:  # blocks: echo the text and count the images
+        text = " ".join(b.get("text", "") for b in content if b.get("type") == "text")
+        n = sum(1 for b in content if b.get("type") == "image")
+        if n:
+            text += f" [圖{n}]"
     if text == "/context":
         pct = int(os.environ.get("FAKE_CTX", "10"))
         out({"type": "assistant", "message": {"content": [{"type": "text", "text": f"Context {pct}%"}]},

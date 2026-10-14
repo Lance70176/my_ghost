@@ -312,9 +312,9 @@ final class AgentChatModel: ObservableObject {
     }
 
     /// Sends; on failure hands the text back so it isn't lost.
-    func send(_ text: String, restore: ((String) -> Void)? = nil) {
+    func send(_ text: String, files: [String] = [], restore: ((String) -> Void)? = nil) {
         Task {
-            error = await client.sendMessage(project: project, text: text)
+            error = await client.sendMessage(project: project, text: text, files: files)
             if error != nil { restore?(text) }
         }
     }
@@ -334,6 +334,7 @@ struct AgentChatView: View {
     @FocusState private var inputFocused: Bool
     @EnvironmentObject private var client: AgentDaemonClient
     @StateObject private var follow = AgentFollow()
+    @ObservedObject private var tray: AgentAttachmentTray
 
     enum Tab { case chat, conversations }
 
@@ -345,6 +346,7 @@ struct AgentChatView: View {
         self.project = project
         self.uiState = uiState
         storeKey = "\(client.hostKey)|\(project)"
+        tray = AgentAttachmentTray.tray(storeKey, project: project, target: "assistant")
         _model = StateObject(wrappedValue: AgentChatModel(project: project, client: client))
         _draft = State(initialValue: AgentDraftStore.shared.draft(storeKey))
         _tab = State(initialValue: AgentDraftStore.shared.flag(storeKey + "|conversations") ? .conversations : .chat)
@@ -392,6 +394,10 @@ struct AgentChatView: View {
     }
 
     private var chatPane: some View {
+        chatPaneContent.modifier(AgentDropTarget(tray: tray, client: client))
+    }
+
+    private var chatPaneContent: some View {
         VStack(spacing: 0) {
             GeometryReader { viewport in
             ScrollViewReader { proxy in
@@ -497,10 +503,14 @@ struct AgentChatView: View {
 
     private var input: some View {
         VStack(alignment: .leading, spacing: 4) {
+            AgentAttachmentStrip(tray: tray)
             HStack(alignment: .bottom, spacing: 8) {
+                AgentAttachButton(tray: tray)
+                    .padding(.bottom, 7)
                 AgentInputField(text: $draft,
                                 placeholder: L("Message the %@ assistant… (Return sends, ⇧Return for a new line)", project),
-                                onSubmit: submit, autoFocus: true)
+                                onSubmit: submit, autoFocus: true,
+                                onAttach: { tray.add($0, client: client) })
                     .frame(minHeight: 34, maxHeight: 140)
                 .padding(.horizontal, 6)
                 .background(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.35)))
@@ -516,7 +526,7 @@ struct AgentChatView: View {
                     Image(systemName: "paperplane.fill").agentFont(.title3)
                 }
                 .buttonStyle(.borderless)
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(!canSubmit)
                 .help(L("Send"))
             }
             if let error = model.error {
@@ -526,14 +536,21 @@ struct AgentChatView: View {
         .padding(10)
     }
 
+    private var canSubmit: Bool {
+        (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !tray.isEmpty) && !tray.blocking
+    }
+
     private func submit() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        guard canSubmit else { return }
+        let sent = tray.files
         draft = ""
+        tray.clear()
         follow.followNext = true
-        model.send(text) { failed in
+        model.send(text, files: sent.compactMap { $0.uploaded?.path }) { failed in
             // Only if nothing new was typed meanwhile.
             if draft.isEmpty { draft = failed }
+            tray.restore(sent)
         }
     }
 }
@@ -546,6 +563,24 @@ struct AgentChatView: View {
 final class AgentPlaceholderTextView: NSTextView {
     var placeholder = "" {
         didSet { needsDisplay = true }
+    }
+    /// Files or an image pasted or dropped here; text still goes in as text.
+    var onAttach: ((AgentPasteboard.Found) -> Void)?
+
+    override func paste(_ sender: Any?) {
+        if let onAttach, let found = AgentPasteboard.attachments(.general) {
+            onAttach(found)
+            return
+        }
+        super.paste(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if let onAttach, let found = AgentPasteboard.attachments(sender.draggingPasteboard) {
+            onAttach(found)
+            return true
+        }
+        return super.performDragOperation(sender)
     }
 
     override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
@@ -585,6 +620,8 @@ private struct AgentInputField: NSViewRepresentable {
     /// Take the keyboard when shown (SwiftUI focus doesn't reach the
     /// NSTextView inside, and the terminal under the assistant must not keep it).
     var autoFocus = false
+    /// Pasted or dropped files and images; nil leaves them to the text view.
+    var onAttach: ((AgentPasteboard.Found) -> Void)?
     @Environment(\.agentZoom) private var zoom
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -599,6 +636,9 @@ private struct AgentInputField: NSViewRepresentable {
         tv.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         scroll.documentView = tv
         tv.placeholder = placeholder
+        if onAttach != nil {
+            tv.onAttach = { [weak coordinator = context.coordinator] in coordinator?.parent.onAttach?($0) }
+        }
         tv.delegate = context.coordinator
         tv.isRichText = false
         tv.font = .systemFont(ofSize: NSFont.systemFontSize)
@@ -669,7 +709,12 @@ private struct AgentChatRow: View {
                     Text(item.source == "tg" ? L("From Telegram") : L("From the phone page"))
                         .agentFont(.caption2).foregroundColor(.blue)
                 }
-                AgentBubble(text: item.text, mine: true)
+                if let files = item.files, !files.isEmpty {
+                    AgentSentFiles(files: files, project: project)
+                }
+                if !item.text.isEmpty {
+                    AgentBubble(text: item.text, mine: true)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
         case "assistant":
@@ -1280,6 +1325,7 @@ private struct AgentWorkerConversationView: View {
     /// The last refresh failed (what's shown is from before).
     @State private var failed = false
     @StateObject private var follow = AgentFollow()
+    @ObservedObject private var tray: AgentAttachmentTray
     private let storeKey: String
 
     init(project: String, workerID: String, hostKey: String, onClose: @escaping () -> Void) {
@@ -1287,6 +1333,7 @@ private struct AgentWorkerConversationView: View {
         self.workerID = workerID
         self.onClose = onClose
         storeKey = "\(hostKey)|\(project)|w:\(workerID)"
+        tray = AgentAttachmentTray.tray(storeKey, project: project, target: workerID)
         _draft = State(initialValue: AgentDraftStore.shared.draft(storeKey))
     }
 
@@ -1360,15 +1407,18 @@ private struct AgentWorkerConversationView: View {
             }
             Divider()
             VStack(alignment: .leading, spacing: 4) {
+                AgentAttachmentStrip(tray: tray)
                 HStack(alignment: .bottom, spacing: 6) {
+                    AgentAttachButton(tray: tray)
+                        .padding(.bottom, 7)
                     AgentInputField(text: $draft, placeholder: L("Type into this conversation… (Return sends)"),
-                                    onSubmit: send)
+                                    onSubmit: send, onAttach: { tray.add($0, client: client) })
                         .frame(minHeight: 34, maxHeight: 120)
                     .padding(.horizontal, 6)
                     .background(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.35)))
                     Button(action: send) { Image(systemName: "paperplane.fill") }
                         .buttonStyle(.borderless)
-                        .disabled(sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(!canSend)
                 }
                 if let note {
                     Text(note).agentFont(.caption).foregroundColor(.secondary)
@@ -1376,8 +1426,14 @@ private struct AgentWorkerConversationView: View {
             }
             .padding(8)
         }
+        .modifier(AgentDropTarget(tray: tray, client: client))
         .task { await poll() }
         .onChange(of: draft) { AgentDraftStore.shared.setDraft(storeKey, $0) }
+    }
+
+    private var canSend: Bool {
+        !sending && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !tray.isEmpty)
+            && !tray.blocking
     }
 
     private var loadFailed: some View {
@@ -1411,16 +1467,19 @@ private struct AgentWorkerConversationView: View {
 
     private func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !sending else { return }
+        guard canSend else { return }
         sending = true
         follow.followNext = true
         note = L("Sending…")
+        let sent = tray.files
         Task {
-            if let err = await client.workerSend(project: project, id: workerID, text: text) {
+            if let err = await client.workerSend(project: project, id: workerID, text: text,
+                                                 files: sent.compactMap { $0.uploaded?.path }) {
                 note = err
             } else {
                 // Text typed while this one was on its way stays.
                 if draft.trimmingCharacters(in: .whitespacesAndNewlines) == text { draft = "" }
+                for f in sent { tray.remove(f.id) }
                 note = L("Sent. The reply shows up here when it comes.")
             }
             sending = false

@@ -13,6 +13,10 @@
     POST /api/assistants/<p>/messages          {"text": "...", "source": "myghost"}
     POST /api/assistants/<p>/stop              interrupt the current turn
     POST /api/assistants/<p>/start
+    POST /api/uploads?project=P&to=assistant|<job id>&name=N   raw bytes ->
+                                               {path, name, kind, size}; pass the
+                                               paths as "files" with the message
+    GET  /api/assistants/<p>/file?path=...     an attachment (for previews)
     POST /assistant-tools/<name>               {"project": p, "args": {...}} (ghost-tools)
 
 Remote clients (MyGhost on another Mac, over Tailscale) must also send
@@ -27,14 +31,17 @@ can't click "allow" on the user's behalf through localhost.
 from __future__ import annotations
 
 import json
+import mimetypes
 import re
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from . import uploads
 from .broker import Broker, log
 
 DECIDE = re.compile(r"^/api/decisions/([0-9a-f]{8})$")
-ASSISTANT = re.compile(r"^/api/assistants/([A-Za-z0-9_.-]+)/(chat|messages|stop|start)$")
+ASSISTANT = re.compile(r"^/api/assistants/([A-Za-z0-9_.-]+)/(chat|messages|stop|start|file)$")
 TOOL = re.compile(r"^/assistant-tools/([a-z_]+)$")
 WORKERS = re.compile(r"^/api/projects/([A-Za-z0-9_.-]+)/workers$")
 WORKER = re.compile(r"^/api/projects/([A-Za-z0-9_.-]+)/workers/([0-9a-f]{8})/(log|send)$")
@@ -55,6 +62,34 @@ def make_handler(broker: Broker, assistants=None, tools=None, remote_token: str 
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
+
+        def _raw(self) -> bytes:
+            n = int(self.headers.get("Content-Length") or 0)
+            return self.rfile.read(n) if 0 < n <= uploads.MAX_BYTES else b""
+
+        def _upload_dir(self, project: str, to: str) -> Path | None:
+            """Where an attachment for this reader is kept, or None."""
+            p = broker.projects.get(project)
+            if p is None:
+                return None
+            if to == "assistant":
+                return assistants.get(p.name).uploads if assistants else None
+            from .tools import find_job
+            own = assistants.get(p.name).meta.get("session_id", "") if assistants else ""
+            job = find_job(p.paths, to, exclude_session=own)
+            if job is None or not job.get("cwd"):
+                return None
+            return Path(job["cwd"]) / uploads.WORKER_DIR
+
+        def _files(self, body: dict, folder: Path | None) -> list[Path] | None:
+            """The attachments named in a message, all ours; None if any isn't."""
+            out = []
+            for f in (body.get("files") or [])[:20]:
+                p = uploads.inside(str(f), folder) if folder else None
+                if p is None:
+                    return None
+                out.append(p)
+            return out
 
         def _body(self) -> dict:
             n = int(self.headers.get("Content-Length") or 0)
@@ -135,12 +170,33 @@ def make_handler(broker: Broker, assistants=None, tools=None, remote_token: str 
                 since = int((q.get("since") or ["0"])[0])
                 wait = min(float((q.get("wait") or ["0"])[0]), 55)
                 return self._send(200, assistants.chat(m.group(1), since, wait))
+            if m and m.group(2) == "file" and assistants:
+                f = uploads.inside((q.get("path") or [""])[0], assistants.get(m.group(1)).uploads)
+                if f is None:
+                    return self._send(404, {"error": "no such attachment"})
+                data = f.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", mimetypes.guess_type(f.name)[0] or "application/octet-stream")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
             self._send(404, {"error": "not found"})
 
         def _post(self):
             if self.headers.get("X-Ghost") != "1":
                 return self._send(403, {"error": "missing X-Ghost header"})
             u = urlparse(self.path)
+            if u.path == "/api/uploads":
+                q = parse_qs(u.query)
+                folder = self._upload_dir((q.get("project") or [""])[0], (q.get("to") or [""])[0])
+                if folder is None:
+                    return self._send(404, {"ok": False, "message": "找不到要傳給的對象"})
+                data = self._raw()
+                if not data:
+                    return self._send(413, {"ok": False, "message": "檔案是空的或超過 30 MB"})
+                path = uploads.save(folder, (q.get("name") or ["file"])[0], data)
+                return self._send(200, {"ok": True, **uploads.describe(path)})
             try:
                 body = self._body()
             except ValueError:
@@ -159,10 +215,15 @@ def make_handler(broker: Broker, assistants=None, tools=None, remote_token: str 
                 p = broker.projects.get(m.group(1))
                 own = assistants.get(p.name).meta.get("session_id", "") if assistants else ""
                 job = find_job(p.paths, m.group(2), exclude_session=own)
-                text = str(body.get("text") or "").strip()
-                if job is None or not text:
+                if job is None:
                     return self._send(404, {"ok": False, "message": "找不到這個專案的這個對話"})
-                err = job_send(job, text[:20000])
+                files = self._files(body, Path(job["cwd"]) / uploads.WORKER_DIR if job.get("cwd") else None)
+                if files is None:
+                    return self._send(400, {"ok": False, "message": "附件不在這個對話的上傳資料夾裡"})
+                text = str(body.get("text") or "").strip()
+                if not text and not files:
+                    return self._send(400, {"ok": False, "message": "沒有內容"})
+                err = job_send(job, uploads.worker_text(text[:20000], files))
                 return self._send(200 if not err else 409, {"ok": not err, "message": err or "已送出"})
             m = TOOL.match(u.path)
             if m and tools:
@@ -174,10 +235,13 @@ def make_handler(broker: Broker, assistants=None, tools=None, remote_token: str 
                 a = assistants.get(name)
                 if verb == "messages":
                     text = str(body.get("text") or "").strip()
-                    if not text:
+                    files = self._files(body, a.uploads)
+                    if files is None:
+                        return self._send(400, {"ok": False, "message": "附件不在助手的上傳資料夾裡"})
+                    if not text and not files:
                         return self._send(400, {"error": "empty"})
                     src = body.get("source") if body.get("source") in ("myghost", "web") else "myghost"
-                    a.send(text[:20000], src)
+                    a.send(text[:20000], src, files=files)
                     return self._send(200, {"ok": True, "seq": a.seq})
                 if verb == "stop":
                     return self._send(200, {"ok": a.interrupt()})

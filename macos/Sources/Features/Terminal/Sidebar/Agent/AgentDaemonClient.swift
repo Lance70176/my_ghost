@@ -59,8 +59,19 @@ struct AgentChatItem: Decodable, Identifiable, Equatable {
     let options: [AgentChoiceOption]
     let cardId: String
     let chosen: String
+    /// Attachments (older daemons don't send the field).
+    let files: [AgentChatFile]?
 
     var id: Int { seq }
+}
+
+/// A file attached to a message, as stored on the daemon's host.
+struct AgentChatFile: Decodable, Equatable, Hashable {
+    let name: String
+    let path: String
+    /// image | file
+    let kind: String
+    let size: Int?
 }
 
 struct AgentAssistantStatus: Decodable, Equatable {
@@ -484,8 +495,8 @@ final class AgentDaemonClient: ObservableObject {
     }
 
     /// Type a message into a Claude Code conversation. nil when sent.
-    func workerSend(project: String, id: String, text: String) async -> String? {
-        let (ok, msg) = await post("api/projects/\(project)/workers/\(id)/send", ["text": text])
+    func workerSend(project: String, id: String, text: String, files: [String] = []) async -> String? {
+        let (ok, msg) = await post("api/projects/\(project)/workers/\(id)/send", ["text": text, "files": files])
         return ok ? nil : (msg ?? L("ghost-agentd refused the request"))
     }
 
@@ -510,9 +521,44 @@ final class AgentDaemonClient: ObservableObject {
     }
 
     @discardableResult
-    func sendMessage(project: String, text: String) async -> String? {
-        let (ok, msg) = await post("api/assistants/\(project)/messages", ["text": text, "source": "myghost"])
+    func sendMessage(project: String, text: String, files: [String] = []) async -> String? {
+        let (ok, msg) = await post("api/assistants/\(project)/messages",
+                                   ["text": text, "source": "myghost", "files": files])
         return ok ? nil : (msg ?? L("ghost-agentd refused the request"))
+    }
+
+    /// Store an attachment on the host, for the assistant ("assistant") or a
+    /// conversation (its id). Returns the stored file, or why it failed.
+    func upload(project: String, to target: String, name: String, data: Data) async -> (AgentChatFile?, String?) {
+        guard let base = await endpoint() else { return (nil, L("ghost-agentd is not reachable")) }
+        var comps = URLComponents(url: base.appendingPathComponent("api/uploads"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [URLQueryItem(name: "project", value: project),
+                            URLQueryItem(name: "to", value: target),
+                            URLQueryItem(name: "name", value: name)]
+        var req = URLRequest(url: comps.url!)
+        req.httpMethod = "POST"
+        req.setValue("1", forHTTPHeaderField: "X-Ghost")
+        req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 300
+        do {
+            let (body, resp) = try await session.upload(for: req, from: data)
+            if (resp as? HTTPURLResponse)?.statusCode == 200,
+               let file = try? Self.decoder.decode(AgentChatFile.self, from: body) {
+                return (file, nil)
+            }
+            let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+            return (nil, obj?["message"] as? String ?? L("ghost-agentd refused the request"))
+        } catch {
+            return (nil, L("ghost-agentd is not reachable"))
+        }
+    }
+
+    /// An assistant attachment's bytes (for previews and opening it).
+    func attachment(project: String, path: String) async -> Data? {
+        guard let (data, resp) = try? await fetch("api/assistants/\(project)/file",
+                                                  [URLQueryItem(name: "path", value: path)]),
+              (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return data
     }
 
     func stopAssistant(project: String) async {

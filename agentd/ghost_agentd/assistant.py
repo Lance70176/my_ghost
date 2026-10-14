@@ -29,6 +29,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from . import config as cfgmod
+from . import uploads
 from .broker import Broker, Pending, log
 from .config import Project
 from .policy import redact
@@ -73,6 +74,7 @@ class ChatItem:
     options: list = field(default_factory=list)
     card_id: str = ""
     chosen: str = ""
+    files: list = field(default_factory=list)  # attachments: [{name, path, kind, size}]
 
 
 class Assistant:
@@ -255,12 +257,19 @@ class Assistant:
         except (BrokenPipeError, OSError) as e:
             log(f"assistant {self.project.name}: write failed {e!r}")
 
-    def send(self, text: str, source: str, show: bool = True, internal: bool = False) -> None:
-        """Hand the assistant a message. `show` adds it to the visible chat."""
+    @property
+    def uploads(self) -> Path:
+        return self.dir / "uploads"
+
+    def send(self, text: str, source: str, show: bool = True, internal: bool = False,
+             files: list[Path] | None = None) -> None:
+        """Hand the assistant a message. `show` adds it to the visible chat;
+        `files` are attachments already saved in `uploads`."""
+        files = files or []
         if not self.running:
             self.start()
         if show:
-            self.add("user", text, source=source)
+            self.add("user", text, source=source, files=[uploads.describe(f) for f in files])
         prefix = {"tg": "[來自 TG 專案群組] ", "myghost": "", "web": "[來自手機網頁] ",
                   "system": "[系統] "}.get(source, "")
         if text.startswith("/"):
@@ -268,7 +277,8 @@ class Assistant:
         with self.lock:
             self._queue.append(internal)
             self.last_activity = time.time()
-            self._write({"type": "user", "message": {"role": "user", "content": prefix + text}})
+            content = uploads.content_blocks(prefix + text if text else "", files)
+            self._write({"type": "user", "message": {"role": "user", "content": content}})
         self._touch()
 
     # ------------------------------------------------------------- events

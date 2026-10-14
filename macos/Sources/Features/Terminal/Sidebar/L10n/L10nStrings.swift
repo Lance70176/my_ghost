@@ -10,6 +10,13 @@ enum L10nStrings {
 
     static let table: [String: [AppLanguage: String]] = [
         // MARK: ghost-agentd decisions
+        "Attach files or images (you can also paste or drop them)": t("附加檔案或圖片（也可以直接貼上或拖進來）", "附加文件或图片（也可以直接粘贴或拖进来）", "ファイルや画像を添付（貼り付け・ドロップも可）"),
+        "Folders can't be attached.": t("資料夾不能附加。", "文件夹不能附加。", "フォルダは添付できません。"),
+        "Larger than 30 MB.": t("超過 30 MB。", "超过 30 MB。", "30 MB を超えています。"),
+        "Couldn't read this file.": t("讀不到這個檔案。", "读不到这个文件。", "このファイルを読み込めません。"),
+        "Uploading…": t("上傳中…", "上传中…", "アップロード中…"),
+        "Remove": t("移除", "移除", "削除"),
+        "Drop to attach": t("放開即可附加", "松开即可附加", "ドロップして添付"),
         "Couldn't load the conversations.": t("載入不了工作對話清單。", "载入不了工作对话清单。", "会話の一覧を読み込めませんでした。"),
         "Couldn't load the decision history.": t("載入不了決策紀錄。", "载入不了决策记录。", "判断の履歴を読み込めませんでした。"),
         "%d new messages": t("%d 則新訊息", "%d 条新消息", "新着 %d 件"),

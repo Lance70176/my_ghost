@@ -138,6 +138,9 @@ class Bot:
             text = item.text
         elif item.role == "user" and item.source in ("myghost", "web") and self.cfg.sync_chat_to_tg:
             text = f"🖥 你在 MyGhost：{item.text}"
+            names = [f.get("name", "") for f in getattr(item, "files", None) or []]
+            if names:
+                text += "\n📎 " + "、".join(names)
         else:
             return
         for i in range(0, len(text), 3900):
