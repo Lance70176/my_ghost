@@ -29,27 +29,44 @@ JOB_STATE = {"working": "執行中", "done": "完成", "idle": "完成", "blocke
 # How a background job's own state reads as a tab status.
 JOB_STATUS = {"working": "running", "blocked": "waiting", "awaiting_input": "waiting",
               "needs_input": "waiting", "waiting": "waiting"}
-_job_cache: tuple[float, dict] = (0.0, {})
+_job_cache: tuple[float, list] = (0.0, [])
 _transcript_cache: dict[str, Path] = {}
 
 
-def job_states() -> dict[str, str]:
-    """session id -> running | waiting | done, for Claude Code background
-    jobs, from their state.json (what the agent list shows). Cached 5 s."""
+def _jobs() -> list[tuple[str, str, str]]:
+    """(session id, running | waiting | done, cwd) for every Claude Code
+    background job, from its state.json (what the agent list shows).
+    Cached 5 s."""
     global _job_cache
     now = time.time()
     if now - _job_cache[0] < 5:
         return _job_cache[1]
-    out = {}
+    out = []
     for f in JOBS.glob("*/state.json") if JOBS.exists() else []:
         try:
             d = json.loads(f.read_text())
         except (OSError, ValueError):
             continue
-        if d.get("sessionId"):
-            out[d["sessionId"]] = JOB_STATUS.get(str(d.get("state") or ""), "done")
+        out.append((str(d.get("sessionId") or ""), JOB_STATUS.get(str(d.get("state") or ""), "done"),
+                    str(d.get("originCwd") or d.get("cwd") or "")))
     _job_cache = (now, out)
     return out
+
+
+def job_states() -> dict[str, str]:
+    """session id -> running | waiting | done, for background jobs."""
+    return {sid: st for sid, st, _ in _jobs() if sid}
+
+
+def jobs_status_under(cwd: str) -> str | None:
+    """For an agent view (the screen listing background jobs): waiting if
+    any job started under `cwd` needs you, running if any is working,
+    done if they've all finished; None if there are none."""
+    states = {st for _, st, c in _jobs() if cwd and _under(c, [cwd])}
+    for st in ("waiting", "running", "done"):
+        if st in states:
+            return st
+    return None
 
 
 def transcript_age(session_id: str) -> float | None:

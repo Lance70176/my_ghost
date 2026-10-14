@@ -36,7 +36,7 @@ def test_tab_status_follows_jobs_and_activity(tmp_path, monkeypatch):
     trans = tmp_path / "tr"
     monkeypatch.setattr(tools, "JOBS", jobs)
     monkeypatch.setattr(tools, "TRANSCRIPTS", trans)
-    monkeypatch.setattr(tools, "_job_cache", (0.0, {}))
+    monkeypatch.setattr(tools, "_job_cache", (0.0, []))
     write_job(jobs, "j1", state="done", sessionId="job-done")
     write_job(jobs, "j2", state="working", sessionId="job-busy")
     (trans / "p").mkdir(parents=True)
@@ -55,3 +55,24 @@ def test_tab_status_follows_jobs_and_activity(tmp_path, monkeypatch):
     assert st("quiet", "running") == "done"        # interrupted: no Stop came
     assert st("busy", "running") == "running"
     assert st("unknown", "waiting") == "waiting"
+
+
+def test_agent_view_status_is_its_jobs(tmp_path, monkeypatch):
+    from ghost_agentd.broker import Broker, Session
+    jobs = tmp_path / "jobs"
+    monkeypatch.setattr(tools, "JOBS", jobs)
+    monkeypatch.setattr(tools, "TRANSCRIPTS", tmp_path / "none")
+    monkeypatch.setattr(tools, "_job_cache", (0.0, []))
+    view = str(tmp_path / "claude")
+    write_job(jobs, "a", state="done", sessionId="s1", originCwd=view)
+    write_job(jobs, "b", state="done", sessionId="s2", originCwd=view + "/sub")
+    write_job(jobs, "c", state="needs_input", sessionId="s3", originCwd=str(tmp_path / "other"))
+
+    class B:
+        pending = {}
+        STALE_RUNNING = 900
+    v = Session("view", "x", view, status="waiting", agent_view=True)
+    assert Broker._status(B, v, tools.job_states()) == "done"  # asked once; all finished now
+    write_job(jobs, "d", state="working", sessionId="s4", originCwd=view)
+    monkeypatch.setattr(tools, "_job_cache", (0.0, []))
+    assert Broker._status(B, v, tools.job_states()) == "running"

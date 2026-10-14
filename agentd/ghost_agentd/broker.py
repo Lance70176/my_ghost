@@ -96,6 +96,9 @@ class Session:
     status: str = "running"  # running | waiting | done | ended
     updated: float = 0.0
     last_message: str = ""
+    # The agent view (the screen listing background jobs): its status is
+    # its jobs' status, not its own last event.
+    agent_view: bool = False
 
 
 def _append(path, record: dict) -> None:
@@ -504,6 +507,8 @@ class Broker:
                 self._touch_session(payload, project, "ended")
             elif ev == "Notification":
                 nt = payload.get("notification_type", "")
+                if nt.startswith("agent_"):  # about a background job: an agent view
+                    self._touch_session(payload, project).agent_view = True
                 if nt == "idle_prompt":
                     s = self._touch_session(payload, project, "waiting" if has_pending else "done")
                     if self.cfg.notify_idle:
@@ -524,15 +529,19 @@ class Broker:
     def _status(self, s: Session, jobs: dict[str, str]) -> str:
         """What the tab badge should say: waiting only when it really needs
         the user, running only while it's really working."""
-        from .tools import transcript_age
+        from .tools import jobs_status_under, transcript_age
         if any(p.session_id == s.session_id for p in self.pending.values()):
             return "waiting"
         if s.session_id in jobs:  # a background job: its own state is the truth
             return jobs[s.session_id]
-        if s.status == "running":
-            age = transcript_age(s.session_id)
-            if age is not None and age > self.STALE_RUNNING:
-                return "done"
+        age = transcript_age(s.session_id)
+        # An agent view keeps no transcript of its own.
+        if s.agent_view or age is None:
+            st = jobs_status_under(s.cwd)
+            if st is not None:
+                return st
+        if s.status == "running" and age is not None and age > self.STALE_RUNNING:
+            return "done"
         return s.status
 
     def list_sessions(self) -> list[dict]:
