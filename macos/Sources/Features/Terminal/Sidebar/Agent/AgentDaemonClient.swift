@@ -131,6 +131,19 @@ struct AgentWorker: Decodable, Identifiable, Equatable {
 
 private struct AgentWorkers: Decodable { let workers: [AgentWorker] }
 
+/// A line of a Claude Code conversation: user / assistant / tool.
+struct AgentWorkerMessage: Decodable, Identifiable, Equatable {
+    let i: Int
+    let role: String
+    let text: String
+    var id: Int { i }
+}
+
+struct AgentWorkerLog: Decodable {
+    let worker: AgentWorker
+    let messages: [AgentWorkerMessage]
+}
+
 /// One line of a project's decisions.jsonl.
 struct AgentDecisionRecord: Decodable, Identifiable, Equatable {
     let ts: Double
@@ -417,6 +430,18 @@ final class AgentDaemonClient: ObservableObject {
         guard let (data, _) = try? await fetch("api/projects/\(project)/workers"),
               let list = try? Self.decoder.decode(AgentWorkers.self, from: data) else { return [] }
         return list.workers
+    }
+
+    func workerLog(project: String, id: String) async -> AgentWorkerLog? {
+        guard let (data, resp) = try? await fetch("api/projects/\(project)/workers/\(id)/log"),
+              (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return try? Self.decoder.decode(AgentWorkerLog.self, from: data)
+    }
+
+    /// Type a message into a Claude Code conversation. nil when sent.
+    func workerSend(project: String, id: String, text: String) async -> String? {
+        let (ok, msg) = await post("api/projects/\(project)/workers/\(id)/send", ["text": text])
+        return ok ? nil : (msg ?? L("ghost-agentd refused the request"))
     }
 
     /// Newest first; nil project means every project.

@@ -10,6 +10,11 @@ enum L10nStrings {
 
     static let table: [String: [AppLanguage: String]] = [
         // MARK: ghost-agentd decisions
+        "Back to decisions": t("回到決策區", "回到决策区", "判断の一覧に戻る"),
+        "Nothing to show for this conversation.": t("這個對話沒有可以顯示的內容。", "这个对话没有可以显示的内容。", "この会話には表示できる内容がありません。"),
+        "Type into this conversation… (Return sends)": t("輸入訊息給這個對話…（Enter 送出）", "输入消息给这个对话…（Enter 发送）", "この会話に入力…（Return で送信）"),
+        "Sending…": t("傳送中…", "发送中…", "送信中…"),
+        "Sent. The reply shows up here when it comes.": t("已送出，回覆出來後會顯示在這裡。", "已发送，回复出来后会显示在这里。", "送信しました。返信が来たらここに表示されます。"),
         "Assistant chat": t("助手對話", "助手对话", "アシスタント"),
         "Conversations %d": t("工作對話 %d", "工作对话 %d", "会話 %d"),
         "%d awaiting input · %d working · %d completed": t("%d 等你 · %d 執行中 · %d 完成", "%d 等你 · %d 执行中 · %d 完成", "入力待ち %d · 実行中 %d · 完了 %d"),

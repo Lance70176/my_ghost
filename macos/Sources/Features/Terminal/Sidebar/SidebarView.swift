@@ -291,13 +291,14 @@ struct SidebarView: View {
                 Divider()
             }
 
-            // Row 1: Mode switcher — two buttons each 50% width
+            // Row 1: Mode switcher — editor, files, terminal, AI assistants (the
+            // assistant at the far right, the terminal next to it).
             HStack(spacing: 0) {
-                Button(action: { sidebarMode = .terminal }) {
-                    Image(systemName: "terminal")
+                Button(action: { sidebarMode = .editor }) {
+                    Image(systemName: "square.and.pencil")
                         .font(.system(size: 15))
                         .frame(maxWidth: .infinity, minHeight: 28)
-                        .background(sidebarMode == .terminal ? Color.accentColor.opacity(0.25) : Color.clear)
+                        .background(sidebarMode == .editor ? Color.accentColor.opacity(0.25) : Color.clear)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.borderless)
@@ -311,11 +312,11 @@ struct SidebarView: View {
                 }
                 .buttonStyle(.borderless)
 
-                Button(action: { sidebarMode = .editor }) {
-                    Image(systemName: "square.and.pencil")
+                Button(action: { sidebarMode = .terminal }) {
+                    Image(systemName: "terminal")
                         .font(.system(size: 15))
                         .frame(maxWidth: .infinity, minHeight: 28)
-                        .background(sidebarMode == .editor ? Color.accentColor.opacity(0.25) : Color.clear)
+                        .background(sidebarMode == .terminal ? Color.accentColor.opacity(0.25) : Color.clear)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.borderless)

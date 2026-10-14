@@ -2524,7 +2524,13 @@ class SidebarUIState: ObservableObject {
 
     /// The assistant shown in the main area in `.assistant` mode; nil is the
     /// all-projects overview.
-    @Published var assistantProject: String?
+    @Published var assistantProject: String? {
+        didSet { if assistantProject != oldValue { focusedWorkerID = nil } }
+    }
+
+    /// A Claude Code conversation opened in the assistant's right column in
+    /// place of the decisions (click its row again to go back).
+    @Published var focusedWorkerID: String?
 
     /// Hides the tab/file sidebar so the terminal fills the window. Remembered
     /// across launches — it's a layout preference, not per-window state.

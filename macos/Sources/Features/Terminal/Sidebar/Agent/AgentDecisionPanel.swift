@@ -122,7 +122,7 @@ private struct AgentDecisionStack: View {
             }
             if hub.allPending.count > 3 {
                 Text(L("%d more waiting", hub.allPending.count - 3))
-                    .font(.caption)
+                    .agentFont(.caption)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 4)
                     .background(Capsule().fill(.regularMaterial))
@@ -199,7 +199,7 @@ struct AgentDecisionCard: View {
             HStack(spacing: 6) {
                 Image(systemName: "questionmark.bubble.fill").foregroundColor(.accentColor)
                 Text(L("%@ assistant asks", p.project))
-                    .font(.callout.weight(.semibold))
+                    .agentFont(.callout, weight: .semibold)
                 Spacer(minLength: 4)
                 Button {
                     AgentAssistantNav.show(project: p.project, hostKey: client.hostKey)
@@ -210,13 +210,13 @@ struct AgentDecisionCard: View {
                 .help(L("Open the assistant conversation"))
             }
             Text(p.summary)
-                .font(.callout)
+                .agentFont(.callout)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
             if showHost { hostLabel }
             AgentChoiceButtons(choiceId: p.id, options: p.options ?? [], busy: $busy, error: $error)
             if let error {
-                Text(error).font(.caption).foregroundColor(.red)
+                Text(error).agentFont(.caption).foregroundColor(.red)
             }
         }
     }
@@ -227,7 +227,7 @@ struct AgentDecisionCard: View {
                 Image(systemName: p.isHighRisk ? "exclamationmark.shield.fill" : "lock.shield")
                     .foregroundColor(accent)
                 Text(L("%@ · %@ needs permission", p.project, p.tabTitle.isEmpty ? String(p.sessionId.prefix(8)) : p.tabTitle))
-                    .font(.callout.weight(.semibold))
+                    .agentFont(.callout, weight: .semibold)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 4)
@@ -243,7 +243,7 @@ struct AgentDecisionCard: View {
 
             if showHost { hostLabel }
             Text(p.summary)
-                .font(.system(.caption, design: .monospaced))
+                .agentFont(.caption, design: .monospaced)
                 .lineLimit(4)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
@@ -252,26 +252,26 @@ struct AgentDecisionCard: View {
                 .background(RoundedRectangle(cornerRadius: 5).fill(Color.primary.opacity(0.07)))
 
             HStack(spacing: 4) {
-                Text(p.levelName).font(.caption.weight(.bold)).foregroundColor(accent)
-                Text("·").font(.caption).foregroundColor(.secondary)
-                Text(p.reason).font(.caption)
+                Text(p.levelName).agentFont(.caption, weight: .bold).foregroundColor(accent)
+                Text("·").agentFont(.caption).foregroundColor(.secondary)
+                Text(p.reason).agentFont(.caption)
                 if p.isHighRisk {
-                    Text(L("· needs a second confirmation")).font(.caption).foregroundColor(.red)
+                    Text(L("· needs a second confirmation")).agentFont(.caption).foregroundColor(.red)
                 }
             }
 
             if p.isDiscussing {
                 Label(L("Under discussion — will not time out"), systemImage: "bubble.left.and.bubble.right")
-                    .font(.caption2)
+                    .agentFont(.caption2)
                     .foregroundColor(.blue)
             } else {
                 Text(L("Denied automatically in %d min", minutesLeft))
-                    .font(.caption2)
+                    .agentFont(.caption2)
                     .foregroundColor(.secondary)
             }
             if closedNotice {
                 Text(L("That conversation has been closed; it can't be shown."))
-                    .font(.caption2)
+                    .agentFont(.caption2)
                     .foregroundColor(.orange)
             }
 
@@ -297,7 +297,7 @@ struct AgentDecisionCard: View {
                 Button(L("Deny")) { send("deny") }
                 Button(L("Deny with reason…")) { askingReason.toggle() }
                     .buttonStyle(.borderless)
-                    .font(.caption)
+                    .agentFont(.caption)
                 if !p.isDiscussing {
                     Button {
                         send("discuss")
@@ -305,7 +305,7 @@ struct AgentDecisionCard: View {
                         Label(L("Discuss"), systemImage: "bubble.left.and.bubble.right")
                     }
                     .buttonStyle(.borderless)
-                    .font(.caption)
+                    .agentFont(.caption)
                     .help(L("Keep this request open without a time limit while you talk it over"))
                 }
             }
@@ -318,7 +318,7 @@ struct AgentDecisionCard: View {
                     send("always")
                 } label: {
                     Text(L("Always allow in this project: %@", pattern))
-                        .font(.caption)
+                        .agentFont(.caption)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
@@ -327,14 +327,14 @@ struct AgentDecisionCard: View {
             }
 
             if let error {
-                Text(error).font(.caption).foregroundColor(.red)
+                Text(error).agentFont(.caption).foregroundColor(.red)
             }
         }
     }
 
     private var hostLabel: some View {
         Label(client.hostName, systemImage: client.isLocal ? "laptopcomputer" : "server.rack")
-            .font(.caption2)
+            .agentFont(.caption2)
             .foregroundColor(.secondary)
     }
 

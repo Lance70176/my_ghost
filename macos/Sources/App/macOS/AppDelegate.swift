@@ -217,6 +217,7 @@ class AppDelegate: NSObject,
 
         // Decision cards and tab status from ghost-agentd (agentd/), when it runs.
         AgentDecisionPanel.shared.start()
+        AgentZoom.shared.start()
 
         // Check if secure input was enabled when we last quit.
         if UserDefaults.standard.bool(forKey: "SecureInput") != SecureInput.shared.enabled {

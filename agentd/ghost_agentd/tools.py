@@ -138,6 +138,119 @@ def _summarize(f: Path) -> dict:
     }
 
 
+JOB_ID = re.compile(r"^[0-9a-f]{8}$")
+TMUX = shutil.which("tmux") or "/opt/homebrew/bin/tmux"
+CLAUDE_BIN = shutil.which("claude") or "/opt/homebrew/bin/claude"
+ATTACH_PREFIX = "ghostattach_"
+_attach_used: dict[str, float] = {}
+
+
+def find_job(project_paths: list[str], job_id: str, exclude_session: str = "") -> dict | None:
+    """A job of this project, or None — the only jobs MyGhost may read or type into."""
+    if not JOB_ID.match(job_id or ""):
+        return None
+    return next((j for j in list_jobs(project_paths, exclude_session) if j["id"] == job_id), None)
+
+
+def job_transcript(job: dict) -> Path | None:
+    try:
+        state = json.loads((JOBS / job["id"] / "state.json").read_text())
+    except (OSError, ValueError):
+        return None
+    p = state.get("linkScanPath")
+    if p and Path(p).exists():
+        return Path(p)
+    sid = job.get("session_id")
+    hits = list(TRANSCRIPTS.glob(f"*/{sid}.jsonl")) if sid else []
+    return hits[0] if hits else None
+
+
+def job_messages(job: dict, limit: int = 200) -> list[dict]:
+    """The conversation as you'd read it: your messages, its replies, and one
+    line per tool it ran."""
+    f = job_transcript(job)
+    if f is None:
+        return []
+    out = []
+    with open(f, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            t = d.get("type")
+            if t not in ("user", "assistant") or d.get("isSidechain"):
+                continue
+            content = (d.get("message") or {}).get("content")
+            ts = d.get("timestamp", "")
+            if t == "user":
+                txt = _text(content).strip()
+                if txt and not txt.startswith("<"):
+                    out.append({"role": "user", "text": redact(txt[:4000]), "ts": ts})
+                continue
+            for b in content or []:
+                if not isinstance(b, dict):
+                    continue
+                if b.get("type") == "text" and b.get("text", "").strip():
+                    out.append({"role": "assistant", "text": redact(b["text"][:6000]), "ts": ts})
+                elif b.get("type") == "tool_use":
+                    inp = b.get("input") or {}
+                    arg = next((str(inp[k]) for k in ("command", "file_path", "pattern", "description", "url")
+                                if inp.get(k)), "")
+                    out.append({"role": "tool", "text": redact(f"{b.get('name', '')}: {arg[:160]}"), "ts": ts})
+    out = out[-limit:]
+    for i, m in enumerate(out):
+        m["i"] = i
+    return out
+
+
+def _tmux(*args: str, timeout: float = 5) -> subprocess.CompletedProcess:
+    return subprocess.run([TMUX, *args], capture_output=True, text=True, timeout=timeout)
+
+
+def job_send(job: dict, text: str) -> str:
+    """Type a message into a background conversation, the way you would in
+    `claude attach`: a hidden tmux window keeps it attached, the text goes in
+    as a paste (so line breaks stay inside one message), then Return."""
+    name = ATTACH_PREFIX + job["id"]
+    if _tmux("has-session", "-t", name).returncode != 0:
+        cwd = job.get("cwd") or os.path.expanduser("~")
+        r = _tmux("new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", cwd,
+                  f"{CLAUDE_BIN} attach {job['id']}")
+        if r.returncode != 0:
+            return f"開不了這個對話：{r.stderr.strip()[:200]}"
+        # Wait for the input prompt.
+        for _ in range(60):
+            time.sleep(0.25)
+            screen = _tmux("capture-pane", "-p", "-t", name).stdout
+            if "❯" in screen:
+                break
+        else:
+            return "對話還沒準備好，請稍後再試一次。"
+    buf = f"ghost_{job['id']}"
+    r = _tmux("set-buffer", "-b", buf, "--", text)
+    if r.returncode != 0:
+        return f"送不出去：{r.stderr.strip()[:200]}"
+    _tmux("paste-buffer", "-p", "-d", "-b", buf, "-t", name)
+    time.sleep(0.3)
+    _tmux("send-keys", "-t", name, "Enter")
+    _attach_used[name] = time.time()
+    return ""
+
+
+def close_idle_attachments(max_idle: float = 1800) -> None:
+    """Hidden `claude attach` windows unused for a while are closed (the
+    conversation itself keeps running)."""
+    out = _tmux("list-sessions", "-F", "#{session_name}").stdout.split()
+    now = time.time()
+    for name in out:
+        if name.startswith(ATTACH_PREFIX):
+            last = _attach_used.setdefault(name, now)
+            if now - last > max_idle:
+                _tmux("kill-session", "-t", name)
+                _attach_used.pop(name, None)
+
+
 class Tools:
     def __init__(self, broker, assistants, bots_for):
         self.broker = broker

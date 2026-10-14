@@ -66,6 +66,11 @@ def main() -> int:
             except Exception as e:
                 log(f"digest failed: {e!r}")
             assistants.tick()
+            try:
+                from .tools import close_idle_attachments
+                close_idle_attachments()
+            except Exception as e:
+                log(f"attach cleanup failed: {e!r}")
 
     threading.Thread(target=ticker, name="ticker", daemon=True).start()
     # With a remote token set, other Macs' MyGhost can reach us (over

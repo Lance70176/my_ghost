@@ -37,6 +37,7 @@ DECIDE = re.compile(r"^/api/decisions/([0-9a-f]{8})$")
 ASSISTANT = re.compile(r"^/api/assistants/([A-Za-z0-9_.-]+)/(chat|messages|stop|start)$")
 TOOL = re.compile(r"^/assistant-tools/([a-z_]+)$")
 WORKERS = re.compile(r"^/api/projects/([A-Za-z0-9_.-]+)/workers$")
+WORKER = re.compile(r"^/api/projects/([A-Za-z0-9_.-]+)/workers/([0-9a-f]{8})/(log|send)$")
 LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
 
@@ -114,6 +115,15 @@ def make_handler(broker: Broker, assistants=None, tools=None, remote_token: str 
                 return self._send(200, self._state())
             if u.path == "/api/assistants" and assistants:
                 return self._send(200, {"assistants": assistants.list()})
+            m = WORKER.match(u.path)
+            if m and m.group(3) == "log":
+                from .tools import find_job, job_messages
+                p = broker.projects.get(m.group(1))
+                own = assistants.get(p.name).meta.get("session_id", "") if assistants else ""
+                job = find_job(p.paths, m.group(2), exclude_session=own)
+                if job is None:
+                    return self._send(404, {"error": "no such conversation in this project"})
+                return self._send(200, {"worker": job, "messages": job_messages(job)})
             m = WORKERS.match(u.path)
             if m:
                 from .tools import list_jobs
@@ -143,6 +153,17 @@ def make_handler(broker: Broker, assistants=None, tools=None, remote_token: str 
             if u.path == "/hook/event":
                 broker.hook_event(body)
                 return self._send(200, {"ok": True})
+            m = WORKER.match(u.path)
+            if m and m.group(3) == "send":
+                from .tools import find_job, job_send
+                p = broker.projects.get(m.group(1))
+                own = assistants.get(p.name).meta.get("session_id", "") if assistants else ""
+                job = find_job(p.paths, m.group(2), exclude_session=own)
+                text = str(body.get("text") or "").strip()
+                if job is None or not text:
+                    return self._send(404, {"ok": False, "message": "找不到這個專案的這個對話"})
+                err = job_send(job, text[:20000])
+                return self._send(200 if not err else 409, {"ok": not err, "message": err or "已送出"})
             m = TOOL.match(u.path)
             if m and tools:
                 text = tools.call(str(body.get("project", "")), m.group(1), body.get("args") or {})

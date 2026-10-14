@@ -54,7 +54,7 @@ private struct AgentAssistantSidebarContent: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 4) {
                 Label(client.hostName, systemImage: client.isLocal ? "laptopcomputer" : "server.rack")
-                    .font(.caption.weight(.semibold))
+                    .agentFont(.caption, weight: .semibold)
                     .foregroundColor(.secondary)
                     .padding(.horizontal, 10)
                     .padding(.top, 2)
@@ -63,11 +63,11 @@ private struct AgentAssistantSidebarContent: View {
                         Label(client.isLocal ? L("ghost-agentd isn't running on this Mac")
                                              : L("Can't reach ghost-agentd on %@", client.hostName),
                               systemImage: "bolt.horizontal.circle")
-                            .font(.callout)
+                            .agentFont(.callout)
                             .foregroundColor(.orange)
                         Text(client.isLocal ? L("Install it with agentd/install.sh, then this list fills in.")
                                             : L("It's reached over SSH; install it on that host with agentd/install.sh."))
-                            .font(.caption)
+                            .agentFont(.caption)
                             .foregroundColor(.secondary)
                     }
                     .padding(10)
@@ -119,7 +119,7 @@ private struct AgentProjectRow: View {
             HStack(spacing: 6) {
                 Image(systemName: project.resident ? "sparkles" : "moon.zzz")
                     .foregroundColor(project.resident ? .accentColor : .secondary)
-                    .font(.caption)
+                    .agentFont(.caption)
                 Text(project.displayName)
                     .fontWeight(.semibold)
                     .lineLimit(1)
@@ -131,7 +131,7 @@ private struct AgentProjectRow: View {
                 }
             }
             Text(statusLine)
-                .font(.caption)
+                .agentFont(.caption)
                 .foregroundColor(.secondary)
                 .lineLimit(1)
         }
@@ -155,7 +155,7 @@ struct CountBadge: View {
     let count: Int
     var body: some View {
         Text("\(count)")
-            .font(.system(size: 10, weight: .bold))
+            .agentFont(size: 10, weight: .bold)
             .foregroundColor(.white)
             .padding(.horizontal, 6)
             .padding(.vertical, 1)
@@ -170,10 +170,12 @@ struct CountBadge: View {
 struct AgentAssistantMainView: View {
     @ObservedObject var uiState: SidebarUIState
     @ObservedObject var controller: SidebarTerminalController
+    @ObservedObject private var zoom = AgentZoom.shared
 
     var body: some View {
         let client = AgentHub.shared.client(for: controller.currentHost)
         AgentAssistantMainContent(uiState: uiState)
+            .environment(\.agentZoom, zoom.scale)
             .environmentObject(client)
             .id(client.hostKey)
             .onChange(of: client.hostKey) { _ in
@@ -191,7 +193,7 @@ private struct AgentAssistantMainContent: View {
         HSplitView {
             Group {
                 if let project = uiState.assistantProject {
-                    AgentChatView(project: project, client: client)
+                    AgentChatView(project: project, client: client, uiState: uiState)
                         .id(project)
                 } else {
                     AgentOverview(uiState: uiState)
@@ -272,8 +274,11 @@ struct AgentChatView: View {
 
     enum Tab { case chat, conversations }
 
-    init(project: String, client: AgentDaemonClient) {
+    @ObservedObject var uiState: SidebarUIState
+
+    init(project: String, client: AgentDaemonClient, uiState: SidebarUIState) {
         self.project = project
+        self.uiState = uiState
         _model = StateObject(wrappedValue: AgentChatModel(project: project, client: client))
     }
 
@@ -292,7 +297,10 @@ struct AgentChatView: View {
             header
             Divider()
             if tab == .conversations {
-                AgentWorkersList(project: project) { _, w in
+                AgentWorkersList(project: project, selectedID: uiState.focusedWorkerID,
+                                 onSelect: { w in
+                                     uiState.focusedWorkerID = uiState.focusedWorkerID == w.id ? nil : w.id
+                                 }) { _, w in
                     tab = .chat
                     let text = L("Please look at the conversation \"%@\" (session_id=%@): where it stands, anything unfinished, and what you need from me.",
                                  w.name, w.sessionId)
@@ -331,7 +339,7 @@ struct AgentChatView: View {
                         } else if model.status?.busy == true {
                             HStack(spacing: 6) {
                                 ProgressView().controlSize(.small)
-                                Text(L("Thinking…")).font(.caption).foregroundColor(.secondary)
+                                Text(L("Thinking…")).agentFont(.caption).foregroundColor(.secondary)
                             }
                             .id(Int.max)
                         }
@@ -353,12 +361,12 @@ struct AgentChatView: View {
         HStack(spacing: 8) {
             Image(systemName: "sparkles").foregroundColor(.accentColor)
             Text(L("%@ assistant", project == "_default" ? L("Other conversations") : project))
-                .font(.headline)
+                .agentFont(.headline)
             if let s = model.status {
                 Text(s.resident ? L("Resident") : L("Wakes on events"))
-                    .font(.caption).foregroundColor(.secondary)
+                    .agentFont(.caption).foregroundColor(.secondary)
                 Text(s.busy ? L("Replying…") : (s.running ? L("Ready") : L("Asleep")))
-                    .font(.caption)
+                    .agentFont(.caption)
                     .foregroundColor(s.busy ? .orange : (s.running ? .green : .secondary))
             }
             Picker("", selection: $tab) {
@@ -373,14 +381,14 @@ struct AgentChatView: View {
             if tab == .chat {
                 Toggle(L("Show tool calls"), isOn: $showTools)
                     .toggleStyle(.checkbox)
-                    .font(.caption)
+                    .agentFont(.caption)
             }
             if let s = model.status {
                 if let pct = s.contextPct {
-                    Text(L("Context %d%%", pct)).font(.caption.monospacedDigit())
+                    Text(L("Context %d%%", pct)).agentFont(.caption, monoDigits: true)
                         .foregroundColor(pct >= 80 ? .orange : .secondary)
                 }
-                Text(L("Woken %d× today", s.wakesToday)).font(.caption).foregroundColor(.secondary)
+                Text(L("Woken %d× today", s.wakesToday)).agentFont(.caption).foregroundColor(.secondary)
             }
         }
         .padding(.horizontal, 14)
@@ -390,9 +398,9 @@ struct AgentChatView: View {
     private var emptyHint: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(L("Ask this project's assistant anything — e.g. \"What's still unfinished?\""))
-                .font(.callout)
+                .agentFont(.callout)
             Text(L("Replies also go to the project's Telegram group, and what you say there shows up here."))
-                .font(.caption)
+                .agentFont(.caption)
                 .foregroundColor(.secondary)
         }
         .padding(.vertical, 20)
@@ -404,6 +412,7 @@ struct AgentChatView: View {
                 ZStack(alignment: .topLeading) {
                     if draft.isEmpty {
                         Text(L("Message the %@ assistant… (Return sends, ⇧Return for a new line)", project))
+                            .agentFont(.body)
                             .foregroundColor(.secondary)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 8)
@@ -418,20 +427,20 @@ struct AgentChatView: View {
 
                 if model.status?.busy == true {
                     Button { model.interrupt() } label: {
-                        Image(systemName: "stop.circle.fill").font(.title2)
+                        Image(systemName: "stop.circle.fill").agentFont(.title2)
                     }
                     .buttonStyle(.borderless)
                     .help(L("Stop this reply"))
                 }
                 Button(action: submit) {
-                    Image(systemName: "paperplane.fill").font(.title3)
+                    Image(systemName: "paperplane.fill").agentFont(.title3)
                 }
                 .buttonStyle(.borderless)
                 .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .help(L("Send"))
             }
             if let error = model.error {
-                Text(error).font(.caption).foregroundColor(.red)
+                Text(error).agentFont(.caption).foregroundColor(.red)
             }
         }
         .padding(10)
@@ -449,6 +458,7 @@ struct AgentChatView: View {
 private struct AgentInputField: NSViewRepresentable {
     @Binding var text: String
     let onSubmit: () -> Void
+    @Environment(\.agentZoom) private var zoom
 
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSTextView.scrollableTextView()
@@ -467,6 +477,8 @@ private struct AgentInputField: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         let tv = scroll.documentView as! NSTextView
         if tv.string != text { tv.string = text }
+        let size = NSFont.systemFontSize * zoom
+        if tv.font?.pointSize != size { tv.font = .systemFont(ofSize: size) }
         context.coordinator.parent = self
     }
 
@@ -512,7 +524,7 @@ private struct AgentChatRow: View {
             VStack(alignment: .trailing, spacing: 2) {
                 if item.source == "tg" || item.source == "web" {
                     Text(item.source == "tg" ? L("From Telegram") : L("From the phone page"))
-                        .font(.caption2).foregroundColor(.blue)
+                        .agentFont(.caption2).foregroundColor(.blue)
                 }
                 AgentBubble(text: item.text, mine: true)
             }
@@ -521,22 +533,22 @@ private struct AgentChatRow: View {
             AgentBubble(text: item.text, mine: false)
         case "tool":
             Label(item.text, systemImage: "wrench.and.screwdriver")
-                .font(.system(.caption, design: .monospaced))
+                .agentFont(.caption, design: .monospaced)
                 .foregroundColor(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
         case "choice":
             VStack(alignment: .leading, spacing: 6) {
                 Label(item.text, systemImage: "questionmark.bubble.fill")
-                    .font(.callout.weight(.semibold))
+                    .agentFont(.callout, weight: .semibold)
                     .fixedSize(horizontal: false, vertical: true)
                 if !item.chosen.isEmpty {
-                    Text(L("You chose: %@", item.chosen)).font(.caption).foregroundColor(.secondary)
+                    Text(L("You chose: %@", item.chosen)).agentFont(.caption).foregroundColor(.secondary)
                 } else if client.pending.contains(where: { $0.id == item.choiceId }) {
                     AgentChoiceButtons(choiceId: item.choiceId, options: item.options,
                                        busy: .constant(false), error: .constant(nil))
                 } else {
-                    Text(L("Answered")).font(.caption).foregroundColor(.secondary)
+                    Text(L("Answered")).agentFont(.caption).foregroundColor(.secondary)
                 }
             }
             .padding(10)
@@ -545,14 +557,14 @@ private struct AgentChatRow: View {
         case "discuss":
             VStack(alignment: .leading, spacing: 6) {
                 Label(L("Discussing this request"), systemImage: "bubble.left.and.bubble.right.fill")
-                    .font(.caption.weight(.semibold)).foregroundColor(.blue)
+                    .agentFont(.caption, weight: .semibold).foregroundColor(.blue)
                 Text(item.text)
-                    .font(.system(.caption, design: .monospaced))
+                    .agentFont(.caption, design: .monospaced)
                     .textSelection(.enabled)
                 if let card = client.pending.first(where: { $0.id == item.cardId }) {
                     AgentDecisionCard(p: card, width: 460)
                 } else {
-                    Text(L("Already decided")).font(.caption).foregroundColor(.secondary)
+                    Text(L("Already decided")).agentFont(.caption).foregroundColor(.secondary)
                 }
             }
             .padding(10)
@@ -560,7 +572,7 @@ private struct AgentChatRow: View {
             .background(RoundedRectangle(cornerRadius: 10).fill(Color.blue.opacity(0.08)))
         default:  // notice
             Text(item.text)
-                .font(.caption)
+                .agentFont(.caption)
                 .foregroundColor(.secondary)
                 .frame(maxWidth: .infinity, alignment: .center)
         }
@@ -574,6 +586,7 @@ struct AgentBubble: View {
 
     var body: some View {
         Text(LocalizedStringKey(text))
+            .agentFont(.body)
             .textSelection(.enabled)
             .padding(.horizontal, 11)
             .padding(.vertical, 8)
@@ -601,7 +614,7 @@ struct AgentChoiceButtons: View {
     var body: some View {
         FlowRow(spacing: 6) {
             ForEach(Array(options.enumerated()), id: \.offset) { i, o in
-                Button(o.label) { pick("o\(i)") }
+                Button { pick("o\(i)") } label: { Text(o.label).agentFont(.callout) }
                     .buttonStyle(.borderedProminent)
                     .tint(o.action == "deny" ? .red : (o.action == "allow" ? .green : .accentColor))
                     .controlSize(.small)
@@ -659,7 +672,7 @@ private struct AgentOverview: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(L("All projects")).font(.title3.weight(.semibold))
+            Text(L("All projects")).agentFont(.title3, weight: .semibold)
             Table(client.projects) {
                 TableColumn(L("Project")) { p in
                     HStack(spacing: 6) {
@@ -710,12 +723,23 @@ private struct AgentRightColumn: View {
     }
 
     var body: some View {
+        if let project, let id = uiState.focusedWorkerID {
+            AgentWorkerConversationView(project: project, workerID: id) {
+                uiState.focusedWorkerID = nil
+            }
+            .id(id)
+        } else {
+            decisions
+        }
+    }
+
+    private var decisions: some View {
         VSplitView {
             VStack(alignment: .leading, spacing: 6) {
                 SectionTitle(title: L("Pending decisions"), count: pending.count)
                 if pending.isEmpty {
                     Text(L("Nothing waiting for you."))
-                        .font(.callout)
+                        .agentFont(.callout)
                         .foregroundColor(.secondary)
                         .padding(.vertical, 6)
                     Spacer(minLength: 0)
@@ -743,6 +767,9 @@ private struct AgentRightColumn: View {
 /// view shows), each with a way to ask the assistant about it.
 private struct AgentWorkersList: View {
     let project: String?
+    var selectedID: String?
+    /// Clicking a row opens it in the right column (again closes it).
+    var onSelect: ((AgentWorker) -> Void)?
     /// "Ask the assistant" about a conversation (project, conversation).
     let onAsk: (String, AgentWorker) -> Void
     @EnvironmentObject private var client: AgentDaemonClient
@@ -757,7 +784,7 @@ private struct AgentWorkersList: View {
                 let waiting = workers.filter { $0.worker.needsYou }.count
                 Text(L("%d awaiting input · %d working · %d completed", waiting, working,
                        workers.count - working - waiting))
-                    .font(.callout).foregroundColor(.secondary)
+                    .agentFont(.callout).foregroundColor(.secondary)
                 Spacer()
                 Button { Task { await reload() } } label: { Image(systemName: "arrow.clockwise") }
                     .buttonStyle(.borderless)
@@ -765,11 +792,15 @@ private struct AgentWorkersList: View {
             }
             if workers.isEmpty {
                 Text(L("No conversations in this project yet."))
-                    .font(.callout).foregroundColor(.secondary)
+                    .agentFont(.callout).foregroundColor(.secondary)
                 Spacer(minLength: 0)
             } else {
                 List(workers, id: \.worker.id) { item in
                     row(item.project, item.worker)
+                        .contentShape(Rectangle())
+                        .onTapGesture { onSelect?(item.worker) }
+                        .listRowBackground(item.worker.id == selectedID
+                                           ? Color.accentColor.opacity(0.18) : Color.clear)
                 }
                 .listStyle(.inset)
             }
@@ -819,24 +850,21 @@ private struct AgentWorkersList: View {
                 Circle()
                     .fill(w.isWorking ? Color.blue : (w.needsYou ? Color.orange : Color.green))
                     .frame(width: 7, height: 7)
-                Text(w.name).fontWeight(.semibold).lineLimit(1)
+                Text(w.name).agentFont(.body, weight: .semibold).lineLimit(1)
                 if project == nil {
-                    Text(proj).font(.caption).foregroundColor(.accentColor)
+                    Text(proj).agentFont(.caption).foregroundColor(.accentColor)
                 }
                 Spacer()
-                Text(w.stateLabel).font(.caption2)
+                Text(w.stateLabel).agentFont(.caption2)
                     .foregroundColor(w.isWorking ? .blue : (w.needsYou ? .orange : .secondary))
-                Text(when(w.updatedAt)).font(.caption2.monospacedDigit()).foregroundColor(.secondary)
+                Text(when(w.updatedAt)).agentFont(.caption2, monoDigits: true).foregroundColor(.secondary)
             }
             if !w.detail.isEmpty {
                 Text(w.detail)
-                    .font(.callout)
+                    .agentFont(.callout)
                     .foregroundColor(.secondary)
                     .lineLimit(expanded.contains(w.id) ? nil : 1)
                     .truncationMode(.tail)
-                    .onTapGesture {
-                        if expanded.contains(w.id) { expanded.remove(w.id) } else { expanded.insert(w.id) }
-                    }
             }
             if expanded.contains(w.id) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -844,7 +872,7 @@ private struct AgentWorkersList: View {
                     if !w.branch.isEmpty { Text(L("Branch: %@", w.branch)) }
                     Text(w.cwd)
                 }
-                .font(.caption)
+                .agentFont(.caption)
                 .foregroundColor(.secondary)
                 .textSelection(.enabled)
             }
@@ -856,7 +884,7 @@ private struct AgentWorkersList: View {
                     Label(asked == w.id ? L("Asked") : L("Ask the assistant"), systemImage: "sparkles")
                 }
                 .buttonStyle(.borderless)
-                .font(.caption)
+                .agentFont(.caption)
                 .help(L("Have the assistant read this conversation and sum it up"))
                 .disabled(asked == w.id)
             }
@@ -875,7 +903,7 @@ private struct SectionTitle: View {
     var count: Int?
     var body: some View {
         HStack {
-            Text(title).font(.headline)
+            Text(title).agentFont(.headline)
             if let count, count > 0 { CountBadge(count: count) }
             Spacer()
         }
@@ -902,12 +930,12 @@ private struct AgentHistoryList: View {
                 SectionTitle(title: L("Decision history"))
                 Toggle(L("Show automatic"), isOn: $showRules)
                     .toggleStyle(.checkbox)
-                    .font(.caption)
+                    .agentFont(.caption)
                     .help(L("Also list the L0/L1 requests the rules allowed by themselves"))
             }
             if shown.isEmpty {
                 Text(L("No decisions yet."))
-                    .font(.callout).foregroundColor(.secondary)
+                    .agentFont(.callout).foregroundColor(.secondary)
                 Spacer(minLength: 0)
             } else {
                 List(shown) { r in
@@ -973,10 +1001,10 @@ private struct AgentHistoryRow: View {
             HStack(spacing: 6) {
                 Image(systemName: icon.0).foregroundColor(icon.1)
                 Text(Self.time.string(from: record.date))
-                    .font(.caption.monospacedDigit()).foregroundColor(.secondary)
-                Text(record.level).font(.caption.weight(.bold)).foregroundColor(.secondary)
+                    .agentFont(.caption, monoDigits: true).foregroundColor(.secondary)
+                Text(record.level).agentFont(.caption, weight: .bold).foregroundColor(.secondary)
                 if showProject {
-                    Text(record.project).font(.caption).foregroundColor(.accentColor)
+                    Text(record.project).agentFont(.caption).foregroundColor(.accentColor)
                 }
                 Spacer()
                 Button(action: onJump) {
@@ -985,19 +1013,19 @@ private struct AgentHistoryRow: View {
                         .lineLimit(1)
                 }
                 .buttonStyle(.borderless)
-                .font(.caption)
+                .agentFont(.caption)
                 .help(L("Show the conversation this request came from"))
                 .disabled((record.tmuxSession ?? "").isEmpty)
             }
             Text(record.summary)
-                .font(.system(.caption, design: .monospaced))
+                .agentFont(.caption, design: .monospaced)
                 .lineLimit(isExpanded ? nil : 1)
                 .truncationMode(.middle)
                 .onTapGesture(perform: onToggle)
             if isClosed {
                 Label(L("That conversation has been closed; it can't be shown."),
                       systemImage: "exclamationmark.triangle")
-                    .font(.caption).foregroundColor(.orange)
+                    .agentFont(.caption).foregroundColor(.orange)
             }
             if isExpanded {
                 VStack(alignment: .leading, spacing: 2) {
@@ -1007,10 +1035,129 @@ private struct AgentHistoryRow: View {
                     if let rule = record.alwaysAdded { Text(L("Always allow in this project: %@", rule)) }
                     if record.discussed == true { Text(L("Was discussed before deciding")) }
                 }
-                .font(.caption)
+                .agentFont(.caption)
                 .foregroundColor(.secondary)
             }
         }
         .padding(.vertical, 2)
+    }
+}
+
+// MARK: - A Claude Code conversation in the right column
+
+/// One of the project's Claude Code conversations: scroll through it and
+/// type into it (sent the way `claude attach` would take it).
+private struct AgentWorkerConversationView: View {
+    let project: String
+    let workerID: String
+    let onClose: () -> Void
+    @EnvironmentObject private var client: AgentDaemonClient
+    @State private var worker: AgentWorker?
+    @State private var messages: [AgentWorkerMessage] = []
+    @State private var draft = ""
+    @State private var sending = false
+    @State private var note: String?
+    @State private var loaded = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(worker?.isWorking == true ? Color.blue : (worker?.needsYou == true ? Color.orange : Color.green))
+                    .frame(width: 7, height: 7)
+                Text(worker?.name ?? "…").agentFont(.headline).lineLimit(1)
+                if let w = worker {
+                    Text(w.stateLabel).agentFont(.caption).foregroundColor(.secondary)
+                }
+                Spacer()
+                Button(action: onClose) { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.borderless)
+                    .help(L("Back to decisions"))
+            }
+            .padding(10)
+            Divider()
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        if loaded && messages.isEmpty {
+                            Text(L("Nothing to show for this conversation."))
+                                .agentFont(.callout).foregroundColor(.secondary)
+                        }
+                        ForEach(messages) { m in
+                            switch m.role {
+                            case "user":
+                                AgentBubble(text: m.text, mine: true)
+                            case "tool":
+                                Label(m.text, systemImage: "wrench.and.screwdriver")
+                                    .agentFont(.caption, design: .monospaced)
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            default:
+                                AgentBubble(text: m.text, mine: false)
+                            }
+                        }
+                        Color.clear.frame(height: 1).id("end")
+                    }
+                    .padding(10)
+                }
+                .onChange(of: messages.count) { _ in proxy.scrollTo("end", anchor: .bottom) }
+                .onAppear { proxy.scrollTo("end", anchor: .bottom) }
+            }
+            Divider()
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .bottom, spacing: 6) {
+                    ZStack(alignment: .topLeading) {
+                        if draft.isEmpty {
+                            Text(L("Type into this conversation… (Return sends)"))
+                                .agentFont(.body)
+                                .foregroundColor(.secondary)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 8)
+                                .allowsHitTesting(false)
+                        }
+                        AgentInputField(text: $draft, onSubmit: send)
+                            .frame(minHeight: 34, maxHeight: 120)
+                    }
+                    .padding(.horizontal, 6)
+                    .background(RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.35)))
+                    Button(action: send) { Image(systemName: "paperplane.fill") }
+                        .buttonStyle(.borderless)
+                        .disabled(sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                if let note {
+                    Text(note).agentFont(.caption).foregroundColor(.secondary)
+                }
+            }
+            .padding(8)
+        }
+        .task { await poll() }
+    }
+
+    private func poll() async {
+        while !Task.isCancelled {
+            if let log = await client.workerLog(project: project, id: workerID) {
+                worker = log.worker
+                if log.messages != messages { messages = log.messages }
+            }
+            loaded = true
+            try? await Task.sleep(nanoseconds: (worker?.isWorking == true ? 2 : 4) * 1_000_000_000)
+        }
+    }
+
+    private func send() {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !sending else { return }
+        sending = true
+        note = L("Sending…")
+        Task {
+            if let err = await client.workerSend(project: project, id: workerID, text: text) {
+                note = err
+            } else {
+                draft = ""
+                note = L("Sent. The reply shows up here when it comes.")
+            }
+            sending = false
+        }
     }
 }
