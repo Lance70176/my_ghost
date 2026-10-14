@@ -484,9 +484,13 @@ final class AgentDaemonClient: ObservableObject {
             AgentHub.shared.clientChanged()
         }
         var map: [String: String] = [:]
-        // The daemon lists newest first; let the newest conversation in a tab win.
-        for s in state.sessions.reversed() where !s.tmuxSession.isEmpty && s.status != "ended" {
-            map[s.tmuxSession] = s.status
+        // A tab can hold several conversations (e.g. its background jobs):
+        // any needing you wins, then any still working, then finished.
+        let rank = ["waiting": 3, "running": 2, "done": 1]
+        for s in state.sessions where !s.tmuxSession.isEmpty && s.status != "ended" {
+            if (rank[s.status] ?? 0) > (rank[map[s.tmuxSession] ?? ""] ?? 0) {
+                map[s.tmuxSession] = s.status
+            }
         }
         if map != statusByTmux { statusByTmux = map }
     }
@@ -736,6 +740,7 @@ struct AgentStatusBadge: View {
                     .help(L("Claude is waiting for your decision or input"))
             case "running":
                 badge(L("Running"), fg: .blue, bg: Color.blue.opacity(0.15))
+                    .help(L("Claude is working; nothing needed from you"))
             case "done":
                 Image(systemName: "checkmark")
                     .font(.caption2.weight(.bold))

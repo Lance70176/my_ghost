@@ -517,10 +517,36 @@ class Broker:
                     self._touch_session(payload, project)
             self._bump()
 
+    # A "running" conversation whose transcript hasn't moved this long has
+    # stopped (an interrupted turn sends no Stop).
+    STALE_RUNNING = 15 * 60
+
+    def _status(self, s: Session, jobs: dict[str, str]) -> str:
+        """What the tab badge should say: waiting only when it really needs
+        the user, running only while it's really working."""
+        from .tools import transcript_age
+        if any(p.session_id == s.session_id for p in self.pending.values()):
+            return "waiting"
+        if s.session_id in jobs:  # a background job: its own state is the truth
+            return jobs[s.session_id]
+        if s.status == "running":
+            age = transcript_age(s.session_id)
+            if age is not None and age > self.STALE_RUNNING:
+                return "done"
+        return s.status
+
     def list_sessions(self) -> list[dict]:
+        from .tools import job_states
+        jobs = job_states()
         with self.lock:
-            return [asdict(s) for s in sorted(self.sessions.values(), key=lambda s: -s.updated)
-                    if s.status != "ended"]
+            out = []
+            for s in sorted(self.sessions.values(), key=lambda s: -s.updated):
+                if s.status == "ended":
+                    continue
+                d = asdict(s)
+                d["status"] = self._status(s, jobs)
+                out.append(d)
+            return out
 
     # ---------------------------------------------------------------- digest
 

@@ -10,6 +10,7 @@ enum L10nStrings {
 
     static let table: [String: [AppLanguage: String]] = [
         // MARK: ghost-agentd decisions
+        "Claude is working; nothing needed from you": t("Claude 正在處理，不需要你輸入", "Claude 正在处理，不需要你输入", "Claude が処理中です。操作は不要です"),
         "Chose: %@": t("選了：%@", "选了：%@", "選択：%@"),
         "Sent as %@": t("已用 %@ 送出", "已用 %@ 发出", "%@ として送信済み"),
         "Not sent: asked for changes": t("沒送出：要求修改", "没发出：要求修改", "未送信：修正を依頼"),
@@ -123,7 +124,7 @@ enum L10nStrings {
         "Keep this request open without a time limit while you talk it over": t("討論期間保留這個請求，不設時間上限", "讨论期间保留这个请求，不设时间上限", "相談している間、期限なしでこの要求を保留します"),
         "AI assistants": t("AI 助手", "AI 助手", "AI アシスタント"),
         "Needs you": t("等你", "等你", "要対応"),
-        "Running": t("執行中", "执行中", "実行中"),
+        "Running": t("處理中", "处理中", "処理中"),
         "Claude is waiting for your decision or input": t("Claude 在等你決定或輸入", "Claude 在等你决定或输入", "Claude があなたの判断か入力を待っています"),
         "Claude finished this turn": t("Claude 這一輪做完了", "Claude 这一轮做完了", "Claude はこのターンを完了しました"),
         "%@ · %@ needs permission": t("%@ · %@ 要求授權", "%@ · %@ 请求授权", "%@ · %@ が許可を求めています"),

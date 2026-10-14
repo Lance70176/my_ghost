@@ -24,3 +24,34 @@ def test_list_jobs_by_project(tmp_path, monkeypatch):
     assert [j["name"] for j in out] == ["H5", "日報"]  # newest first, other project and self excluded
     assert out[0]["state_label"] == "執行中" and out[1]["state_label"] == "完成"
     assert "abc123secret" not in out[1]["detail"]
+
+
+def test_tab_status_follows_jobs_and_activity(tmp_path, monkeypatch):
+    """A background job's own state wins over an old hook event, and a
+    'running' conversation whose transcript went quiet has stopped."""
+    import os
+    import time as _t
+    from ghost_agentd.broker import Session
+    jobs = tmp_path / "jobs"
+    trans = tmp_path / "tr"
+    monkeypatch.setattr(tools, "JOBS", jobs)
+    monkeypatch.setattr(tools, "TRANSCRIPTS", trans)
+    monkeypatch.setattr(tools, "_job_cache", (0.0, {}))
+    write_job(jobs, "j1", state="done", sessionId="job-done")
+    write_job(jobs, "j2", state="working", sessionId="job-busy")
+    (trans / "p").mkdir(parents=True)
+    old = trans / "p" / "quiet.jsonl"
+    old.write_text("{}")
+    os.utime(old, (_t.time() - 3600, _t.time() - 3600))
+    (trans / "p" / "busy.jsonl").write_text("{}")
+
+    class B:  # just what _status needs
+        pending = {}
+        STALE_RUNNING = 900
+    from ghost_agentd.broker import Broker
+    st = lambda sid, status: Broker._status(B, Session(sid, "fq", "", status=status), tools.job_states())
+    assert st("job-done", "waiting") == "done"     # it asked once, then finished
+    assert st("job-busy", "waiting") == "running"
+    assert st("quiet", "running") == "done"        # interrupted: no Stop came
+    assert st("busy", "running") == "running"
+    assert st("unknown", "waiting") == "waiting"

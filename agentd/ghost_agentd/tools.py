@@ -26,6 +26,46 @@ JOB_STATE = {"working": "執行中", "done": "完成", "idle": "完成", "blocke
              "error": "失敗", "stopped": "已停止"}
 
 
+# How a background job's own state reads as a tab status.
+JOB_STATUS = {"working": "running", "blocked": "waiting", "awaiting_input": "waiting",
+              "needs_input": "waiting", "waiting": "waiting"}
+_job_cache: tuple[float, dict] = (0.0, {})
+_transcript_cache: dict[str, Path] = {}
+
+
+def job_states() -> dict[str, str]:
+    """session id -> running | waiting | done, for Claude Code background
+    jobs, from their state.json (what the agent list shows). Cached 5 s."""
+    global _job_cache
+    now = time.time()
+    if now - _job_cache[0] < 5:
+        return _job_cache[1]
+    out = {}
+    for f in JOBS.glob("*/state.json") if JOBS.exists() else []:
+        try:
+            d = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        if d.get("sessionId"):
+            out[d["sessionId"]] = JOB_STATUS.get(str(d.get("state") or ""), "done")
+    _job_cache = (now, out)
+    return out
+
+
+def transcript_age(session_id: str) -> float | None:
+    """Seconds since the conversation's transcript was last written."""
+    f = _transcript_cache.get(session_id)
+    if f is None or not f.exists():
+        hits = list(TRANSCRIPTS.glob(f"*/{session_id}.jsonl")) if session_id else []
+        if not hits:
+            return None
+        f = _transcript_cache[session_id] = hits[0]
+    try:
+        return time.time() - f.stat().st_mtime
+    except OSError:
+        return None
+
+
 def _under(path: str, roots: list[str]) -> bool:
     if not path:
         return False
