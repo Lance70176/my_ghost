@@ -203,6 +203,7 @@ class AccountWatcher:
         self._watch_at = 0.0
         self._watch: Watch | None = None
         self._load_inbox()
+        self.watch()  # writes the default watch.yaml so it's there to edit
 
     # ----------------------------------------------------------- storage
 
