@@ -159,7 +159,16 @@ cat > "$PLIST" <<PLIST
 PLIST
 
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST"
+# bootout returns before launchd has let go; bootstrapping too soon fails
+# ("Input/output error") and leaves no daemon at all.
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null && break
+  sleep 1
+done
+if ! launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
+  echo "daemon: $LABEL failed to start — run: launchctl bootstrap gui/$(id -u) $PLIST" >&2
+  exit 1
+fi
 echo "daemon: $LABEL started (log: $HOME_DIR/agentd.log)"
 
 if [[ "${1:-}" != "--no-hooks" ]]; then
