@@ -310,12 +310,13 @@ def close_idle_attachments(max_idle: float = 1800) -> None:
 
 
 class Tools:
-    def __init__(self, broker, assistants, bots_for, accounts=None, sources=None):
+    def __init__(self, broker, assistants, bots_for, accounts=None, sources=None, dispatcher=None):
         self.broker = broker
         self.assistants = assistants
         self.bots_for = bots_for  # project name -> Bot or None
         self.accounts = accounts if accounts is not None else {}  # project name -> AccountWatcher
         self.sources = sources  # Sources (requirement sources), or None
+        self.dispatcher = dispatcher  # Dispatcher, or None
 
     def call(self, project: str, name: str, args: dict) -> str:
         fn = getattr(self, "t_" + name, None)
@@ -473,3 +474,18 @@ class Tools:
             finally:
                 s.lock.release()
         return "\n".join(out)
+
+    def t_propose_dispatch(self, p, args) -> str:
+        if self.dispatcher is None:
+            return "派工沒有啟用。"
+        return self.dispatcher.propose(p, str(args.get("title") or ""), str(args.get("repo") or ""),
+                                       str(args.get("task") or ""), str(args.get("branch") or ""),
+                                       str(args.get("base") or ""), str(args.get("source") or ""))
+
+    def t_message_worker(self, p, args) -> str:
+        if self.dispatcher is None:
+            return "派工沒有啟用。"
+        return self.dispatcher.message(p, str(args.get("dispatch_id") or ""), str(args.get("text") or ""))
+
+    def t_list_dispatches(self, p, args) -> str:
+        return self.dispatcher.list_for(p) if self.dispatcher else "派工沒有啟用。"

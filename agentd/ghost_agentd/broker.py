@@ -68,6 +68,8 @@ class Pending:
     # project's work account to the chat a message came from —
     # {ref, chat_id, msg_id, chat, sender, text, account}.
     reply: dict | None = None
+    # A dispatch card (P3): option 0 starts the proposed work — {id}.
+    dispatch: dict | None = None
     event: threading.Event = field(default_factory=threading.Event, repr=False)
 
     @property
@@ -313,6 +315,28 @@ class Broker:
             self._emit("on_pending", p)
         return p
 
+    def create_dispatch(self, project: str, summary: str, dispatch: dict, options: list[str]) -> Pending:
+        """Proposed work: starting it is the commander's pick of option 0."""
+        now = time.time()
+        with self.lock:
+            p = Pending(
+                id=secrets.token_hex(4), key="dispatch-" + secrets.token_hex(6), project=project,
+                session_id="", tmux_session="", tab_title=f"{project} 助手", cwd="",
+                tool_name="propose_dispatch", tool_input={}, summary=summary[:4000],
+                level=L2, reason="派工：開新的工作對話", always_pattern=None,
+                created=now, deadline=now + 30 * 86400, kind="choice",
+                options=[{"label": o, "action": None} for o in options], dispatch=dispatch,
+            )
+            self.pending[p.id] = p
+            self.by_key[p.key] = p
+            self._bump()
+            self._emit("on_pending", p)
+        return p
+
+    def bump(self) -> None:
+        with self.lock:
+            self._bump()
+
     def dismiss(self, pid: str, by: str) -> bool:
         """Close a card nobody needs any more (answered elsewhere, replaced)
         without it counting as anyone's answer."""
@@ -503,6 +527,8 @@ class Broker:
             elif ev == "Stop":
                 self._touch_session(payload, project, "waiting" if has_pending else "done",
                                     payload.get("last_assistant_message") or "")
+                if payload.get("tmux_session"):
+                    self._emit("on_stop", payload["tmux_session"], payload.get("last_assistant_message") or "")
             elif ev == "SessionEnd":
                 self._touch_session(payload, project, "ended")
             elif ev == "Notification":

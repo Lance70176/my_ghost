@@ -227,6 +227,8 @@ private struct AgentState: Decodable {
     let version: Int
     let pending: [AgentPending]
     let sessions: [AgentSession]
+    /// Conversations dispatched on this host, to show as tabs.
+    let dispatched: [AgentDispatched]?
 }
 
 /// Long-polls one host's ghost-agentd for pending decisions, conversation
@@ -483,6 +485,7 @@ final class AgentDaemonClient: ObservableObject {
             pending = state.pending
             AgentHub.shared.clientChanged()
         }
+        AgentDispatchAdopter.adopt(state.dispatched ?? [], from: self)
         var map: [String: String] = [:]
         // A tab can hold several conversations (e.g. its background jobs):
         // any needing you wins, then any still working, then finished.

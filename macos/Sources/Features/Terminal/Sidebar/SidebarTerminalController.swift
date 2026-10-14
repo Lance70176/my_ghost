@@ -1079,6 +1079,7 @@ class SidebarTerminalController: BaseTerminalController {
     /// Add a restored tab that reattaches to an existing screen session.
     /// When `remoteTarget` is set, the tab reconnects to a remote tmux session
     /// over SSH instead of a local one.
+    @discardableResult
     func addRestoredTab(
         screenName: String,
         title: String,
@@ -1086,9 +1087,10 @@ class SidebarTerminalController: BaseTerminalController {
         remoteTarget: String? = nil,
         remoteSSHOptions: [String] = [],
         remoteDisplayName: String? = nil,
-        customTitle: String? = nil
-    ) {
-        guard let ghostty_app = ghostty.app else { return }
+        customTitle: String? = nil,
+        select: Bool = true
+    ) -> SidebarTabEntry? {
+        guard let ghostty_app = ghostty.app else { return nil }
 
         var config = Ghostty.SurfaceConfiguration()
         if let remoteTarget {
@@ -1115,7 +1117,28 @@ class SidebarTerminalController: BaseTerminalController {
         newTab.remoteDisplayName = remoteDisplayName
 
         tabs.append(newTab)
-        selectTab(newTab)
+        if select { selectTab(newTab) }
+        return newTab
+    }
+
+    /// Whether any tab (or a pane of a group) runs this tmux session.
+    func hasSession(named name: String) -> Bool {
+        tabs.contains { $0.screenSessionName == name || $0.children.contains { $0.screenSessionName == name } }
+    }
+
+    /// Show a tmux session someone else opened (a conversation the project
+    /// assistant dispatched) as a tab at the end of its host's list, without
+    /// taking the focus. The title is kept as the tab's own name, so remote
+    /// title stamps don't replace it.
+    func adoptTab(screenName: String, title: String, remoteTarget: String?,
+                  remoteSSHOptions: [String], remoteDisplayName: String?) {
+        guard !hasSession(named: screenName) else { return }
+        guard let tab = addRestoredTab(
+            screenName: screenName, title: title, workingDirectory: nil,
+            remoteTarget: remoteTarget, remoteSSHOptions: remoteSSHOptions,
+            remoteDisplayName: remoteDisplayName, customTitle: title, select: false) else { return }
+        if remoteTarget != nil { publishRemoteTitle(for: tab) }
+        saveScreenSessionState()
     }
 
     /// Restore a group of sessions from saved state during orphan recovery.

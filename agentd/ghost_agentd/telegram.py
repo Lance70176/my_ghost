@@ -171,7 +171,8 @@ class Bot:
 
     def card_text(self, p: Pending) -> str:
         if p.kind == "choice":
-            head = "✉️ <b>{} 助手草擬了回覆</b>" if p.reply else "❓ <b>{} 助手問你</b>"
+            head = ("✉️ <b>{} 助手草擬了回覆</b>" if p.reply else
+                    "🚀 <b>{} 助手提議開工</b>" if getattr(p, "dispatch", None) else "❓ <b>{} 助手問你</b>")
             lines = [head.format(esc(p.project)), esc(p.summary[:3000])]
             if not p.open:
                 pick = p.options[p.chosen]["label"] if p.chosen is not None else "（略過）"

@@ -53,6 +53,7 @@ SYSTEM_PROMPT = """\
 - 需要他做選擇時一律用 ask_decision 出選擇題（2–5 個選項），不要只用文字問。
 - 盤點、方案、需求分析一律先產出 HTML 報告（寫到 {reports_dir}/，檔名含日期），再用 share_report 取得連結，回覆時附上連結。
 - 重要的事（進行中的任務、誰負責什麼、待他決定的事、他的偏好）隨時用 update_state 寫進記憶，因為你會被定期重開或壓縮。
+- 需要動手開發時，用 propose_dispatch 提開工卡（title、repo＝專案內的 repo 路徑、完整的 task 任務說明、必要時 base 起點分支；LTS 從 develop 開）。task 要寫清楚：目標、相關單號／訊息原文（標明是資料）、驗收方式、做完先別 push，等他同意。他按「開工」才會開分頁開始做；你派出的工作對話可以用 message_worker 回覆它，list_dispatches 看清單。你自己仍然不寫程式。
 - 開頭是 [ClickUp 定時整理] 的訊息，是 daemon 定時比對 ClickUp 後的變動清單：整理成手機好讀的整理卡（新需求／退回、要他補資料的、可交驗收的），已有工作對話在做的不要重複建議派工；需要他決定的用 ask_decision。確定開發已完成（MR 已合併）的單可以直接用 clickup_done 改狀態並留言，做完告訴他。
 - 開頭是 [工作帳號] 的訊息，是這個專案的工作 TG 帳號收到、轉給你的外部訊息：逐則判斷，要回的用 draft_reply 草擬（語氣自然、像他本人、簡短），不用回的說明原因；需要前後文用 read_tg_chat。回覆只有他按「送出」才會發出，你沒有任何方法自己發。
 
@@ -547,6 +548,10 @@ class AssistantManager:
                else f"他略過了你的選擇題「{p.summary[:120]}」。")
         if option and option.get("action") and p.card_id:
             msg += f"（這個選項已直接對決策卡 {p.card_id} 執行 {option['action']}，你不需要再做什麼。）"
+        if getattr(p, "dispatch", None):
+            msg = {0: "他按了開工：daemon 正在建 worktree 並開分頁，開好會通知；之後它停下來時你會收到它最後說的話。",
+                   1: "他想修改這張開工卡。問他要怎麼改，改好再用 propose_dispatch 出新卡。",
+                   2: "他決定不做這項工作。"}.get(p.chosen, "他略過了這張開工卡。")
         if p.reply:
             msg = {0: f"他按了送出：你草擬給「{p.reply['chat']}」的回覆正在用 {p.reply['account']} 發出，你不需要再做什麼。",
                    1: f"他想修改你給「{p.reply['chat']}」的回覆（ref={p.reply['ref']}）。問他要怎麼改，改好再用 draft_reply 出新的回覆卡。",

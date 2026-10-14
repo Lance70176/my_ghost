@@ -48,7 +48,7 @@ WORKER = re.compile(r"^/api/projects/([A-Za-z0-9_.-]+)/workers/([0-9a-f]{8})/(lo
 LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
 
-def make_handler(broker: Broker, assistants=None, tools=None, remote_token: str = ""):
+def make_handler(broker: Broker, assistants=None, tools=None, remote_token: str = "", dispatcher=None):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -101,7 +101,8 @@ def make_handler(broker: Broker, assistants=None, tools=None, remote_token: str 
 
         def _state(self) -> dict:
             return {"version": broker.version, "pending": broker.list_pending(),
-                    "sessions": broker.list_sessions(), "surfaces": broker.surfaces()}
+                    "sessions": broker.list_sessions(), "surfaces": broker.surfaces(),
+                    "dispatched": dispatcher.live() if dispatcher else []}
 
         def _local(self) -> bool:
             return self.client_address[0] in LOOPBACK
@@ -262,8 +263,8 @@ def make_handler(broker: Broker, assistants=None, tools=None, remote_token: str 
 
 
 def serve(broker: Broker, host: str, port: int, assistants=None, tools=None,
-          remote_token: str = "") -> ThreadingHTTPServer:
-    httpd = ThreadingHTTPServer((host, port), make_handler(broker, assistants, tools, remote_token))
+          remote_token: str = "", dispatcher=None) -> ThreadingHTTPServer:
+    httpd = ThreadingHTTPServer((host, port), make_handler(broker, assistants, tools, remote_token, dispatcher))
     httpd.daemon_threads = True
     log(f"http: listening on {host}:{port}")
     return httpd
