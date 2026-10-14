@@ -475,6 +475,10 @@ class SidebarTerminalController: BaseTerminalController {
         guard host.id != selectedHostID else { return }
         rememberCurrentHostSelection()
         selectedHostID = host.id
+        // The assistant's project and conversation belong to the host they
+        // were picked on; another host has its own (and maybe a same-named
+        // project that must not receive them).
+        sidebarUIState.assistantProject = nil
 
         let visible = visibleTabs
         guard !visible.isEmpty else {
@@ -797,9 +801,11 @@ class SidebarTerminalController: BaseTerminalController {
         highlightedItemID = tab.id
         surfaceTree = tab.surfaceTree
 
-        // Restore focus
+        // Restore focus — unless the assistant is showing, whose input owns
+        // the keyboard; the terminal under it is invisible.
         if let savedFocus = tab.focusedSurface {
-            DispatchQueue.main.async {
+            DispatchQueue.main.async { [weak self] in
+                guard self?.sidebarUIState.sidebarMode != .assistant else { return }
                 Ghostty.moveFocus(to: savedFocus)
             }
         }

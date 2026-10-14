@@ -156,7 +156,8 @@ private final class KeyablePanel: NSPanel {
 /// assistant window.
 struct AgentDecisionCard: View {
     let p: AgentPending
-    var width: CGFloat = 344
+    /// nil: fill the space given (the assistant's right column).
+    var width: CGFloat? = 344
     /// Label the card with its host (cards from several Macs share the stack).
     var showHost = false
     @EnvironmentObject private var client: AgentDaemonClient
@@ -170,7 +171,7 @@ struct AgentDecisionCard: View {
     private let tick = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
     private var minutesLeft: Int {
-        let end = deadline ?? Date().addingTimeInterval(TimeInterval(p.remaining))
+        let end = client.deadlines[p.id] ?? deadline ?? Date().addingTimeInterval(TimeInterval(p.remaining))
         return max(0, Int(end.timeIntervalSince(now)) / 60)
     }
 
@@ -184,6 +185,7 @@ struct AgentDecisionCard: View {
         }
         .padding(10)
         .frame(width: width, alignment: .leading)
+        .frame(maxWidth: width == nil ? .infinity : nil, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 10)
                 .fill(.regularMaterial)

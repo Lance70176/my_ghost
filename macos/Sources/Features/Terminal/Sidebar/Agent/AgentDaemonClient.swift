@@ -126,7 +126,22 @@ struct AgentWorker: Decodable, Identifiable, Equatable {
     let updatedAt: String
 
     var isWorking: Bool { state == "working" }
-    var needsYou: Bool { stateLabel == "等你" }
+    var needsYou: Bool { ["blocked", "awaiting_input", "needs_input", "waiting"].contains(state) }
+    var failed: Bool { ["failed", "error"].contains(state) }
+    var isDone: Bool { ["done", "idle"].contains(state) }
+
+    var localizedState: String {
+        if isWorking { return L("Working") }
+        if needsYou { return L("Needs you") }
+        if failed { return L("Failed") }
+        if isDone { return L("Done") }
+        if state == "stopped" { return L("Stopped") }
+        return state
+    }
+
+    var dotColor: Color {
+        isWorking ? .blue : (needsYou ? .orange : (failed ? .red : (isDone ? .green : .secondary)))
+    }
 }
 
 private struct AgentWorkers: Decodable { let workers: [AgentWorker] }
@@ -212,6 +227,9 @@ final class AgentDaemonClient: ObservableObject {
 
     var totalPending: Int { pending.count }
 
+    /// When each pending request times out (absent: never, e.g. discussing).
+    private(set) var deadlines: [String: Date] = [:]
+
     private var base: URL?
     private var tunnel: Process?
     /// Kept open for the tunnel's lifetime; see openTunnel.
@@ -248,14 +266,24 @@ final class AgentDaemonClient: ObservableObject {
 
     /// The daemon's URL, opening the SSH forward first for a remote host.
     private func endpoint() async -> URL? {
+        if stopped { return nil }
         if isLocal { return base }
         if let base, let tunnel, tunnel.isRunning { return base }
-        return await openTunnel()
+        // Several requests can need the forward at once: share one start.
+        if let opening { return await opening.value }
+        let t = Task { await self.openTunnel() }
+        opening = t
+        let url = await t.value
+        opening = nil
+        return url
     }
 
+    private var opening: Task<URL?, Never>?
+
     private func openTunnel() async -> URL? {
-        guard let target else { return nil }
+        guard let target, !stopped else { return nil }
         tunnel?.terminate()
+        base = nil
         guard let port = Self.freePort() else { return nil }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
@@ -280,7 +308,7 @@ final class AgentDaemonClient: ObservableObject {
         let url = URL(string: "http://127.0.0.1:\(port)")!
         // Wait for the forward to come up (the daemon answers /api/health).
         for _ in 0..<40 {
-            if !p.isRunning { return nil }
+            if !p.isRunning || stopped { return nil }
             if let (_, resp) = try? await session.data(from: url.appendingPathComponent("api/health")),
                (resp as? HTTPURLResponse)?.statusCode == 200 {
                 base = url
@@ -346,9 +374,12 @@ final class AgentDaemonClient: ObservableObject {
         stopped = true
         task?.cancel()
         task = nil
+        refreshTask?.cancel()
         tunnel?.terminate()
         tunnel = nil
     }
+
+    private var refreshTask: Task<Void, Never>?
 
     /// Restart a loop that hasn't succeeded for a minute (called by the hub).
     func checkHealth() {
@@ -383,6 +414,10 @@ final class AgentDaemonClient: ObservableObject {
             lastSuccess = Date()
             return true
         } catch {
+            // A poll cancelled on purpose (restart, shutdown) says nothing
+            // about the connection; tearing the forward down here broke the
+            // replacement that had just opened.
+            if Task.isCancelled || (error as? URLError)?.code == .cancelled { return false }
             if online || !pending.isEmpty || !statusByTmux.isEmpty {
                 online = false
                 pending = []
@@ -399,7 +434,15 @@ final class AgentDaemonClient: ObservableObject {
         online = true
         if state.version != version { changeCount += 1 }
         version = state.version
-        Task { await refreshProjects() }
+        refreshTask?.cancel()
+        refreshTask = Task { await refreshProjects() }
+        // (14) Deadlines are absolute, taken when the countdown arrives, so a
+        // card mounted later doesn't add an old "remaining" to now.
+        let now = Date()
+        for p in state.pending where p.remaining >= 0 {
+            deadlines[p.id] = now.addingTimeInterval(TimeInterval(p.remaining))
+        }
+        deadlines = deadlines.filter { id, _ in state.pending.contains { $0.id == id } }
         if state.pending != pending {
             pending = state.pending
             AgentHub.shared.clientChanged()

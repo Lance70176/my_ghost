@@ -198,10 +198,11 @@ def job_messages(job: dict, limit: int = 200) -> list[dict]:
                     arg = next((str(inp[k]) for k in ("command", "file_path", "pattern", "description", "url")
                                 if inp.get(k)), "")
                     out.append({"role": "tool", "text": redact(f"{b.get('name', '')}: {arg[:160]}"), "ts": ts})
-    out = out[-limit:]
+    # Number by position in the whole conversation, then keep the tail: an
+    # id must keep meaning the same message as older ones drop off.
     for i, m in enumerate(out):
         m["i"] = i
-    return out
+    return out[-limit:]
 
 
 def _tmux(*args: str, timeout: float = 5) -> subprocess.CompletedProcess:

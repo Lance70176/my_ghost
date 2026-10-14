@@ -189,9 +189,25 @@ private struct AgentAssistantMainContent: View {
     @ObservedObject var uiState: SidebarUIState
     @EnvironmentObject private var client: AgentDaemonClient
 
+    /// The right column's share of the width. Stored, not left to HSplitView:
+    /// HSplitView forgot a dragged width whenever the column's content changed
+    /// (opening another conversation snapped it back).
+    @AppStorage("MyGhostAssistantRightRatio") private var rightRatio: Double = 0.3
+    @State private var dragStartWidth: CGFloat?
+
+    private static let minRight: CGFloat = 300
+    private static let minCenter: CGFloat = 320
+    private static let handleWidth: CGFloat = 7
+
     var body: some View {
         GeometryReader { geo in
-            HSplitView {
+            let total = geo.size.width
+            let available = max(0, total - Self.handleWidth)
+            // Narrower than both minimums: the right column gives way first.
+            let minRight = min(Self.minRight, max(220, available - Self.minCenter))
+            let maxRight = max(minRight, min(available * 0.5, available - Self.minCenter))
+            let right = min(max(CGFloat(rightRatio) * available, minRight), maxRight)
+            HStack(spacing: 0) {
                 Group {
                     if let project = uiState.assistantProject {
                         AgentChatView(project: project, client: client, uiState: uiState)
@@ -200,14 +216,48 @@ private struct AgentAssistantMainContent: View {
                         AgentOverview(uiState: uiState)
                     }
                 }
-                .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                // Drag the divider to widen the right column up to half the
-                // area — room to read a conversation opened there.
+                AgentSplitHandle()
+                    .gesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                            .onChanged { value in
+                                let start = dragStartWidth ?? right
+                                dragStartWidth = start
+                                let width = min(max(start - value.translation.width, minRight), maxRight)
+                                rightRatio = Double(width / max(available, 1))
+                            }
+                            .onEnded { _ in dragStartWidth = nil }
+                    )
+
                 AgentRightColumn(project: uiState.assistantProject, uiState: uiState)
-                    .frame(minWidth: 300, idealWidth: 340,
-                           maxWidth: max(300, geo.size.width * 0.5), maxHeight: .infinity)
+                    .frame(width: right)
+                    .frame(maxHeight: .infinity)
             }
+        }
+    }
+}
+
+/// The draggable line between the conversation and the right column.
+private struct AgentSplitHandle: View {
+    @State private var hovering = false
+
+    var body: some View {
+        ZStack {
+            Rectangle().fill(Color.clear).frame(width: 7)
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(width: 1)
+        }
+        .frame(maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .onHover { inside in
+            guard inside != hovering else { return }
+            hovering = inside
+            if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+        }
+        .onDisappear {
+            if hovering { NSCursor.pop() }
         }
     }
 }
@@ -237,6 +287,11 @@ final class AgentChatModel: ObservableObject {
             while !Task.isCancelled {
                 guard let self else { return }
                 if let chunk = await self.client.chat(project: self.project, since: since, wait: 25) {
+                    if chunk.items.isEmpty && !chunk.partial.isEmpty {
+                        // Streaming: the daemon answers at once while a reply
+                        // is being written; a few refreshes a second is plenty.
+                        try? await Task.sleep(nanoseconds: 300_000_000)
+                    }
                     if !chunk.items.isEmpty {
                         self.items.append(contentsOf: chunk.items)
                         if self.items.count > 600 { self.items.removeFirst(self.items.count - 600) }
@@ -256,9 +311,11 @@ final class AgentChatModel: ObservableObject {
         task = nil
     }
 
-    func send(_ text: String) {
+    /// Sends; on failure hands the text back so it isn't lost.
+    func send(_ text: String, restore: ((String) -> Void)? = nil) {
         Task {
             error = await client.sendMessage(project: project, text: text)
+            if error != nil { restore?(text) }
         }
     }
 
@@ -351,7 +408,7 @@ struct AgentChatView: View {
                     }
                     .padding(14)
                 }
-                .onChange(of: model.items.count) { _ in
+                .onChange(of: model.items.last?.seq) { _ in
                     withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(model.items.last?.seq, anchor: .bottom) }
                 }
                 .onChange(of: model.partial) { _ in proxy.scrollTo(Int.max, anchor: .bottom) }
@@ -423,8 +480,7 @@ struct AgentChatView: View {
                             .padding(.vertical, 8)
                             .allowsHitTesting(false)
                     }
-                    AgentInputField(text: $draft, onSubmit: submit)
-                        .focused($inputFocused)
+                    AgentInputField(text: $draft, onSubmit: submit, autoFocus: true)
                         .frame(minHeight: 34, maxHeight: 140)
                 }
                 .padding(.horizontal, 6)
@@ -455,7 +511,10 @@ struct AgentChatView: View {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         draft = ""
-        model.send(text)
+        model.send(text) { failed in
+            // Only if nothing new was typed meanwhile.
+            if draft.isEmpty { draft = failed }
+        }
     }
 }
 
@@ -463,6 +522,9 @@ struct AgentChatView: View {
 private struct AgentInputField: NSViewRepresentable {
     @Binding var text: String
     let onSubmit: () -> Void
+    /// Take the keyboard when shown (SwiftUI focus doesn't reach the
+    /// NSTextView inside, and the terminal under the assistant must not keep it).
+    var autoFocus = false
     @Environment(\.agentZoom) private var zoom
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -476,6 +538,9 @@ private struct AgentInputField: NSViewRepresentable {
         tv.isAutomaticQuoteSubstitutionEnabled = false
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
+        if autoFocus {
+            DispatchQueue.main.async { tv.window?.makeFirstResponder(tv) }
+        }
         return scroll
     }
 
@@ -515,6 +580,7 @@ private struct AgentInputField: NSViewRepresentable {
 private struct AgentChatRow: View {
     let item: AgentChatItem
     let project: String
+    @State private var choiceError: String?
     @EnvironmentObject private var client: AgentDaemonClient
 
     private static let time: DateFormatter = {
@@ -551,7 +617,10 @@ private struct AgentChatRow: View {
                     Text(L("You chose: %@", item.chosen)).agentFont(.caption).foregroundColor(.secondary)
                 } else if client.pending.contains(where: { $0.id == item.choiceId }) {
                     AgentChoiceButtons(choiceId: item.choiceId, options: item.options,
-                                       busy: .constant(false), error: .constant(nil))
+                                       busy: .constant(false), error: $choiceError)
+                    if let choiceError {
+                        Text(choiceError).agentFont(.caption).foregroundColor(.red)
+                    }
                 } else {
                     Text(L("Answered")).agentFont(.caption).foregroundColor(.secondary)
                 }
@@ -752,7 +821,7 @@ private struct AgentRightColumn: View {
                     ScrollView {
                         VStack(spacing: 8) {
                             ForEach(pending) { p in
-                                AgentDecisionCard(p: p, width: 320)
+                                AgentDecisionCard(p: p, width: nil)
                             }
                         }
                         .padding(.bottom, 6)
@@ -787,8 +856,8 @@ private struct AgentWorkersList: View {
             HStack {
                 let working = workers.filter { $0.worker.isWorking }.count
                 let waiting = workers.filter { $0.worker.needsYou }.count
-                Text(L("%d awaiting input · %d working · %d completed", waiting, working,
-                       workers.count - working - waiting))
+                let done = workers.filter { $0.worker.isDone }.count
+                Text(L("%d awaiting input · %d working · %d completed", waiting, working, done))
                     .agentFont(.callout).foregroundColor(.secondary)
                 Spacer()
                 Button { Task { await reload() } } label: { Image(systemName: "arrow.clockwise") }
@@ -811,16 +880,32 @@ private struct AgentWorkersList: View {
             }
         }
         .padding(10)
-        .task(id: "\(project ?? "*")-\(client.changeCount / 6)") { await reload() }
+        .task(id: project ?? "*") {
+            // Every 15 s while visible, and soon after anything changes.
+            var seen = -1
+            var last = Date.distantPast
+            while !Task.isCancelled {
+                let due = Date().timeIntervalSince(last) >= 15
+                    || (client.changeCount != seen && Date().timeIntervalSince(last) >= 3)
+                if due {
+                    seen = client.changeCount
+                    last = Date()
+                    await reload()
+                }
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
     }
 
     private func reload() async {
+        let wanted = project
         var out: [(String, AgentWorker)] = []
         let names = project.map { [$0] } ?? client.projects.map(\.name)
         for name in names {
             for w in await client.workers(project: name) { out.append((name, w)) }
         }
         out.sort { $0.1.updatedAt > $1.1.updatedAt }
+        guard wanted == project else { return }
         workers = out.map { (project: $0.0, worker: $0.1) }
     }
 
@@ -852,16 +937,25 @@ private struct AgentWorkersList: View {
     private func row(_ proj: String, _ w: AgentWorker) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
+                Button {
+                    if expanded.contains(w.id) { expanded.remove(w.id) } else { expanded.insert(w.id) }
+                } label: {
+                    Image(systemName: expanded.contains(w.id) ? "chevron.down" : "chevron.right")
+                        .agentFont(.caption)
+                        .frame(width: 12)
+                }
+                .buttonStyle(.borderless)
+                .help(L("Show details"))
                 Circle()
-                    .fill(w.isWorking ? Color.blue : (w.needsYou ? Color.orange : Color.green))
+                    .fill(w.dotColor)
                     .frame(width: 7, height: 7)
                 Text(w.name).agentFont(.body, weight: .semibold).lineLimit(1)
                 if project == nil {
                     Text(proj).agentFont(.caption).foregroundColor(.accentColor)
                 }
                 Spacer()
-                Text(w.stateLabel).agentFont(.caption2)
-                    .foregroundColor(w.isWorking ? .blue : (w.needsYou ? .orange : .secondary))
+                Text(w.localizedState).agentFont(.caption2)
+                    .foregroundColor(w.isDone ? .secondary : w.dotColor)
                 Text(when(w.updatedAt)).agentFont(.caption2, monoDigits: true).foregroundColor(.secondary)
             }
             if !w.detail.isEmpty {
@@ -963,8 +1057,16 @@ private struct AgentHistoryList: View {
             }
         }
         .padding(10)
-        .task(id: client.changeCount) {
-            records = await client.decisions(project: project)
+        .task(id: "\(project ?? "*")-\(client.changeCount)") {
+            let wanted = project
+            let fresh = await client.decisions(project: wanted)
+            // A late answer for a project we've since left is dropped.
+            if wanted == project { records = fresh }
+        }
+        .onChange(of: project) { _ in
+            records = []
+            closed = []
+            expanded = []
         }
     }
 }
@@ -1068,11 +1170,11 @@ private struct AgentWorkerConversationView: View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
                 Circle()
-                    .fill(worker?.isWorking == true ? Color.blue : (worker?.needsYou == true ? Color.orange : Color.green))
+                    .fill(worker?.dotColor ?? .secondary)
                     .frame(width: 7, height: 7)
                 Text(worker?.name ?? "…").agentFont(.headline).lineLimit(1)
                 if let w = worker {
-                    Text(w.stateLabel).agentFont(.caption).foregroundColor(.secondary)
+                    Text(w.localizedState).agentFont(.caption).foregroundColor(.secondary)
                 }
                 Spacer()
                 Button(action: onClose) { Image(systemName: "xmark.circle.fill") }
@@ -1106,7 +1208,7 @@ private struct AgentWorkerConversationView: View {
                     }
                     .padding(10)
                 }
-                .onChange(of: messages.count) { _ in proxy.scrollTo("end", anchor: .bottom) }
+                .onChange(of: messages.last?.id) { _ in proxy.scrollTo("end", anchor: .bottom) }
                 .onAppear { proxy.scrollTo("end", anchor: .bottom) }
             }
             Divider()
@@ -1159,7 +1261,8 @@ private struct AgentWorkerConversationView: View {
             if let err = await client.workerSend(project: project, id: workerID, text: text) {
                 note = err
             } else {
-                draft = ""
+                // Text typed while this one was on its way stays.
+                if draft.trimmingCharacters(in: .whitespacesAndNewlines) == text { draft = "" }
                 note = L("Sent. The reply shows up here when it comes.")
             }
             sending = false
