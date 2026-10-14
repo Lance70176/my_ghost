@@ -58,6 +58,10 @@ final class AgentDecisionPanel {
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         let host = NSHostingView(rootView: AgentDecisionStack())
         host.translatesAutoresizingMaskIntoConstraints = true
+        // We place and size the panel (layout()). Left to itself the hosting
+        // view grows the window downward from its top as cards get taller,
+        // pushing the buttons below the screen's bottom edge.
+        host.sizingOptions = []
         panel.contentView = host
         return panel
     }
@@ -78,9 +82,12 @@ final class AgentDecisionPanel {
         } else {
             anchor = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? .zero
         }
+        // Keep it on the screen the window is on, above the Dock.
+        let screen = (NSScreen.screens.first { $0.frame.intersects(anchor) } ?? NSScreen.main)?.visibleFrame ?? anchor
+        let area = anchor.intersection(screen).isEmpty ? screen : anchor.intersection(screen)
         let width = min(max(size.width, 340), 420)
-        let height = min(size.height, anchor.height - 40)
-        panel.setFrame(NSRect(x: anchor.maxX - width - 16, y: anchor.minY + 16,
+        let height = min(size.height, area.height - 32)
+        panel.setFrame(NSRect(x: area.maxX - width - 16, y: area.minY + 16,
                               width: width, height: height), display: true)
     }
 
