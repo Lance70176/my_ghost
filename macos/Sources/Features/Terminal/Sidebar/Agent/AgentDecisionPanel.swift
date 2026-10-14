@@ -195,12 +195,19 @@ struct AgentDecisionCard: View {
     }
 
     private var accent: Color {
-        p.isChoice ? .accentColor : (p.isHighRisk ? .red : (p.level >= 2 ? .orange : .green))
+        if p.reply != nil { return .orange }
+        return p.isChoice ? .accentColor : (p.isHighRisk ? .red : (p.level >= 2 ? .orange : .green))
     }
 
     var body: some View {
         Group {
-            if p.isChoice { choiceBody } else { permissionBody }
+            if let r = p.reply {
+                replyBody(r)
+            } else if p.isChoice {
+                choiceBody
+            } else {
+                permissionBody
+            }
         }
         .padding(10)
         .frame(width: width, alignment: .leading)
@@ -212,6 +219,90 @@ struct AgentDecisionCard: View {
         )
         .onReceive(tick) { now = $0 }
         .onAppear { deadline = Date().addingTimeInterval(TimeInterval(p.remaining)) }
+    }
+
+    /// A reply the assistant drafted for the work account: what they said,
+    /// what would be sent, and one clear button that sends it.
+    private func replyBody(_ r: AgentReplyDraft) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "paperplane.circle.fill").foregroundColor(.orange)
+                Text(L("Reply to %@ as %@?", r.isPrivate == false ? r.chat : r.sender, r.account))
+                    .agentFont(.headline)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 4)
+                Button {
+                    AgentAssistantNav.show(project: p.project, hostKey: client.hostKey)
+                } label: {
+                    Image(systemName: "bubble.left.and.text.bubble.right")
+                }
+                .buttonStyle(.borderless)
+                .help(L("Open the assistant conversation"))
+            }
+            if let original = r.original, !original.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(r.isPrivate == false ? L("%@ in %@ wrote", r.sender, r.chat) : L("%@ wrote", r.sender))
+                        .agentFont(.caption).foregroundColor(.secondary)
+                    Text(original)
+                        .agentFont(.body)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
+                }
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(L("Will be sent as %@", r.account))
+                    .agentFont(.caption, weight: .semibold).foregroundColor(.orange)
+                Text(r.text)
+                    .agentFont(.body)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.12)))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.orange.opacity(0.5)))
+            }
+            if let note = r.note, !note.isEmpty {
+                Label(note, systemImage: "lightbulb")
+                    .agentFont(.caption).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if showHost { hostLabel }
+            Button { pickReply("o0") } label: {
+                Label(L("Send as %@", r.account), systemImage: "paperplane.fill")
+                    .agentFont(.body, weight: .semibold)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 3)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.orange)
+            .controlSize(.large)
+            .disabled(busy)
+            HStack(spacing: 8) {
+                Button { pickReply("o1") } label: {
+                    Label(L("Change it"), systemImage: "pencil").frame(maxWidth: .infinity)
+                }
+                Button { pickReply("o2") } label: {
+                    Label(L("No reply needed"), systemImage: "xmark").frame(maxWidth: .infinity)
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
+            .disabled(busy)
+            if let error {
+                Text(error).agentFont(.caption).foregroundColor(.red)
+            }
+        }
+    }
+
+    private func pickReply(_ action: String) {
+        busy = true
+        Task {
+            error = await client.decide(id: p.id, action: action)
+            busy = false
+        }
     }
 
     /// An assistant's multiple-choice question: one button per option.

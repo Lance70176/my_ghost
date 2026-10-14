@@ -891,7 +891,9 @@ private struct FlowRow: Layout {
     var spacing: CGFloat = 6
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let width = proposal.width ?? 400
+        // Without a width, assume the narrowest that fits the widest button
+        // (taller rather than cut off when placed in a narrow card).
+        let width = proposal.width ?? subviews.map { $0.sizeThatFits(.unspecified).width }.max() ?? 0
         var x: CGFloat = 0, y: CGFloat = 0, line: CGFloat = 0
         for v in subviews {
             let s = v.sizeThatFits(.unspecified)

@@ -10,6 +10,13 @@ enum L10nStrings {
 
     static let table: [String: [AppLanguage: String]] = [
         // MARK: ghost-agentd decisions
+        "Reply to %@ as %@?": t("要用 %2$@ 回覆 %1$@ 嗎？", "要用 %2$@ 回复 %1$@ 吗？", "%2$@ として %1$@ に返信しますか？"),
+        "%@ in %@ wrote": t("%1$@ 在「%2$@」說", "%1$@ 在「%2$@」说", "%1$@（%2$@）のメッセージ"),
+        "%@ wrote": t("%@ 說", "%@ 说", "%@ のメッセージ"),
+        "Will be sent as %@": t("將以 %@ 送出", "将以 %@ 发出", "%@ として送信されます"),
+        "Send as %@": t("用 %@ 送出", "用 %@ 发出", "%@ として送信"),
+        "Change it": t("要改", "要改", "修正する"),
+        "No reply needed": t("不用回", "不用回", "返信しない"),
         "Attach files or images (you can also paste or drop them)": t("附加檔案或圖片（也可以直接貼上或拖進來）", "附加文件或图片（也可以直接粘贴或拖进来）", "ファイルや画像を添付（貼り付け・ドロップも可）"),
         "Folders can't be attached.": t("資料夾不能附加。", "文件夹不能附加。", "フォルダは添付できません。"),
         "Larger than 30 MB.": t("超過 30 MB。", "超过 30 MB。", "30 MB を超えています。"),

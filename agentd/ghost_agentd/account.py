@@ -338,7 +338,8 @@ class AccountWatcher:
             summary += f"\n\n💡 {note.strip()[:300]}"
         card = self.broker.create_reply(self.project.name, summary, {
             "ref": ref, "chat_id": m.chat_id, "msg_id": m.msg_id, "chat": m.chat,
-            "sender": m.sender, "text": text, "account": who,
+            "sender": m.sender, "text": text, "account": who, "private": m.private,
+            "original": m.text.strip()[:1500], "note": note.strip()[:300],
         }, options=[f"📤 用 {who} 送出", "💬 要改", "🙈 不用回"])
         return (f"已做成回覆卡（id={card.id}）給他決定。先結束這一輪；他按了之後你會收到通知。"
                 "改稿就再呼叫一次 draft_reply（舊卡會被取代）。")

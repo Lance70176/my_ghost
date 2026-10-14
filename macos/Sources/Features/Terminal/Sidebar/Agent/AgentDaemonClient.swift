@@ -26,6 +26,8 @@ struct AgentPending: Decodable, Identifiable, Equatable {
     let kind: String?
     let options: [AgentChoiceOption]?
     let cardId: String?
+    /// A drafted reply from the project's work account (option 0 sends it).
+    let reply: AgentReplyDraft?
 
     var isChoice: Bool { kind == "choice" }
 
@@ -38,6 +40,21 @@ struct AgentPending: Decodable, Identifiable, Equatable {
         a.id == b.id && a.state == b.state && a.discussing == b.discussing
     }
     var isHighRisk: Bool { level >= 3 }
+}
+
+struct AgentReplyDraft: Decodable, Equatable {
+    let chat: String
+    let sender: String
+    let text: String
+    let account: String
+    let isPrivate: Bool?
+    let original: String?
+    let note: String?
+
+    enum CodingKeys: String, CodingKey {
+        case chat, sender, text, account, original, note
+        case isPrivate = "private"
+    }
 }
 
 struct AgentChoiceOption: Decodable, Equatable, Hashable {
