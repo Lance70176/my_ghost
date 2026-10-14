@@ -2,44 +2,43 @@ import SwiftUI
 
 // MARK: - Following new messages
 
-/// Where a conversation's end marker sits in its scroll view's viewport.
-struct AgentScrollEndKey: PreferenceKey {
-    static var defaultValue: CGFloat = .infinity
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = min(value, nextValue()) }
+/// Where a conversation's content sits in its scroll view's viewport.
+struct AgentScrollFrameKey: PreferenceKey {
+    static var defaultValue: CGRect = .null
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        let next = nextValue()
+        if !next.isNull { value = next }
+    }
 }
 
-/// Put last in a conversation's scroll content; reports how far below the
-/// viewport's top the end is (infinity when it isn't laid out at all).
+extension View {
+    /// Put on a conversation's stack of messages (inside the ScrollView), so
+    /// AgentFollow can tell scrolling from the conversation growing.
+    func agentScrollFrame() -> some View {
+        background(GeometryReader { g in
+            Color.clear.preference(key: AgentScrollFrameKey.self, value: g.frame(in: .named(AgentFollow.space)))
+        })
+    }
+}
+
+/// Put last in a conversation's scroll content: what "to the end" scrolls to.
 struct AgentScrollEndMarker: View {
     static let id = "agent-scroll-end"
 
     var body: some View {
-        Color.clear
-            .frame(height: 1)
-            .background(GeometryReader { g in
-                Color.clear.preference(key: AgentScrollEndKey.self,
-                                       value: g.frame(in: .named(AgentFollow.space)).maxY)
-            })
-            .id(Self.id)
+        Color.clear.frame(height: 1).id(Self.id)
     }
 }
 
-extension ScrollViewProxy {
-    /// To a conversation's end — and again once the lazily laid-out rows have
-    /// measured themselves: one jump lands on estimated heights, which in a
-    /// long conversation leaves it far short of the end (near the top).
-    func settleAtEnd() {
-        for delay in [0.0, 0.1, 0.3, 0.7] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                scrollTo(AgentScrollEndMarker.id, anchor: .bottom)
-            }
-        }
-    }
-}
-
-/// Whether a conversation view should follow new messages. It follows only
-/// while you're at the bottom (or just sent something); reading further up,
-/// new messages don't pull you down — they're counted for a "↓ N new" button.
+/// Whether a conversation view should follow new messages. It follows while
+/// you're at the bottom (or just sent something); reading further up, new
+/// messages don't pull you down — they're counted for a "↓ N new" button.
+///
+/// Only scrolling up takes it off the bottom. A reply streaming in grows the
+/// content past the viewport before the view catches up with it; judged on
+/// where the end is alone, that read as "scrolled up" and it stopped
+/// following. Scrolling up moves the content's top down; growing leaves the
+/// top where it is, and following to the end moves it up.
 @MainActor
 final class AgentFollow: ObservableObject {
     static let space = "agent-scroll"
@@ -48,11 +47,21 @@ final class AgentFollow: ObservableObject {
     @Published var unseen = 0
     /// Set when you send: the next message scrolls into view regardless.
     var followNext = false
+    /// Where the content's top was: it moves when the view scrolls, not when
+    /// the conversation grows.
+    private var top: CGFloat?
 
-    func endMoved(to y: CGFloat, viewport: CGFloat) {
-        let bottom = y <= viewport + 48
-        if bottom != atBottom { atBottom = bottom }
-        if bottom && unseen != 0 { unseen = 0 }
+    func frameMoved(_ frame: CGRect, viewport: CGFloat) {
+        guard !frame.isNull else { return }
+        let bottom = frame.maxY <= viewport + 48
+        let scrolledUp = top.map { frame.minY > $0 + 0.5 } ?? false
+        top = frame.minY
+        if bottom {
+            if !atBottom { atBottom = true }
+            if unseen != 0 { unseen = 0 }
+        } else if scrolledUp && atBottom {
+            atBottom = false
+        }
     }
 
     /// A new message arrived: scroll (returns true) or count it.
@@ -63,6 +72,25 @@ final class AgentFollow: ObservableObject {
         }
         unseen += 1
         return false
+    }
+
+    /// To the end — and again once lazily laid-out rows have measured
+    /// themselves: one jump lands on estimated heights, which in a long
+    /// conversation leaves it short of the end.
+    func toEnd(_ proxy: ScrollViewProxy, animated: Bool = false) {
+        atBottom = true
+        unseen = 0
+        if animated {
+            withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(AgentScrollEndMarker.id, anchor: .bottom) }
+        } else {
+            proxy.scrollTo(AgentScrollEndMarker.id, anchor: .bottom)
+        }
+        for delay in [0.1, 0.3, 0.7] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, self.atBottom else { return }
+                proxy.scrollTo(AgentScrollEndMarker.id, anchor: .bottom)
+            }
+        }
     }
 }
 

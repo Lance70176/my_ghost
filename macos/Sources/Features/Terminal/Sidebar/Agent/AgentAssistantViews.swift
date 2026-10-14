@@ -442,21 +442,20 @@ struct AgentChatView: View {
                         }
                         AgentScrollEndMarker()
                     }
+                    .agentScrollFrame()
                     .padding(14)
                 }
                 .coordinateSpace(name: AgentFollow.space)
-                .onPreferenceChange(AgentScrollEndKey.self) { y in
-                    follow.endMoved(to: y, viewport: viewport.size.height)
+                .onPreferenceChange(AgentScrollFrameKey.self) { frame in
+                    follow.frameMoved(frame, viewport: viewport.size.height)
                 }
                 // New messages scroll into view only while you're at the
                 // bottom; reading further up, they're counted instead.
                 .onChange(of: model.items.last?.seq) { _ in
-                    if follow.shouldFollow() {
-                        withAnimation(.easeOut(duration: 0.15)) { proxy.scrollTo(AgentScrollEndMarker.id, anchor: .bottom) }
-                    }
+                    if follow.shouldFollow() { follow.toEnd(proxy, animated: true) }
                 }
                 .onChange(of: model.partial) { _ in
-                    if follow.atBottom { proxy.scrollTo(AgentScrollEndMarker.id, anchor: .bottom) }
+                    if follow.atBottom { follow.toEnd(proxy) }
                 }
                 .onAppear { land(proxy) }
                 // The messages arrive after the view does: land again once
@@ -465,8 +464,7 @@ struct AgentChatView: View {
                 .onChange(of: uiState.assistantFocusCard) { _ in land(proxy) }
                 .overlay(alignment: .bottom) {
                     AgentNewMessagesButton(follow: follow) {
-                        follow.unseen = 0
-                        withAnimation { proxy.scrollTo(AgentScrollEndMarker.id, anchor: .bottom) }
+                        follow.toEnd(proxy, animated: true)
                     }
                 }
             }
@@ -492,7 +490,7 @@ struct AgentChatView: View {
                 }
             }
         } else {
-            proxy.settleAtEnd()
+            follow.toEnd(proxy)
         }
     }
 
@@ -1546,27 +1544,27 @@ private struct AgentWorkerConversationView: View {
                         }
                         AgentScrollEndMarker()
                     }
+                    .agentScrollFrame()
                     .padding(10)
                 }
                 .coordinateSpace(name: AgentFollow.space)
-                .onPreferenceChange(AgentScrollEndKey.self) { y in
-                    follow.endMoved(to: y, viewport: viewport.size.height)
+                .onPreferenceChange(AgentScrollFrameKey.self) { frame in
+                    follow.frameMoved(frame, viewport: viewport.size.height)
                 }
                 .onChange(of: messages.last?.id) { _ in
-                    if follow.shouldFollow() { proxy.scrollTo(AgentScrollEndMarker.id, anchor: .bottom) }
+                    if follow.shouldFollow() { follow.toEnd(proxy) }
                 }
-                .onAppear { proxy.settleAtEnd() }
+                .onAppear { follow.toEnd(proxy) }
                 // The messages arrive after the view does: open at the newest.
                 .onChange(of: messages.isEmpty) { empty in
                     if !empty && !landed {
                         landed = true
-                        proxy.settleAtEnd()
+                        follow.toEnd(proxy)
                     }
                 }
                 .overlay(alignment: .bottom) {
                     AgentNewMessagesButton(follow: follow) {
-                        follow.unseen = 0
-                        withAnimation { proxy.scrollTo(AgentScrollEndMarker.id, anchor: .bottom) }
+                        follow.toEnd(proxy, animated: true)
                     }
                 }
             }
