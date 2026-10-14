@@ -55,6 +55,12 @@
 	</dict>
 	<key>MDItemKeywords</key>
 	<string>Terminal</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<!-- Plain HTTP to ghost-agentd on another Mac (Tailscale short name or .local). -->
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSServices</key>

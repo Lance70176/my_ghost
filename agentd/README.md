@@ -58,7 +58,7 @@ Another Mac's MyGhost can use the mini's assistants: set `remote.token` in
 from non-loopback clients), and on that Mac:
 
 ```bash
-defaults write com.local.my-ghost GhostAgentdURL http://<mini>:7788
+defaults write com.local.my-ghost GhostAgentdURL http://<mini host name>:7788   # a name, not an IP: ATS blocks plain HTTP to IPs
 defaults write com.local.my-ghost GhostAgentdToken <remote.token>
 ```
 
