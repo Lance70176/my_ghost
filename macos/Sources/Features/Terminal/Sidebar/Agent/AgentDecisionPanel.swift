@@ -464,6 +464,11 @@ struct AgentDecisionCard: View {
                 .buttonStyle(.borderless)
                 .help(L("Open the assistant conversation"))
             }
+            if let r = p.requestedBy {
+                Label(L("Requested by %@", r.name ?? String(r.id)), systemImage: "person.fill")
+                    .agentFont(.caption, weight: .semibold)
+                    .foregroundColor(.orange)
+            }
             Text(p.summary)
                 .agentFont(.callout)
                 .fixedSize(horizontal: false, vertical: true)

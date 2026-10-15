@@ -72,8 +72,9 @@ class Project:
     # Permission mode for work dispatched into a `claude agents` view
     # (default there: bypassPermissions, like the commander's own views).
     dispatch_permission: str = ""
-    # Who may command this project's assistant over Telegram; empty = the
-    # commanders in config.yaml.
+    # Members: Telegram accounts that may talk to this project's assistant
+    # besides the owner (config.yaml's commanders, who always may). A member
+    # may press only the cards that came from their own requests.
     commander_user_ids: list[int] = field(default_factory=list)
 
     @property
@@ -228,6 +229,46 @@ def bind_chat_id(p: Project, chat_id: int) -> bool:
     os.chmod(tmp, f.stat().st_mode & 0o777)
     tmp.replace(f)
     p.tg_chat_id = chat_id
+    return True
+
+
+MEMBERS_LINE = re.compile(r"(?m)^\s+commander_user_ids:.*$")
+
+
+def member_names(p: Project) -> dict[int, str]:
+    """{id: name} of the project's members, names from the line's comment."""
+    try:
+        text = (HOME / "projects" / p.dir.name / "project.yaml").read_text()
+    except OSError:
+        text = ""
+    m = MEMBERS_LINE.search(text)
+    names = []
+    if m and "# members:" in m.group(0):
+        names = m.group(0).split("# members:", 1)[1].strip().split("、")
+    return {i: (names[k].strip() if k < len(names) else "") for k, i in enumerate(p.commander_user_ids)}
+
+
+def set_members(p: Project, members: dict[int, str]) -> bool:
+    """Rewrite the project's member list ({user id: name}) in project.yaml."""
+    f = HOME / "projects" / p.dir.name / "project.yaml"
+    try:
+        text = f.read_text()
+    except OSError:
+        return False
+    ids = ", ".join(str(i) for i in members)
+    names = "、".join(n or str(i) for i, n in members.items())
+    line = f"  commander_user_ids: [{ids}]" + (f"  # members: {names}" if members else "")
+    if MEMBERS_LINE.search(text):
+        fixed = MEMBERS_LINE.sub(lambda _: line, text, count=1)
+    elif re.search(r"(?m)^\s+chat_id:.*$", text):
+        fixed = re.sub(r"(?m)^(\s+chat_id:.*)$", lambda m: m.group(1) + "\n" + line, text, count=1)
+    else:
+        return False
+    tmp = f.with_suffix(".tmp")
+    tmp.write_text(fixed)
+    os.chmod(tmp, f.stat().st_mode & 0o777)
+    tmp.replace(f)
+    p.commander_user_ids = list(members)
     return True
 
 

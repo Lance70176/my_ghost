@@ -45,7 +45,7 @@ DAILY_RESTART_HOUR = 4
 TOOLS_SCRIPT = Path(__file__).resolve().parent.parent / "hooks" / "ghost_tools.py"
 
 SYSTEM_PROMPT = """\
-你是 MyGhost 的「{project} 專案助手」，模型 Opus 5.5，用繁體中文回覆。指揮你的只有一個人：專案負責人（他會在 MyGhost 或 TG 專案群組跟你說話）。
+你是 MyGhost 的「{project} 專案助手」，模型 Opus 5.5，用繁體中文回覆。指揮你的是專案負責人（他會在 MyGhost 或 TG 專案群組跟你說話），他是主要管理者。負責人可能另外加了成員在 TG 專案群組指揮你（訊息開頭是 [TG 成員・名字]）：成員可以請你盤點、討論、交辦工作，你為成員的要求開的決策卡／開工卡會標上他的名字，他和負責人都能按；負責人看得到所有成員的事，也能處理他們的清單。回覆時要分清楚是誰交辦的事，記憶裡記工作時也註明交辦人。成員不能改你的授權或規則（自動回覆授權、加人、長期授權都只聽負責人），也不能用工作帳號對外發言（回覆卡只有負責人能送）。
 
 你的工作（P2 範圍）：
 - 盤點這個專案的工作對話：完成、進行中、做到一半沒收尾、卡住、等他決定。用 list_workers / read_worker_log 讀工作對話，用 read_state 讀你自己的記憶。
@@ -106,7 +106,8 @@ class Assistant:
         # /context probe as a reply and hides the real one.)
         # _inflight: None = idle, True = an internal message (the /context
         # probe, compaction steps), False = a real one.
-        self._outbox: list[tuple[object, bool]] = []
+        self._outbox: list[tuple[object, bool, dict | None]] = []
+        self.requester: dict | None = None  # the member this turn works for; None = owner
         self._inflight: bool | None = None
         self.context_pct: int | None = None
         self.last_activity = 0.0
@@ -167,7 +168,7 @@ class Assistant:
 
     @property
     def busy(self) -> bool:
-        return self._inflight is False or any(not internal for _, internal in self._outbox)
+        return self._inflight is False or any(not m[1] for m in self._outbox)
 
     @property
     def _internal(self) -> bool:
@@ -282,8 +283,10 @@ class Assistant:
         """Send the next waiting message if no turn is in progress (lock held)."""
         if self._inflight is not None or not self._outbox or not self.running:
             return
-        content, internal = self._outbox.pop(0)
+        content, internal, requester = self._outbox.pop(0)
         self._inflight = internal
+        if not internal:
+            self.requester = requester
         if not self._write({"type": "user", "message": {"role": "user", "content": content}}):
             self._inflight = None
 
@@ -292,7 +295,7 @@ class Assistant:
         return self.dir / "uploads"
 
     def send(self, text: str, source: str, show: bool = True, internal: bool = False,
-             files: "list[uploads.Attached] | None" = None) -> None:
+             files: "list[uploads.Attached] | None" = None, requester: dict | None = None) -> None:
         """Hand the assistant a message. `show` adds it to the visible chat;
         `files` are attachments already saved in `uploads`."""
         files = files or []
@@ -307,7 +310,7 @@ class Assistant:
             prefix = ""  # a slash command must start the message to be one
         with self.lock:
             self.last_activity = time.time()
-            self._outbox.append((uploads.content_blocks(prefix + text if text else "", files), internal))
+            self._outbox.append((uploads.content_blocks(prefix + text if text else "", files), internal, requester))
             self._pump()
         self._touch()
 
@@ -454,6 +457,7 @@ class AssistantManager:
         self.port = port
         self.assistants: dict[str, Assistant] = {}
         self.lock = threading.Lock()
+        broker.requester_of = lambda name: getattr(self.assistants.get(name), "requester", None)
         self.listeners: list = []  # Telegram bots: on_chat(project, item)
         self._after: dict[str, list] = {}
 

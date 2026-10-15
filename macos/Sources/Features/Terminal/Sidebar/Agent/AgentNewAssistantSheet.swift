@@ -101,11 +101,11 @@ struct AgentNewAssistantSheet: View {
                     }
                 }
 
-                field(L("Who may command it")) {
-                    TextField(L("Telegram user ids, comma separated (blank: the commanders in config.yaml)"),
+                field(L("Members besides you")) {
+                    TextField(L("Telegram user ids, comma separated (optional)"),
                               text: $commanders)
                         .textFieldStyle(.roundedBorder)
-                    Text(L("Messages and button presses from anyone else are ignored."))
+                    Text(L("You can always command it. Members may talk to it and press the cards from their own requests; add more later by replying to their message with /addmember in the group. Anyone else is ignored."))
                         .agentFont(.caption).foregroundColor(.secondary)
                 }
             }

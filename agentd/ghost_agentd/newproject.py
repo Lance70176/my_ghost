@@ -145,11 +145,12 @@ class ProjectSetup:
             lines += ["  token: \"\"            # no bot: cards only in MyGhost",
                       "  chat_id: null"]
         if commanders:
-            lines += ["  # Only these Telegram accounts may command this assistant.",
+            lines += ["  # Members besides the owner (config.yaml commanders); add more in the",
+                      "  # group: reply to their message with /addmember",
                       f"  commander_user_ids: [{', '.join(map(str, commanders))}]"]
         else:
-            lines += ["  # Who may command it: the commanders in config.yaml. List user ids",
-                      "  # here to allow only these accounts for this project.",
+            lines += ["  # Members besides the owner (config.yaml commanders); add them in the",
+                      "  # group: reply to their message with /addmember",
                       "  commander_user_ids: []"]
         lines += [
             "policy:",

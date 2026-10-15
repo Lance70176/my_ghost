@@ -70,6 +70,10 @@ class Pending:
     reply: dict | None = None
     # A dispatch card (P3): option 0 starts the proposed work — {id}.
     dispatch: dict | None = None
+    # Who asked for it: {id, name} of the project member whose request led
+    # the assistant to make this card; None = the owner. The member may press
+    # their own cards; the owner may press every card.
+    requested_by: dict | None = None
     event: threading.Event = field(default_factory=threading.Event, repr=False)
 
     @property
@@ -290,6 +294,7 @@ class Broker:
                 level=L1, reason="助手的選擇題", always_pattern=None,
                 created=now, deadline=now + 30 * 86400, kind="choice", options=clean, card_id=card_id,
             )
+            p.requested_by = self._card_requester(project, p.card_id)
             self.pending[p.id] = p
             self.by_key[p.key] = p
             self._bump()
@@ -327,11 +332,25 @@ class Broker:
                 created=now, deadline=now + 30 * 86400, kind="choice",
                 options=[{"label": o, "action": None} for o in options], dispatch=dispatch,
             )
+            p.requested_by = self.requester_of(project)
             self.pending[p.id] = p
             self.by_key[p.key] = p
             self._bump()
             self._emit("on_pending", p)
         return p
+
+    def requester_of(self, project: str) -> dict | None:
+        """The member the assistant is working for right now (None: owner).
+        Replaced by AssistantManager."""
+        return None
+
+    def _card_requester(self, project: str, card_id: str | None) -> dict | None:
+        """A question about another card can't widen who may decide it: it
+        belongs to whoever that card belongs to."""
+        if card_id:
+            target = self.pending.get(card_id)
+            return target.requested_by if target else None
+        return self.requester_of(project)
 
     def bump(self) -> None:
         with self.lock:

@@ -51,6 +51,8 @@ def framed(p: Pending, lines: list[str]) -> str:
     """A card between two rules, so it stands out from the plain chat
     mirrored into the same group."""
     tag = "📋 <b>待你決定</b>" if p.open else "📋 決策單・已處理"
+    if p.requested_by:  # a member's request: they (and the owner) may press it
+        tag += f"\n👤 {html.escape(str(p.requested_by.get('name') or p.requested_by.get('id')))} 交辦"
     return "\n".join([f"{RULE}\n{tag}", *lines, RULE])
 
 
@@ -140,6 +142,9 @@ class Bot:
                 {"command": "unwatch", "description": "移除監看群組"},
                 {"command": "pause", "description": "暫停轉訊息給助手：/pause 2h"},
                 {"command": "resume", "description": "恢復轉訊息給助手"},
+                {"command": "members", "description": "可以指揮助手的成員"},
+                {"command": "addmember", "description": "回覆某人的訊息：加為成員"},
+                {"command": "removemember", "description": "回覆某人的訊息或 /removemember id：移除成員"},
                 {"command": "chatid", "description": "顯示 chat_id／user_id"}])
         except Exception as e:
             log(f"telegram: setMyCommands failed: {e!r}")
@@ -271,12 +276,18 @@ class Bot:
 
     def _commanders(self, project: str) -> set[int]:
         p = self.broker.projects.get(project)
-        return set(p.commander_user_ids or self.cfg.telegram.commander_user_ids)
+        return set(self.cfg.telegram.commander_user_ids) | set(p.commander_user_ids)
 
     def _is_commander(self, user_id) -> bool:
         """Commander of anything this bot serves (or of the whole daemon)."""
         return user_id in self.cfg.telegram.commander_user_ids or \
             any(user_id in self._commanders(n) for n in self.routes)
+
+    def _is_owner(self, user_id) -> bool:
+        """The owner (config.yaml commanders): the only ones who may press
+        decision cards or change what the work account watches. Commanders
+        a project adds on its own (members) may only talk to its assistant."""
+        return user_id in self.cfg.telegram.commander_user_ids
 
     def _authorized(self, user: dict, chat: dict) -> bool:
         # Only a commander of the project the chat belongs to (its group, or
@@ -291,6 +302,55 @@ class Bot:
         if user is not None:
             names = [n for n in names if user.get("id") in self._commanders(n)]
         return names
+
+    def _members_command(self, text: str, m: dict, chat: dict, mine: list[str], owner: bool) -> None:
+        """/members, and (owner only) /addmember, /removemember: who besides
+        the owner may talk to this group's assistant."""
+        def say(t):
+            self.call("sendMessage", chat_id=chat["id"], text=t)
+        if chat.get("type") == "private" or len(mine) != 1:
+            return say("請在專案的群組裡下這個指令。")
+        p = self.broker.projects.get(mine[0])
+        members = cfgmod.member_names(p)
+        cmd = text.split(" ")[0].split("@")[0]
+        if cmd == "/members":
+            lines = [f"・{n or i}（{i}）" for i, n in members.items()] or ["（沒有，只有負責人）"]
+            return say(f"「{p.name}」助手的成員（可以跟助手對話、交辦工作，處理自己交辦的決策卡；"
+                       "負責人看得到也能處理全部）：\n" + "\n".join(lines))
+        if not owner:
+            return say("只有專案負責人可以加減成員。")
+        target = (m.get("reply_to_message") or {}).get("from") or {}
+        arg = text.split(" ", 1)[1].strip() if " " in text else ""
+        if cmd == "/removemember" and not target and arg.isdigit():
+            target = {"id": int(arg)}
+        uid = target.get("id")
+        if not uid:
+            return say(f"請「回覆」那個人的一則訊息再打 {cmd}。")
+        if target.get("is_bot"):
+            return say("bot 不能當成員。")
+        if self._is_owner(uid):
+            return say("他是負責人，本來就能指揮助手。")
+        who = " ".join(x for x in (target.get("first_name"), target.get("last_name")) if x) \
+            or members.get(uid) or str(uid)
+        if cmd == "/addmember":
+            if uid in members:
+                return say(f"{who} 已經是成員了。")
+            members[uid] = who
+        else:
+            if uid not in members:
+                return say(f"{who} 不是成員。")
+            members.pop(uid)
+        if not cfgmod.set_members(p, members):
+            return say("寫入 project.yaml 失敗，請看 agentd.log。")
+        added = cmd == "/addmember"
+        log(f"telegram: {p.name} member {'added' if added else 'removed'}: {who} ({uid})")
+        if self.assistants is not None:
+            self.assistants.get(p.name).add(
+                "notice", f"負責人{'新增' if added else '移除'}了 TG 成員 {who}（{uid}）。", source="system")
+        if added:
+            return say(f"✅ 已把 {who} 加為「{p.name}」助手的成員：可以在這個群組跟助手對話、交辦工作，"
+                       "並處理自己交辦的決策卡；負責人看得到也能處理全部。監看規則與授權仍只有負責人能改。")
+        return say(f"已移除 {who}，之後他的訊息不會交給助手。")
 
     def _outsiders(self, m: dict, chat: dict) -> None:
         """Someone who isn't a commander is in a project group: everything
@@ -343,6 +403,13 @@ class Bot:
                 self.call("answerCallbackQuery", callback_query_id=cq["id"], text="你沒有權限")
                 return
             data = cq.get("data") or ""
+            uid = (cq.get("from") or {}).get("id")
+            if not self._is_owner(uid):
+                card = self.broker.get(data.split(":")[1]) if data.startswith("g:") and data.count(":") == 2 else None
+                if card is None or (card.requested_by or {}).get("id") != uid:
+                    self.call("answerCallbackQuery", callback_query_id=cq["id"],
+                              text="這張不是你交辦的，只有專案負責人可以按")
+                    return
             if data.startswith("w:") and self.watch_commands is not None:
                 text, rows, toast = self.watch_commands.callback(data, self._projects_in(chat, cq.get("from") or {}))
                 self.call("answerCallbackQuery", callback_query_id=cq["id"], text=toast or None)
@@ -387,7 +454,8 @@ class Bot:
             return
         mine = self._projects_in(chat, user)
         reply = m.get("reply_to_message") or {}
-        if reply.get("message_id") and text and not text.startswith("/"):
+        owner = self._is_owner(user.get("id"))
+        if owner and reply.get("message_id") and text and not text.startswith("/"):
             for p in list(self.broker.pending.values()):
                 if p.tg_message_id == reply["message_id"] and p.project in mine:
                     ok, why = self.broker.decide(p.id, "deny", "tg", message=text)
@@ -395,6 +463,9 @@ class Bot:
                               reply_to_message_id=m["message_id"],
                               text=("已拒絕，並把理由轉給對話" if ok else why))
                     return
+        if text.split(" ")[0].split("@")[0] in ("/members", "/addmember", "/removemember"):
+            self._members_command(text, m, chat, mine, owner)
+            return
         if text.startswith("/pending"):
             pend = [p for p in self.broker.pending.values() if p.project in mine]
             if not pend:
@@ -404,6 +475,9 @@ class Bot:
                 self.jobs.put((self._send_card, (p,)))
             return
         if self.watch_commands is not None and self.watch_commands.handles(text):
+            if not owner:
+                self.call("sendMessage", chat_id=chat["id"], text="監看規則只有專案負責人可以改。")
+                return
             if len(mine) != 1:
                 self.call("sendMessage", chat_id=chat["id"], text="請在專案的群組裡下這個指令。")
                 return
@@ -414,6 +488,12 @@ class Bot:
         if text and not text.startswith("/") and self.assistants is not None and len(mine) == 1 \
                 and chat.get("type") != "private":
             # A message from the commander in a project group: for its assistant.
+            if not owner:  # a member: the assistant must know who is talking
+                who = " ".join(x for x in (user.get("first_name"), user.get("last_name")) if x) \
+                    or str(user.get("id"))
+                text = f"[TG 成員・{who}] {text}"
+                self.assistants.get(mine[0]).send(text, "tg", requester={"id": user.get("id"), "name": who})
+                return
             self.assistants.get(mine[0]).send(text, "tg")
             return
         if text.startswith("/status"):
