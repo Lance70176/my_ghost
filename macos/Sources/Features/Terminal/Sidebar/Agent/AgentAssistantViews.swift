@@ -51,6 +51,7 @@ private struct AgentAssistantSidebarContent: View {
     @ObservedObject var uiState: SidebarUIState
     @ObservedObject var client: AgentDaemonClient
     @ObservedObject private var lang = LanguageManager.shared
+    @State private var adding = false
 
     var body: some View {
         ScrollView {
@@ -93,11 +94,27 @@ private struct AgentAssistantSidebarContent: View {
                         AgentProjectRow(project: p, assistant: client.assistants[p.name])
                     } action: { uiState.assistantProject = p.name }
                 }
+
+                if client.online {
+                    Button { adding = true } label: {
+                        Label(L("New assistant"), systemImage: "plus.circle")
+                            .agentFont(.callout)
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(L("Add a project assistant with its own Telegram bot"))
+                }
             }
             .padding(.vertical, 6)
             .padding(.horizontal, 4)
         }
         .task { await client.refreshProjects() }
+        .sheet(isPresented: $adding) {
+            AgentNewAssistantSheet(client: client) { uiState.assistantProject = $0 }
+        }
     }
 
     private func row<Content: View>(selected: Bool, @ViewBuilder content: () -> Content,

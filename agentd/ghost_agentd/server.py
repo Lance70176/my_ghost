@@ -7,6 +7,8 @@
     POST /api/decisions/<id>  {"action": allow|deny|always|confirm|cancel,
                                "by": "myghost"|"web", "message": "..."}
     GET  /api/health
+    POST /api/projects/probe  {"token"} -> the bot and the groups it's in
+    POST /api/projects        new project assistant (see newproject.py)
 
     GET  /api/assistants                       every project assistant's status
     GET  /api/assistants/<p>/chat?since=N&wait=25
@@ -50,7 +52,7 @@ LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
 
 def make_handler(broker: Broker, assistants=None, tools=None, remote_token: str = "", dispatcher=None,
-                 helpdesk=None):
+                 helpdesk=None, setup=None):
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -211,6 +213,13 @@ def make_handler(broker: Broker, assistants=None, tools=None, remote_token: str 
                 body = self._body()
             except ValueError:
                 return self._send(400, {"error": "bad json"})
+            if u.path in ("/api/projects", "/api/projects/probe") and setup is not None:
+                # A bot token and who may command an assistant: this Mac only
+                # (MyGhost on another Mac comes in over its SSH forward).
+                if not self._local():
+                    return self._send(403, {"ok": False, "message": "只能在本機新增"})
+                code, r = (setup.probe if u.path.endswith("/probe") else setup.create)(body)
+                return self._send(code, r)
             if u.path in ("/hook/permission", "/hook/event", "/hook/context", "/api/help") \
                     or u.path.startswith("/assistant-tools/"):
                 if not self._local():
@@ -290,9 +299,9 @@ def make_handler(broker: Broker, assistants=None, tools=None, remote_token: str 
 
 
 def serve(broker: Broker, host: str, port: int, assistants=None, tools=None,
-          remote_token: str = "", dispatcher=None, helpdesk=None) -> ThreadingHTTPServer:
+          remote_token: str = "", dispatcher=None, helpdesk=None, setup=None) -> ThreadingHTTPServer:
     httpd = ThreadingHTTPServer((host, port), make_handler(broker, assistants, tools, remote_token, dispatcher,
-                                                           helpdesk))
+                                                           helpdesk, setup))
     httpd.daemon_threads = True
     log(f"http: listening on {host}:{port}")
     return httpd

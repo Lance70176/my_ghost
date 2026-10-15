@@ -88,6 +88,32 @@ def main() -> int:
     from .helpdesk import HelpDesk
     helpdesk = HelpDesk(broker, assistants)
     tools = Tools(broker, assistants, bot_for, accounts, sources, dispatcher, helpdesk)
+
+    def bring_up(name: str) -> None:
+        """A project was added from MyGhost: serve it without a restart."""
+        for nb in build_bots(cfg, broker):
+            bot = next((b for b in bots if b.token == nb.token), None)
+            if bot is None:
+                nb.assistants = assistants
+                nb.watch_commands = watch_commands
+                broker.listeners.append(nb)
+                assistants.listeners.append(nb)
+                bots.append(nb)
+                nb.start()
+                bot = nb
+            for project, chat in nb.routes.items():
+                if project not in bot.routes or (bot.routes[project] is None and chat is not None):
+                    bot.routes[project] = chat
+                    if chat is not None:
+                        broker.tg_projects.add(project)
+        setup.polled = {b.token for b in bots}
+        p = projects.get(name)
+        if p.resident and p.paths and os.environ.get("GHOST_NO_ASSISTANTS") != "1":
+            assistants.get(name).start()
+
+    from .newproject import ProjectSetup
+    setup = ProjectSetup(broker, bring_up)
+    setup.polled = {b.token for b in bots}
     if os.environ.get("GHOST_NO_ASSISTANTS") != "1":
         threading.Timer(2, assistants.start_residents).start()
 
@@ -122,7 +148,7 @@ def main() -> int:
     # With a remote token set, other Macs' MyGhost can reach us (over
     # Tailscale); without one we stay on loopback.
     host = "0.0.0.0" if cfg.remote_token else cfg.host
-    httpd = serve(broker, host, cfg.port, assistants, tools, cfg.remote_token, dispatcher, helpdesk)
+    httpd = serve(broker, host, cfg.port, assistants, tools, cfg.remote_token, dispatcher, helpdesk, setup)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

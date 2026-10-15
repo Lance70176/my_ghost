@@ -72,6 +72,8 @@ groups: []
 #    window: always
 ignore: []           # group titles / chat ids never to watch
 post_to: []          # groups the assistant may post new messages in (post_message)
+auto_reply: []       # chats (titles / chat ids) where the assistant may answer by itself
+                     # (send_reply); everywhere else it can only draft a card for you
 """
 
 
@@ -155,6 +157,8 @@ class Watch:
     ignore: set[str] = field(default_factory=set)
     # Groups the assistant may post a new message in (title or chat id).
     post_to: set[str] = field(default_factory=set)
+    # Chats where the assistant may reply without a card (send_reply).
+    auto_reply: set[str] = field(default_factory=set)
 
     @classmethod
     def load(cls, path: Path) -> "Watch":
@@ -172,7 +176,8 @@ class Watch:
                 dms=bool(dms), dms_window=Window.parse(dms) if isinstance(dms, str) else None,
                 mentions=bool(raw.get("mentions", True)),
                 ignore={str(x) for x in raw.get("ignore") or []},
-                post_to={str(x) for x in raw.get("post_to") or []})
+                post_to={str(x) for x in raw.get("post_to") or []},
+                auto_reply={str(x) for x in raw.get("auto_reply") or []})
         for g in raw.get("groups") or []:
             if isinstance(g, dict) and g.get("group") not in (None, ""):
                 w.groups.append(Rule(str(g["group"]), g.get("trigger", "all"),
@@ -445,6 +450,12 @@ class AccountWatcher:
             return "回覆內容是空的。"
         if len(text) > 4000:
             return "回覆太長（上限 4000 字）。"
+        # Hard gate, not the model's judgment: a stranger in a watched chat
+        # can't talk the assistant into answering where it wasn't allowed to.
+        allowed = self.watch().auto_reply
+        if str(m.chat_id) not in allowed and m.chat not in allowed:
+            return (f"「{m.chat}」不在可以自動回覆的對話（watch.yaml 的 auto_reply）裡，沒有送出。"
+                    "請改用 draft_reply 做回覆卡給他決定。")
         if self.transport is None:
             return "帳號目前沒有連線，沒有送出。"
         who = self.me or "工作帳號"

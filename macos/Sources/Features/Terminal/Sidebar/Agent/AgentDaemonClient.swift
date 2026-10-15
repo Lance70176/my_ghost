@@ -416,6 +416,19 @@ final class AgentDaemonClient: ObservableObject {
         }
     }
 
+    /// POST that hands back the whole JSON reply (nil: unreachable).
+    func postJSON(_ path: String, _ body: [String: Any]) async -> [String: Any]? {
+        guard let base = await endpoint() else { return nil }
+        var req = URLRequest(url: base.appendingPathComponent(path))
+        req.httpMethod = "POST"
+        req.setValue("1", forHTTPHeaderField: "X-Ghost")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        req.timeoutInterval = 60
+        guard let (data, _) = try? await session.data(for: req) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
     // MARK: Polling
 
     func start() {

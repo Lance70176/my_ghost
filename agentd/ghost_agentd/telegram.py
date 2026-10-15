@@ -80,6 +80,7 @@ class Bot:
         self.me: dict = {}
         self.assistants = None  # AssistantManager, set by main
         self.watch_commands = None  # WatchCommands, set by main
+        self._warned: set[tuple] = set()  # (chat, user) told about already
 
     def chat_for(self, project: str) -> int | None:
         return self.routes.get(project)
@@ -268,17 +269,56 @@ class Bot:
 
     # --------------------------------------------------------------- incoming
 
-    def _authorized(self, user: dict, chat: dict) -> bool:
-        # Only the commander's own accounts, and only in a chat this bot serves
-        # (its project groups, or a private chat with the commander).
-        if user.get("id") not in self.cfg.telegram.commander_user_ids:
-            return False
-        return chat.get("type") == "private" or chat.get("id") in self.routes.values()
+    def _commanders(self, project: str) -> set[int]:
+        p = self.broker.projects.get(project)
+        return set(p.commander_user_ids or self.cfg.telegram.commander_user_ids)
 
-    def _projects_in(self, chat: dict) -> list[str]:
+    def _is_commander(self, user_id) -> bool:
+        """Commander of anything this bot serves (or of the whole daemon)."""
+        return user_id in self.cfg.telegram.commander_user_ids or \
+            any(user_id in self._commanders(n) for n in self.routes)
+
+    def _authorized(self, user: dict, chat: dict) -> bool:
+        # Only a commander of the project the chat belongs to (its group, or
+        # a private chat with them), nobody else — whatever they write.
+        return bool(self._projects_in(chat, user))
+
+    def _projects_in(self, chat: dict, user: dict | None = None) -> list[str]:
         if chat.get("type") == "private":
-            return list(self.routes)
-        return [n for n, c in self.routes.items() if c == chat.get("id")]
+            names = list(self.routes)
+        else:
+            names = [n for n, c in self.routes.items() if c == chat.get("id")]
+        if user is not None:
+            names = [n for n in names if user.get("id") in self._commanders(n)]
+        return names
+
+    def _outsiders(self, m: dict, chat: dict) -> None:
+        """Someone who isn't a commander is in a project group: everything
+        the assistant says there is readable by them. Say so, once each."""
+        if chat.get("type") == "private":
+            return
+        projects = [n for n, c in self.routes.items() if c == chat.get("id")]
+        if not projects:
+            return
+        allowed = set().union(*(self._commanders(n) for n in projects))
+        people = [m.get("from") or {}] + list(m.get("new_chat_members") or [])
+        for u in people:
+            uid = u.get("id")
+            if not uid or u.get("is_bot") or uid in allowed or (chat.get("id"), uid) in self._warned:
+                continue
+            self._warned.add((chat.get("id"), uid))
+            who = " ".join(x for x in (u.get("first_name"), u.get("last_name")) if x) or str(uid)
+            if u.get("username"):
+                who += f" @{u['username']}"
+            log(f"telegram: non-commander {who} ({uid}) in {projects}'s group {chat.get('id')}")
+            self.call("sendMessage", chat_id=chat["id"],
+                      text=f"⚠️ {who} 不是這個助手的指揮者，他的訊息不會交給助手；"
+                           "但助手在這個群組說的內容他都看得到。不該在的話請把他移出群組。")
+            for n in projects:
+                if self.assistants is not None:
+                    self.assistants.get(n).add(
+                        "notice", f"⚠️ TG 群組裡有非指揮者 {who}（{uid}），助手在群組的發言他看得到。",
+                        source="system")
 
     def _poll(self) -> None:
         while True:
@@ -304,7 +344,7 @@ class Bot:
                 return
             data = cq.get("data") or ""
             if data.startswith("w:") and self.watch_commands is not None:
-                text, rows, toast = self.watch_commands.callback(data, self._projects_in(chat))
+                text, rows, toast = self.watch_commands.callback(data, self._projects_in(chat, cq.get("from") or {}))
                 self.call("answerCallbackQuery", callback_query_id=cq["id"], text=toast or None)
                 if text:
                     self.call("editMessageText", chat_id=chat["id"], message_id=cq["message"]["message_id"],
@@ -314,7 +354,7 @@ class Bot:
             if len(parts) != 3 or parts[0] != "g":
                 return
             p = self.broker.get(parts[1])
-            if p is not None and p.project not in self._projects_in(chat):
+            if p is not None and p.project not in self._projects_in(chat, cq.get("from") or {}):
                 self.call("answerCallbackQuery", callback_query_id=cq["id"], text="不屬於這個群組的專案")
                 return
             ok, why = self.broker.decide(parts[1], parts[2], "tg")
@@ -323,16 +363,29 @@ class Bot:
 
         m = u.get("message") or {}
         chat, user, text = m.get("chat") or {}, m.get("from") or {}, (m.get("text") or "").strip()
+        self._outsiders(m, chat)
         if text.startswith("/chatid"):
-            # Setup helper: works before chat_id is configured.
+            # Setup helper: works before chat_id is configured — but only
+            # answers a commander, and binds this group to the bot's one
+            # project that has none yet.
+            if not self._is_commander(user.get("id")):
+                return
+            unbound = [n for n, c in self.routes.items() if c is None]
+            note = ("（chat_id 填到 project.yaml 的 telegram.chat_id；"
+                    "user_id 填到 config.yaml 的 commander_user_ids）")
+            if chat.get("type") in ("group", "supergroup") and len(unbound) == 1 \
+                    and user.get("id") in self._commanders(unbound[0]) \
+                    and cfgmod.bind_chat_id(self.broker.projects.get(unbound[0]), int(chat["id"])):
+                self.routes[unbound[0]] = int(chat["id"])
+                self.broker.tg_projects.add(unbound[0])
+                log(f"telegram: {self.name} bound {unbound[0]} to group {chat['id']}")
+                note = f"✅ 已把這個群組設為「{unbound[0]}」助手的群組。"
             self.call("sendMessage", chat_id=chat["id"],
-                      text=f"chat_id: {chat['id']}\nuser_id: {user.get('id')}\n"
-                           "（chat_id 填到 project.yaml 的 telegram.chat_id；"
-                           "user_id 填到 config.yaml 的 commander_user_ids）")
+                      text=f"chat_id: {chat['id']}\nuser_id: {user.get('id')}\n{note}")
             return
         if not self._authorized(user, chat):
             return
-        mine = self._projects_in(chat)
+        mine = self._projects_in(chat, user)
         reply = m.get("reply_to_message") or {}
         if reply.get("message_id") and text and not text.startswith("/"):
             for p in list(self.broker.pending.values()):

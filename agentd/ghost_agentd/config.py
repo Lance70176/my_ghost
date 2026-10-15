@@ -72,6 +72,9 @@ class Project:
     # Permission mode for work dispatched into a `claude agents` view
     # (default there: bypassPermissions, like the commander's own views).
     dispatch_permission: str = ""
+    # Who may command this project's assistant over Telegram; empty = the
+    # commanders in config.yaml.
+    commander_user_ids: list[int] = field(default_factory=list)
 
     @property
     def dir(self) -> Path:
@@ -132,9 +135,10 @@ class Projects:
                 paths=paths,
                 tg_token=str(tg.get("token") or ""),
                 tg_chat_id=int(tg["chat_id"]) if tg.get("chat_id") not in (None, "") else None,
-                resident=bool(raw.get("resident", False)),
+                resident=bool(raw.get("resident", True)),  # assistants watch all the time unless told not to
                 tg_account=tg.get("account") if isinstance(tg.get("account"), dict) else None,
                 dispatch_permission=str(raw.get("dispatch_permission") or ""),
+                commander_user_ids=[int(u) for u in tg.get("commander_user_ids") or []],
                 policy=ProjectPolicy(
                     root_paths=paths,
                     allow=list(pol.get("allow") or []),
@@ -206,6 +210,24 @@ def set_chat_id(p: Project, old: int, new: int) -> bool:
     os.chmod(tmp, f.stat().st_mode & 0o777)
     tmp.replace(f)
     p.tg_chat_id = new
+    return True
+
+
+def bind_chat_id(p: Project, chat_id: int) -> bool:
+    """Give a project that has no group yet its group (`chat_id: null`)."""
+    f = HOME / "projects" / p.dir.name / "project.yaml"
+    try:
+        text = f.read_text()
+    except OSError:
+        return False
+    fixed = re.sub(r"(chat_id:\s*)(null|~|\"\")(?=\s|$)", rf"\g<1>{chat_id}", text, count=1)
+    if fixed == text:
+        return False
+    tmp = f.with_suffix(".tmp")
+    tmp.write_text(fixed)
+    os.chmod(tmp, f.stat().st_mode & 0o777)
+    tmp.replace(f)
+    p.tg_chat_id = chat_id
     return True
 
 
