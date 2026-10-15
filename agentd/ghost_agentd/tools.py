@@ -453,6 +453,12 @@ class Tools:
             return "這個專案沒有設定工作帳號。"
         return w.draft(str(args.get("ref") or ""), str(args.get("text") or ""), str(args.get("note") or ""))
 
+    def t_send_reply(self, p, args) -> str:
+        w = self.accounts.get(p.name)
+        if w is None:
+            return "這個專案沒有設定工作帳號。"
+        return w.send_now(str(args.get("ref") or ""), str(args.get("text") or ""))
+
     def t_read_tg_chat(self, p, args) -> str:
         w = self.accounts.get(p.name)
         if w is None:

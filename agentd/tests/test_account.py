@@ -137,6 +137,21 @@ def test_skip_and_self_reply_send_nothing(broker, manager):
     assert w.transport.sent == []
 
 
+def test_send_reply_goes_out_at_once_and_is_reported(broker, manager):
+    w = watcher(broker, manager)
+    w.on_message(msg(private=True, chat="Danny", chat_id=77, msg_id=12, text="影片換好了嗎"))
+    ref = next(iter(w.inbox))
+    w.draft(ref, "我查一下")  # an open card for the same message…
+    assert "找不到" in w.send_now("nope", "hi") and "空的" in w.send_now(ref, "  ")
+    assert w.send_now(ref, "換好了，測試站已更新。") == "已用 @SnakeFQ 送出。"
+    assert w.transport.sent == [(77, "換好了，測試站已更新。", 12)]  # only that chat, as a reply
+    assert not any(p.reply for p in broker.pending.values())  # …is closed
+    a = manager.get("fq")
+    wait_for(lambda: any(r == "notice" and "已用 @SnakeFQ 回覆私訊" in t for r, t in roles(a)))
+    w.transport = None
+    assert "沒有連線" in w.send_now(ref, "再一則")
+
+
 def closed_window(w):
     (w.project.dir / "watch.yaml").write_text("window: mon-mon 00:00-00:01\nbatch: 0\n")
     w._watch = None

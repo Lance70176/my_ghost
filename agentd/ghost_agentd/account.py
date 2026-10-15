@@ -16,10 +16,14 @@ What it does, and what it never does:
   replies to me in groups, on weekdays during office hours) are collected
   for a minute and handed to the project's assistant as data, never as
   instructions.
-- The assistant may draft a reply (draft_reply). That only makes a card;
-  the reply is sent from the account when the commander presses 送出 —
-  nothing is ever sent on its own, and only to the chat the message came
-  from.
+- The assistant may draft a reply (draft_reply): a card, sent from the
+  account when the commander presses 送出.
+- Or, once the commander has agreed to it in their conversation with the
+  assistant, send it itself (send_reply) — the commander's choice
+  (2026-10-15): whether to answer is settled between them, not by a
+  button in the app. Every send is reported to the assistant chat and
+  the project group.
+- Either way only to the chat the message came from, as a reply to it.
 - When the owner answers a chat themselves, open drafts for it are closed.
 """
 
@@ -354,8 +358,9 @@ class AccountWatcher:
                      else f"［附 {m.media}，沒有下載：{m.skip or '太大或失敗'}］" if m.media else "")
             lines.append(f"{i}. ref={m.ref}｜{where}｜{m.sender}｜{when}{extra}\n   「{body[:1500]}」")
         lines.append(
-            "請逐則判斷要不要回：要回的用 draft_reply 草擬（帶 ref；他按「送出」才會用這個帳號發出，"
-            "你不能自己送），不用回的簡短說明為什麼。需要前後文先用 read_tg_chat。"
+            "請逐則判斷要不要回：要回的用 draft_reply 草擬（帶 ref；他按「送出」才會用這個帳號發出）；"
+            "只有在他授權過自動回覆的範圍內（見記憶的自動回覆授權）才用 send_reply 直接送。"
+            "不用回的簡短說明為什麼。需要前後文先用 read_tg_chat。"
             "看起來是開發需求或問題的，另外整理成待辦告訴他。附件已存在 uploads，需要時用 Read 開。")
         files = [uploads.Attached(Path(f)) for m in msgs for f in m.files if Path(f).exists()]
         self.assistants.get(self.project.name).send("\n".join(lines), "account", files=files[:10])
@@ -424,6 +429,40 @@ class AccountWatcher:
         }, options=[f"📤 用 {who} 送出", "💬 要改", "🙈 不用回"])
         return (f"已做成回覆卡（id={card.id}）給他決定。先結束這一輪；他按了之後你會收到通知。"
                 "改稿就再呼叫一次 draft_reply（舊卡會被取代）。")
+
+    def send_now(self, ref: str, text: str) -> str:
+        """Send a reply from the account right away (no card), to the chat
+        message `ref` came from."""
+        m = self.inbox.get(ref)
+        if m is None:
+            return f"找不到 ref={ref} 的訊息。"
+        text = text.strip()
+        if not text:
+            return "回覆內容是空的。"
+        if len(text) > 4000:
+            return "回覆太長（上限 4000 字）。"
+        if self.transport is None:
+            return "帳號目前沒有連線，沒有送出。"
+        who = self.me or "工作帳號"
+        try:
+            self.transport.send(m.chat_id, text, m.msg_id)
+        except Exception as e:
+            log(f"account {self.project.name}: send_reply failed {e!r}")
+            return f"沒有送出：{e}"
+        # Cards still open for this message are moot now.
+        for p in list(self.broker.pending.values()):
+            r = getattr(p, "reply", None)
+            if r and r.get("ref") == ref:
+                self.broker.dismiss(p.id, "replaced")
+        with open(self.project.dir / "events.jsonl", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"ts": time.time(), "type": "account_reply", "card": "", "by": "assistant",
+                                 "chat": m.chat, "chat_id": m.chat_id, "ref": ref, "text": text},
+                                ensure_ascii=False) + "\n")
+        where = "私訊" if m.private else f"群組「{m.chat}」"
+        self.assistants.get(self.project.name).add(
+            "notice", f"已用 {who} 回覆{where}的 {m.sender}：{text[:500]}", source="system")
+        self.assistants.notify(self.project, f"📤 助手用 {who} 回覆{where}的 {m.sender}：\n{redact(text)[:1500]}")
+        return f"已用 {who} 送出。"
 
     def history(self, ref: str, limit: int = 20) -> str:
         m = self.inbox.get(ref)

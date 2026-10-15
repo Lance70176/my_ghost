@@ -52,9 +52,18 @@ TOOLS = [
          "text": {"type": "string", "description": "要送出的回覆全文"},
          "note": {"type": "string", "description": "給負責人的一句說明（為什麼這樣回，可省略）"}},
          "required": ["ref", "text"]}},
+    {"name": "send_reply",
+     "description": "不做回覆卡，直接用工作帳號回覆一則訊息（用它的 ref；只會回到那則訊息所在的對話）。"
+                    "只能用在負責人明確授權你自動回覆的範圍：他說過這個任務相關都自動回、或這一類工作"
+                    "（記在 state.md 的自動回覆授權）。其他情況一律用 draft_reply。送出後負責人會收到通知。",
+     "inputSchema": {"type": "object", "properties": {
+         "ref": {"type": "string", "description": "訊息的 ref（轉給你的訊息裡有）"},
+         "text": {"type": "string", "description": "要送出的回覆全文"}},
+         "required": ["ref", "text"]}},
     {"name": "propose_dispatch",
-     "description": "提一張開工卡：開一個新的工作對話（MyGhost 分頁）去做一件開發工作。只有負責人按「開工」才會開始；"
-                    "會在專案的 .worktrees/ 底下建獨立 worktree 和新分支，工作對話用一般授權模式（push 等都會問他）。",
+     "description": "提一張開工卡：開一個新的工作對話去做一件開發工作。只有負責人按「開工」才會開始；"
+                    "會在專案的 .worktrees/ 底下建獨立 worktree 和新分支，工作對話略過權限確認"
+                    "（可以 commit、push、發測試；發正式前會用 ghost-ask 問你）。",
      "inputSchema": {"type": "object", "properties": {
          "title": {"type": "string", "description": "分頁標題，短，例如「LSC #198 優惠設置」"},
          "repo": {"type": "string", "description": "專案內 repo 的路徑（絕對或相對專案根目錄），例如 platform"},
