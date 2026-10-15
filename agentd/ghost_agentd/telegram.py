@@ -345,8 +345,11 @@ class Bot:
         added = cmd == "/addmember"
         log(f"telegram: {p.name} member {'added' if added else 'removed'}: {who} ({uid})")
         if self.assistants is not None:
-            self.assistants.get(p.name).add(
-                "notice", f"負責人{'新增' if added else '移除'}了 TG 成員 {who}（{uid}）。", source="system")
+            note = f"負責人{'新增' if added else '移除'}了 TG 成員 {who}（{uid}）。"
+            a = self.assistants.get(p.name)
+            a.add("notice", note, source="system")
+            # The model must know too, or it keeps telling people the old list.
+            a.send(note + "（已生效。只要記住，不用回覆。）", "system", show=False, internal=True)
         if added:
             return say(f"✅ 已把 {who} 加為「{p.name}」助手的成員：可以在這個群組跟助手對話、交辦工作，"
                        "並處理自己交辦的決策卡；負責人看得到也能處理全部。監看規則與授權仍只有負責人能改。")
