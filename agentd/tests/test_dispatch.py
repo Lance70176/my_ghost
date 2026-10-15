@@ -70,8 +70,14 @@ def test_propose_validates_and_only_start_starts(broker, manager, tmp_path, monk
     assert branch.stdout.strip() == "feature/lsc-198"
     new = next(c for c in tm.calls if "new-session" in c)
     cmd = new[-1]
-    assert "--permission-mode default" in cmd and "bypass" not in cmd and "auto" not in cmd
+    assert "--permission-mode bypassPermissions" in cmd  # like his agent views
     assert new[new.index("-c") + 1] == str(wt)
+    # Trusted first (claude refuses a folder never trusted), and told about production.
+    import json
+    trusted = json.loads(dispatch.CLAUDE_CONFIG.read_text())["projects"]
+    assert trusted[str(wt.resolve())]["hasTrustDialogAccepted"] is True
+    sent = (broker.projects.get("fq").dir / "dispatch" / f"{item.id}.md").read_text()
+    assert sent.startswith("把 A 改成 B") and "ghost-ask" in sent and "正式環境" in sent
     assert item.tmux.startswith("myghost_")
     assert ("set-option", "-t", item.tmux, "@myghost_title", "LSC #198 優惠設置") in tm.calls
     assert [x["id"] for x in d.live()] == [item.id]
@@ -132,3 +138,21 @@ def test_into_an_open_agent_view_as_a_background_job(broker, manager, tmp_path, 
     assert not any("new-session" in c for c in tm.calls) and d.live() == []  # no tab
     d.on_stop("", "sess-1", "做好了")
     wait_for(lambda: any(r == "user" and "做好了" in t for r, t in roles(manager.get("fq"))))
+
+
+def test_trust_keeps_the_rest_of_the_config(tmp_path):
+    import json
+    tmp_path = tmp_path / "home"
+    tmp_path.mkdir()
+    cfg = tmp_path / "c.json"
+    cfg.write_text(json.dumps({"oauthAccount": {"x": 1}, "projects": {"/a": {"allowedTools": ["Bash"]}}}))
+    cfg.chmod(0o600)
+    dispatch.trust(tmp_path, cfg)
+    dispatch.trust(tmp_path, cfg)  # twice is fine
+    data = json.loads(cfg.read_text())
+    assert data["oauthAccount"] == {"x": 1} and data["projects"]["/a"] == {"allowedTools": ["Bash"]}
+    assert data["projects"][str(tmp_path.resolve())] == {"hasTrustDialogAccepted": True}
+    assert cfg.stat().st_mode & 0o777 == 0o600
+    assert [x.name for x in tmp_path.iterdir()] == ["c.json"]  # no temp file left
+    dispatch.trust(tmp_path, tmp_path / "missing.json")  # no config: nothing happens
+    assert not (tmp_path / "missing.json").exists()
