@@ -80,6 +80,8 @@ def main() -> int:
     from .sources import Sources
     sources = Sources(projects, assistants)
     sources.reload()
+    from .schedule import Schedules
+    schedules = Schedules(projects, assistants)
     from .dispatch import Dispatcher
     dispatcher = Dispatcher(broker, assistants)
     broker.listeners.append(dispatcher)
@@ -101,6 +103,10 @@ def main() -> int:
                 sources.tick()
             except Exception as e:
                 log(f"sources tick failed: {e!r}")
+            try:
+                schedules.tick()
+            except Exception as e:
+                log(f"schedule tick failed: {e!r}")
             for w in list(accounts.values()):
                 try:
                     w.tick()

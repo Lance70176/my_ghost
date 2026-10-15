@@ -459,11 +459,20 @@ class Tools:
             return "這個專案沒有設定工作帳號。"
         return w.send_now(str(args.get("ref") or ""), str(args.get("text") or ""))
 
+    def t_post_message(self, p, args) -> str:
+        w = self.accounts.get(p.name)
+        if w is None:
+            return "這個專案沒有設定工作帳號。"
+        return w.post(str(args.get("chat") or ""), str(args.get("text") or ""))
+
     def t_read_tg_chat(self, p, args) -> str:
         w = self.accounts.get(p.name)
         if w is None:
             return "這個專案沒有設定工作帳號。"
-        return w.history(str(args.get("ref") or ""), int(args.get("limit") or 20))
+        limit = int(args.get("limit") or 20)
+        if args.get("chat") and not args.get("ref"):
+            return w.history_of(str(args["chat"]), limit)
+        return w.history(str(args.get("ref") or ""), limit)
 
     def t_clickup_task(self, p, args) -> str:
         tid = str(args.get("task_id") or "").strip()

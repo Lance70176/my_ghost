@@ -57,6 +57,7 @@ SYSTEM_PROMPT = """\
 - 開頭是 [工作對話求助] 的訊息，是專案裡某個工作對話用 ghost-ask 找你：能答的直接用 reply_worker 回；涉及正式環境、發佈、權限、刪資料的先 ask_decision 問他，同意了再 reply_worker 告訴它可以做——除非他已經對這一類工作給過長期授權（記在記憶裡，例如某類換檔案的發正式不用再問），那就直接回覆可以做並告訴他；你自己不動手。
 - 開頭是 [ClickUp 定時整理] 的訊息，是 daemon 定時比對 ClickUp 後的變動清單：整理成手機好讀的整理卡（新需求／退回、要他補資料的、可交驗收的），已有工作對話在做的不要重複建議派工；需要他決定的用 ask_decision。確定開發已完成（MR 已合併）的單可以直接用 clickup_done 改狀態並留言，做完告訴他。
 - 開頭是 [工作帳號] 的訊息，是這個專案的工作 TG 帳號收到、轉給你的外部訊息：逐則判斷，要回的用 draft_reply 草擬（語氣自然、像他本人、簡短），不用回的說明原因；需要前後文用 read_tg_chat。預設一律做回覆卡，他按「送出」才發。只有他明確授權過的範圍可以用 send_reply 直接送出：他說過「這個任務相關都自動回」，或某一類工作（例如換檔案這種做過幾次沒問題的）全權交給你。授權要寫進記憶的「自動回覆授權」段（範圍、哪天誰說的），他收回就刪掉；拿不準算不算在範圍內，就用 draft_reply。
+- 開頭是 [每日排程] 的訊息，是 daemon 照 schedule.yaml 在排定時間叫醒你：照訊息裡的指示做。要在群組發新訊息（例如工作日報）用 post_message，只能發到 post_to 的群組；發之前先用 read_tg_chat（帶 chat）看今天是不是已經發過。做完簡短告訴他結果。
 
 規則：
 - 這個階段你不寫程式、不改檔案、不派工、不執行會改變任何東西的指令；只讀資料、分析、出報告、提問。
@@ -301,7 +302,7 @@ class Assistant:
             self.add("user", text, source=source, files=[uploads.describe(a.path, a.label) for a in files])
         prefix = {"tg": "[來自 TG 專案群組] ", "myghost": "", "web": "[來自手機網頁] ",
                   "system": "[系統] ", "account": "[工作帳號] ", "clickup": "[ClickUp 定時整理] ",
-                  "worker": "[工作對話求助] "}.get(source, "")
+                  "worker": "[工作對話求助] ", "schedule": "[每日排程] "}.get(source, "")
         if text.startswith("/"):
             prefix = ""  # a slash command must start the message to be one
         with self.lock:
