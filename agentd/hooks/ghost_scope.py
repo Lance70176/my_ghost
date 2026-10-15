@@ -2,7 +2,8 @@
 """PreToolUse hook for a project assistant (ghost-agentd passes it with
 --settings to the assistant only): keep it inside its own project.
 
-Files the assistant reads, searches or writes, and absolute / ~ / .. paths
+Turns started by the owner's own words (ghost-agentd writes
+GHOST_SCOPE_FILE) are not limited. Otherwise, files the assistant reads, searches or writes, and absolute / ~ / .. paths
 in its shell commands, must be under GHOST_SCOPE_ROOTS (the project's
 folders and its own ~/.myghost/projects/<name>), or under a few system
 folders. Anything else — another project, ~/.myghost's other files,
@@ -54,9 +55,21 @@ def as_path(token: str, cwd: str) -> str | None:
     return None
 
 
+def owner_turn() -> bool:
+    """The owner's own request: other projects are open to this turn."""
+    f = os.environ.get("GHOST_SCOPE_FILE")
+    if not f:
+        return False
+    try:
+        with open(f, encoding="utf-8") as fh:
+            return json.load(fh).get("mode") == "owner"
+    except (OSError, ValueError):
+        return False  # unknown: keep it inside
+
+
 def outside(payload: dict) -> str | None:
     allowed = roots()
-    if not allowed:
+    if not allowed or owner_turn():
         return None
     tool = payload.get("tool_name", "")
     inp = payload.get("tool_input") or {}

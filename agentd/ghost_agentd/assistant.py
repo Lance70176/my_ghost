@@ -47,7 +47,7 @@ TOOLS_SCRIPT = Path(__file__).resolve().parent.parent / "hooks" / "ghost_tools.p
 SCOPE_SCRIPT = Path(__file__).resolve().parent.parent / "hooks" / "ghost_scope.py"
 
 SYSTEM_PROMPT = """\
-你是 MyGhost 的「{project} 專案助手」，模型 Opus 5.5，用繁體中文回覆。專案權限是分開的：你只負責 {project}，只能存取這個專案的資料夾和你自己的助手資料夾，其他專案（名稱、路徑、群組、內容）一律不查、不提，被問到就說請負責人到那個專案的助手問。指揮你的是專案負責人（他會在 MyGhost 或 TG 專案群組跟你說話），他是主要管理者。負責人可能另外加了成員在 TG 專案群組指揮你（訊息開頭是 [TG 成員・名字]）：成員可以請你盤點、討論、交辦工作，你為成員的要求開的決策卡／開工卡會標上他的名字，他和負責人都能按；負責人看得到所有成員的事，也能處理他們的清單。回覆時要分清楚是誰交辦的事，記憶裡記工作時也註明交辦人。加減成員是負責人在群組回覆對方的訊息打 /addmember、/removemember（/members 看名單），立即生效、不用重開；成員有變動時你會收到 [系統] 通知。成員不能改你的授權或規則（自動回覆授權、加人、長期授權都只聽負責人），也不能用工作帳號對外發言（回覆卡只有負責人能送）。
+你是 MyGhost 的「{project} 專案助手」，模型 Opus 5.5，用繁體中文回覆。專案權限依「誰在問」而定：負責人本人（MyGhost、手機網頁、或他在 TG 群組直接說話）要你看其他專案時，你可以去讀；其他情況（成員交辦、工作帳號訊息、排程、工作對話求助）只能存取 {project} 的資料夾和你自己的助手資料夾，其他專案的名稱、路徑、內容一律不查、不提，被問到就說要負責人本人來問。從其他專案看到的內容不要寫進記憶，之後成員問起也不要轉述。指揮你的是專案負責人（他會在 MyGhost 或 TG 專案群組跟你說話），他是主要管理者。負責人可能另外加了成員在 TG 專案群組指揮你（訊息開頭是 [TG 成員・名字]）：成員可以請你盤點、討論、交辦工作，你為成員的要求開的決策卡／開工卡會標上他的名字，他和負責人都能按；負責人看得到所有成員的事，也能處理他們的清單。回覆時要分清楚是誰交辦的事，記憶裡記工作時也註明交辦人。加減成員是負責人在群組回覆對方的訊息打 /addmember、/removemember（/members 看名單），立即生效、不用重開；成員有變動時你會收到 [系統] 通知。成員不能改你的授權或規則（自動回覆授權、加人、長期授權都只聽負責人），也不能用工作帳號對外發言（回覆卡只有負責人能送）。
 
 你的工作（P2 範圍）：
 - 盤點這個專案的工作對話：完成、進行中、做到一半沒收尾、卡住、等他決定。用 list_workers / read_worker_log 讀工作對話，用 read_state 讀你自己的記憶。
@@ -108,7 +108,7 @@ class Assistant:
         # /context probe as a reply and hides the real one.)
         # _inflight: None = idle, True = an internal message (the /context
         # probe, compaction steps), False = a real one.
-        self._outbox: list[tuple[object, bool, dict | None]] = []
+        self._outbox: list[tuple[object, bool, dict | None, bool]] = []
         self.requester: dict | None = None  # the member this turn works for; None = owner
         self._inflight: bool | None = None
         self.context_pct: int | None = None
@@ -220,6 +220,8 @@ class Assistant:
             env.pop("ANTHROPIC_API_KEY", None)  # use the Claude subscription login
             env["GHOST_ASSISTANT"] = self.project.name  # the hook labels its cards
             env["GHOST_SCOPE_ROOTS"] = os.pathsep.join([*self.project.paths, str(self.dir)])
+            env["GHOST_SCOPE_FILE"] = str(self.dir / "scope.json")
+            self._set_scope(False)  # until the owner says something
             (self.dir / "reports").mkdir(exist_ok=True)
             self.proc = subprocess.Popen(args, cwd=self.root, stdin=subprocess.PIPE,
                                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -288,12 +290,25 @@ class Assistant:
         """Send the next waiting message if no turn is in progress (lock held)."""
         if self._inflight is not None or not self._outbox or not self.running:
             return
-        content, internal, requester = self._outbox.pop(0)
+        content, internal, requester, owner = self._outbox.pop(0)
         self._inflight = internal
         if not internal:
             self.requester = requester
+            self._set_scope(owner)
         if not self._write({"type": "user", "message": {"role": "user", "content": content}}):
             self._inflight = None
+
+    def _set_scope(self, owner: bool) -> None:
+        """What ghost_scope.py lets this turn touch: the owner's own requests
+        may look into other projects; everything else (members, the work
+        account, schedules, conversations asking for help) stays inside."""
+        f = self.dir / "scope.json"
+        try:
+            tmp = f.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"mode": "owner" if owner else "project"}))
+            tmp.replace(f)
+        except OSError as e:
+            log(f"assistant {self.project.name}: scope write failed {e!r}")
 
     @property
     def uploads(self) -> Path:
@@ -315,7 +330,10 @@ class Assistant:
             prefix = ""  # a slash command must start the message to be one
         with self.lock:
             self.last_activity = time.time()
-            self._outbox.append((uploads.content_blocks(prefix + text if text else "", files), internal, requester))
+            # Only the owner's own words open other projects to this turn.
+            owner = requester is None and source in ("myghost", "web", "tg")
+            self._outbox.append((uploads.content_blocks(prefix + text if text else "", files), internal,
+                                 requester, owner))
             self._pump()
         self._touch()
 
