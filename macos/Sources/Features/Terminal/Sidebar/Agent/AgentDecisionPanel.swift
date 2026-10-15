@@ -6,6 +6,11 @@ import SwiftUI
 /// is holding. A non-activating panel, so a card appearing never steals focus
 /// from the terminal being typed in, and it stays up while another app is in
 /// front — the request is blocked until someone answers it somewhere.
+extension Notification.Name {
+    /// A window's sidebar switched mode (terminal / files / editor / assistant).
+    static let sidebarModeChanged = Notification.Name("MyGhostSidebarModeChanged")
+}
+
 @MainActor
 final class AgentDecisionPanel {
     static let shared = AgentDecisionPanel()
@@ -14,6 +19,7 @@ final class AgentDecisionPanel {
     private var contentSize = CGSize(width: 360, height: 160)
     private var cancellables = Set<AnyCancellable>()
     private var seenIDs = Set<String>()
+    private var pending: [AgentHostPending] = []
 
     private init() {}
 
@@ -24,18 +30,50 @@ final class AgentDecisionPanel {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] pending in self?.update(pending) }
             .store(in: &cancellables)
+        // Re-check whether the assistant chat is in front.
+        let center = NotificationCenter.default
+        let names: [Notification.Name] = [
+            .sidebarModeChanged, NSApplication.didBecomeActiveNotification,
+            NSApplication.didResignActiveNotification, NSWindow.didBecomeMainNotification,
+        ]
+        for name in names {
+            center.publisher(for: name)
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in
+                    guard let self else { return }
+                    self.update(self.pending)
+                }
+                .store(in: &cancellables)
+        }
+    }
+
+    /// MyGhost is in front showing the ✦ assistant page, whose chat already
+    /// carries these cards — the floating copy would only cover the screen.
+    private var assistantInFront: Bool {
+        guard NSApp.isActive,
+              let win = NSApp.orderedWindows.first(where: {
+                  $0.isVisible && !$0.isMiniaturized && $0.windowController is SidebarTerminalController
+              }),
+              let controller = win.windowController as? SidebarTerminalController else { return false }
+        return controller.sidebarUIState.sidebarMode == .assistant
     }
 
     private func update(_ pending: [AgentHostPending]) {
+        self.pending = pending
         guard !pending.isEmpty else {
             panel?.orderOut(nil)
             seenIDs.removeAll()
             return
         }
-        let panel = self.panel ?? makePanel()
-        self.panel = panel
         let fresh = pending.contains { !seenIDs.contains($0.id) }
         seenIDs = Set(pending.map(\.id))
+        // Cards that arrive while the chat is in front count as seen there.
+        guard !assistantInFront else {
+            panel?.orderOut(nil)
+            return
+        }
+        let panel = self.panel ?? makePanel()
+        self.panel = panel
         // Let SwiftUI settle the new card count before measuring.
         DispatchQueue.main.async { [weak self] in
             self?.layout(panel)

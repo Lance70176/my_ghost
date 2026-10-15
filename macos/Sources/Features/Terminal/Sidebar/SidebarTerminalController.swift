@@ -2549,7 +2549,11 @@ class SidebarTerminalController: BaseTerminalController {
 /// so SwiftUI can properly observe changes (NSWindowController doesn't
 /// conform to ObservableObject).
 class SidebarUIState: ObservableObject {
-    @Published var sidebarMode: SidebarMode = .terminal
+    @Published var sidebarMode: SidebarMode = .terminal {
+        // The floating decision cards hide while the assistant chat (which
+        // shows the same cards) is in front.
+        didSet { if sidebarMode != oldValue { NotificationCenter.default.post(name: .sidebarModeChanged, object: self) } }
+    }
 
     /// The assistant shown in the main area in `.assistant` mode; nil is the
     /// all-projects overview.
