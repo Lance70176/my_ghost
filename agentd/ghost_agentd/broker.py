@@ -74,6 +74,9 @@ class Pending:
     # the assistant to make this card; None = the owner. The member may press
     # their own cards; the owner may press every card.
     requested_by: dict | None = None
+    # Who pressed it: {"owner": True} or a member's {"id", "name"}; the
+    # assistant's next turn runs with that person's scope.
+    decided_actor: dict | None = None
     event: threading.Event = field(default_factory=threading.Event, repr=False)
 
     @property
@@ -366,7 +369,8 @@ class Broker:
             self._resolve(p, "denied", by)
         return True
 
-    def decide(self, pid: str, action: str, by: str, message: str = "") -> tuple[bool, str]:
+    def decide(self, pid: str, action: str, by: str, message: str = "",
+               actor: dict | None = None) -> tuple[bool, str]:
         """action: allow | deny | always | confirm | cancel | discuss, or for
         a choice o<N> (pick option N) / deny (dismiss). Returns (ok, why)."""
         card_followup = None
@@ -374,6 +378,7 @@ class Broker:
             p = self.pending.get(pid)
             if p is None or not p.open:
                 return False, "這個請求已經處理過了"
+            p.decided_actor = actor or {"owner": True}  # MyGhost / the phone page: the owner
             if p.kind == "choice":
                 if action == "deny":
                     self._resolve(p, "denied", by)
@@ -391,7 +396,7 @@ class Broker:
                     return True, f"已選擇：{opt['label']}"
                 card_followup = (p.card_id, opt["action"])
         if card_followup:
-            ok, why = self.decide(card_followup[0], card_followup[1], by)
+            ok, why = self.decide(card_followup[0], card_followup[1], by, actor=actor)
             return True, f"已選擇；授權卡：{why}"
         with self.lock:
             p = self.pending.get(pid)

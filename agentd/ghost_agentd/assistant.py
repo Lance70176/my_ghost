@@ -294,7 +294,8 @@ class Assistant:
         self._inflight = internal
         if not internal:
             self.requester = requester
-            self._set_scope(owner)
+        # Upkeep turns (context, compacting, notes) never see other projects.
+        self._set_scope(owner and not internal)
         if not self._write({"type": "user", "message": {"role": "user", "content": content}}):
             self._inflight = None
 
@@ -315,7 +316,8 @@ class Assistant:
         return self.dir / "uploads"
 
     def send(self, text: str, source: str, show: bool = True, internal: bool = False,
-             files: "list[uploads.Attached] | None" = None, requester: dict | None = None) -> None:
+             files: "list[uploads.Attached] | None" = None, requester: dict | None = None,
+             owner: bool | None = None) -> None:
         """Hand the assistant a message. `show` adds it to the visible chat;
         `files` are attachments already saved in `uploads`."""
         files = files or []
@@ -331,7 +333,8 @@ class Assistant:
         with self.lock:
             self.last_activity = time.time()
             # Only the owner's own words open other projects to this turn.
-            owner = requester is None and source in ("myghost", "web", "tg")
+            if owner is None:
+                owner = requester is None and source in ("myghost", "web", "tg")
             self._outbox.append((uploads.content_blocks(prefix + text if text else "", files), internal,
                                  requester, owner))
             self._pump()
@@ -573,7 +576,9 @@ class AssistantManager:
             "請先讀相關資料（read_worker_log 看那個對話在做什麼、git 狀態等），用白話說明風險與建議，"
             f"再用 ask_decision 出選項，card_id 帶 {p.id}，同意的選項 action=allow、拒絕的 action=deny。"
         )
-        threading.Thread(target=a.send, args=(text, "system", False), daemon=True).start()
+        # 💬 討論 is pressed in MyGhost or on the phone page: the owner.
+        threading.Thread(target=a.send, args=(text, "system", False),
+                         kwargs={"owner": True}, daemon=True).start()
 
     def on_choice(self, p: Pending, option: dict | None) -> None:
         a = self.get(p.project)
@@ -582,6 +587,8 @@ class AssistantManager:
                 item.chosen = option["label"] if option else "（略過）"
                 break
         label = option["label"] if option else None
+        actor = getattr(p, "decided_actor", None) or {"owner": True}
+        member = None if actor.get("owner") else {"id": actor.get("id"), "name": actor.get("name")}
         msg = (f"他回覆了你的選擇題「{p.summary[:120]}」：選了「{label}」。" if label
                else f"他略過了你的選擇題「{p.summary[:120]}」。")
         if option and option.get("action") and p.card_id:
@@ -596,5 +603,9 @@ class AssistantManager:
                    1: f"他想修改你給「{p.reply['chat']}」的回覆（ref={p.reply['ref']}）。問他要怎麼改，改好再用 draft_reply 出新的回覆卡。",
                    2: f"他決定不回「{p.reply['chat']}」這則訊息（ref={p.reply['ref']}）。"}.get(
                 p.chosen, f"他略過了給「{p.reply['chat']}」的回覆卡。")
-        a.add("notice", f"你選了：{label}" if label else "你略過了這個問題", source="myghost", choice_id=p.id)
-        threading.Thread(target=a.send, args=(msg, "system", False), daemon=True).start()
+        if member:  # a member pressed their own card: say so, and keep them inside
+            msg = f"[TG 成員・{member['name']}] 按的：" + msg.replace("他", member["name"], 1)
+        who = f"{member['name']} " if member else "你"
+        a.add("notice", f"{who}選了：{label}" if label else f"{who}略過了這個問題", source="myghost", choice_id=p.id)
+        threading.Thread(target=a.send, args=(msg, "system", False),
+                         kwargs={"owner": not member, "requester": member}, daemon=True).start()

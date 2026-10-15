@@ -289,6 +289,14 @@ class Bot:
         a project adds on its own (members) may only talk to its assistant."""
         return user_id in self.cfg.telegram.commander_user_ids
 
+    def _actor(self, user: dict) -> dict:
+        """Who pressed a card, for the assistant's next turn (by user id,
+        which Telegram vouches for — not the display name)."""
+        if self._is_owner(user.get("id")):
+            return {"owner": True}
+        name = " ".join(x for x in (user.get("first_name"), user.get("last_name")) if x)
+        return {"owner": False, "id": user.get("id"), "name": name or str(user.get("id"))}
+
     def _authorized(self, user: dict, chat: dict) -> bool:
         # Only a commander of the project the chat belongs to (its group, or
         # a private chat with them), nobody else — whatever they write.
@@ -427,7 +435,7 @@ class Bot:
             if p is not None and p.project not in self._projects_in(chat, cq.get("from") or {}):
                 self.call("answerCallbackQuery", callback_query_id=cq["id"], text="不屬於這個群組的專案")
                 return
-            ok, why = self.broker.decide(parts[1], parts[2], "tg")
+            ok, why = self.broker.decide(parts[1], parts[2], "tg", actor=self._actor(cq.get("from") or {}))
             self.call("answerCallbackQuery", callback_query_id=cq["id"], text=why)
             return
 
@@ -461,7 +469,7 @@ class Bot:
         if owner and reply.get("message_id") and text and not text.startswith("/"):
             for p in list(self.broker.pending.values()):
                 if p.tg_message_id == reply["message_id"] and p.project in mine:
-                    ok, why = self.broker.decide(p.id, "deny", "tg", message=text)
+                    ok, why = self.broker.decide(p.id, "deny", "tg", message=text, actor=self._actor(user))
                     self.call("sendMessage", chat_id=chat["id"],
                               reply_to_message_id=m["message_id"],
                               text=("已拒絕，並把理由轉給對話" if ok else why))
