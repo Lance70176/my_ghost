@@ -309,6 +309,10 @@ struct AgentDecisionCard: View {
                 Button { pickReply("o2") } label: {
                     Label(L("No reply needed"), systemImage: "xmark").frame(maxWidth: .infinity)
                 }
+                Button { pickReply("deny") } label: {
+                    Label(L("Skip"), systemImage: "arrow.uturn.right").frame(maxWidth: .infinity)
+                }
+                .help(L("Not sure yet: set it aside without answering"))
             }
             .buttonStyle(.bordered)
             .controlSize(.regular)
@@ -384,6 +388,10 @@ struct AgentDecisionCard: View {
                 Button { pickReply("o2") } label: {
                     Label(L("Don't do it"), systemImage: "xmark").frame(maxWidth: .infinity)
                 }
+                Button { pickReply("deny") } label: {
+                    Label(L("Skip"), systemImage: "arrow.uturn.right").frame(maxWidth: .infinity)
+                }
+                .help(L("Not sure yet: set it aside without answering"))
             }
             .buttonStyle(.bordered)
             .controlSize(.regular)

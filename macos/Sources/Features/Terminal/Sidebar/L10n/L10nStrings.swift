@@ -99,6 +99,7 @@ enum L10nStrings {
         "Discussing this request": t("正在討論這個請求", "正在讨论这个请求", "この要求を相談中"),
         "Already decided": t("已經決定了", "已经决定了", "判断済み"),
         "Skip": t("略過", "略过", "スキップ"),
+        "Not sure yet: set it aside without answering": t("還不確定：先放著不回答", "还不确定：先放着不回答", "まだ決められない：答えずに保留"),
         "%@ assistant asks": t("%@ 助手問你", "%@ 助手问你", "%@ アシスタントからの質問"),
         "Open the assistant conversation": t("打開助手對話", "打开助手对话", "アシスタントとの会話を開く"),
         "Under discussion": t("討論中", "讨论中", "相談中"),

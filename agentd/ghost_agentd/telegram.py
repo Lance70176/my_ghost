@@ -44,6 +44,16 @@ def esc(s: str) -> str:
     return html.escape(str(s), quote=False)
 
 
+RULE = "━━━━━━━━━━━━━━"
+
+
+def framed(p: Pending, lines: list[str]) -> str:
+    """A card between two rules, so it stands out from the plain chat
+    mirrored into the same group."""
+    tag = "📋 <b>待你決定</b>" if p.open else "📋 決策單・已處理"
+    return "\n".join([f"{RULE}\n{tag}", *lines, RULE])
+
+
 def build_bots(cfg: Config, broker: Broker) -> list["Bot"]:
     """One Bot per distinct token, routing each project to its own group."""
     bots: dict[str, Bot] = {}
@@ -186,11 +196,11 @@ class Bot:
         if p.kind == "choice":
             head = ("✉️ <b>{} 助手草擬了回覆</b>" if p.reply else
                     "🚀 <b>{} 助手提議開工</b>" if getattr(p, "dispatch", None) else "❓ <b>{} 助手問你</b>")
-            lines = [head.format(esc(p.project)), esc(p.summary[:3000])]
+            lines = [head.format(esc(p.project)), f"<blockquote>{esc(p.summary[:3000])}</blockquote>"]
             if not p.open:
                 pick = p.options[p.chosen]["label"] if p.chosen is not None else "（略過）"
                 lines.append(f"<b>你選了：{esc(pick)}</b>（{esc(SOURCE_TEXT.get(p.decided_by, p.decided_by))}）")
-            return "\n".join(lines)
+            return framed(p, lines)
         who = esc(p.tab_title or p.session_id[:8] or "?")
         head = f"{LEVEL_ICON[p.level]} <b>{LEVEL_NAMES[p.level]}</b> · {esc(p.project)} · {who}"
         lines = [head, f"<pre>{esc(p.summary[:900])}</pre>", esc(p.reason)]
@@ -207,7 +217,7 @@ class Bot:
             lines.append(f"<b>{STATE_TEXT.get(p.state, p.state)}</b>（{esc(src)} · {when}）")
             if p.always_added:
                 lines.append(f"♾ 之後此專案一律允許 <code>{esc(p.always_added)}</code>")
-        return "\n".join(lines)
+        return framed(p, lines)
 
     def keyboard(self, p: Pending) -> dict | None:
         if not p.open:

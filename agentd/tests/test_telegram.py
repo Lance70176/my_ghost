@@ -126,3 +126,17 @@ def test_group_upgraded_to_supergroup_is_followed(setup, monkeypatch):
     assert bot.call("sendMessage", chat_id=-111, text="hi") == {"message_id": 1}
     assert sent == [-111, -100222] and bot.chat_for("fq") == -100222
     assert "chat_id: -100222    # group" in f.read_text()
+
+
+def test_cards_stand_out_from_chat(broker):
+    from ghost_agentd.telegram import RULE, Bot
+    bot = Bot.__new__(Bot)
+    p = broker.create_choice("fq", "要不要換影片？", [{"label": "換"}, {"label": "不換"}])
+    text = bot.card_text(p)
+    assert text.startswith(RULE) and text.endswith(RULE) and "待你決定" in text
+    assert "<blockquote>要不要換影片？</blockquote>" in text
+    broker.decide(p.id, "deny", "tg")
+    assert "已處理" in bot.card_text(p) and "（略過）" in bot.card_text(p)
+
+
+from test_broker import broker, home  # noqa: E402,F401  (fixtures)
