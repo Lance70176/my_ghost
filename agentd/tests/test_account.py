@@ -197,3 +197,108 @@ def test_tools_need_an_account(broker, manager):
     ref = next(iter(w.inbox))
     t = Tools(broker, manager, lambda _: None, {"fq": w})
     assert "只當資料" in t.call("fq", "read_tg_chat", {"ref": ref})
+
+
+def test_batch_waits_for_a_big_attachment(broker, manager):
+    w = watcher(broker, manager)
+    w.on_message(msg(private=True, chat_id=8, text="官網影片換一下"))
+    w.on_message(msg(private=True, chat_id=8, text="", media="影片", fetching=True))
+    w.tick()
+    assert len(w.queue) == 2  # the video is still downloading: the text waits with it
+    ref = next(r for r, m in w.inbox.items() if m.fetching)
+    f = w.uploads / "v.mp4"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_bytes(b"x")
+    w.attach(ref, f)
+    w.tick()
+    assert not w.queue
+    a = manager.get("fq")
+    wait_for(lambda: any(r == "user" and "官網影片" in t and "v.mp4" in t for r, t in roles(a)))
+    # A restart remembers the file.
+    w2 = AccountWatcher(broker, manager, w.project, FakeTransport())
+    assert w2.inbox[ref].files == [str(f)] and not w2.inbox[ref].fetching
+
+
+def test_slow_download_goes_later(broker, manager):
+    from ghost_agentd import account
+    w = watcher(broker, manager)
+    w.on_message(msg(private=True, chat_id=8, text="影片在這", media="影片", fetching=True,
+                     ts=time.time() - account.FETCH_WAIT - 1))
+    w.tick()  # waited long enough: goes without it
+    a = manager.get("fq")
+    wait_for(lambda: any(r == "user" and "還在背景下載" in t for r, t in roles(a)))
+    ref = next(iter(w.inbox))
+    f = w.uploads / "late.mp4"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_bytes(b"x")
+    w.attach(ref, f)  # …and is handed over when it arrives
+    wait_for(lambda: any(r == "user" and "下載好了" in t and "late.mp4" in t for r, t in roles(a)))
+    w.on_message(msg(private=True, chat_id=8, msg_id=60, media="影片", fetching=True,
+                     ts=time.time() - account.FETCH_WAIT - 1))
+    w.tick()
+    w.attach(w.queue[0] if w.queue else list(w.inbox)[-1], None, "下載失敗：timeout")
+    wait_for(lambda: any(r == "notice" and "沒有下載成功" in t for r, t in roles(a)))
+
+
+class FakeFile:
+    def __init__(self, size):
+        self.size, self.name, self.ext = size, "clip.mp4", ".mp4"
+
+
+class FakeMsg:
+    def __init__(self, size, id=1):
+        self.id, self.chat_id, self.out = id, 42, False
+        self.message, self.mentioned = "看這個", False
+        self.video, self.file = True, FakeFile(size)
+        from datetime import datetime as dt
+        self.date = dt.now()
+
+
+class FakeEvent:
+    def __init__(self, m):
+        self.message, self.chat_id, self.is_private, self.is_channel, self.is_group = m, 42, True, False, False
+
+    async def get_sender(self):
+        class S:
+            id, bot, first_name, last_name, username = 7, False, "Danny", "", ""
+        return S()
+
+    async def get_chat(self):
+        return None
+
+
+class FakeClient:
+    def __init__(self):
+        self.gate = None
+
+    async def download_media(self, m, file):
+        if self.gate:
+            await self.gate.wait()
+        open(file, "wb").write(b"v")
+        return file
+
+
+def test_big_attachment_downloads_in_the_background(broker, manager):
+    import asyncio
+
+    from ghost_agentd import account
+    w = watcher(broker, manager)
+    t = account.TelethonAccount(w.project, w)
+    t.client = FakeClient()
+
+    async def run():
+        t.client.gate = asyncio.Event()
+        await t._handle(FakeEvent(FakeMsg(50 * 1024 * 1024)), my_id=1)
+        m = next(iter(w.inbox.values()))
+        assert m.fetching and not m.files and w.queue  # queued at once, still downloading
+        t.client.gate.set()
+        await asyncio.sleep(0.05)
+        assert not m.fetching and m.files and m.files[0].endswith("clip.mp4")
+        t.client.gate = None
+        await t._handle(FakeEvent(FakeMsg(5 * 1024 * 1024, id=2)), my_id=1)  # small: right away
+        assert list(w.inbox.values())[-1].files
+        await t._handle(FakeEvent(FakeMsg(150 * 1024 * 1024, id=3)), my_id=1)  # too big
+        last = list(w.inbox.values())[-1]
+        assert not last.files and not last.fetching and "100 MB" in last.skip
+
+    asyncio.run(run())
