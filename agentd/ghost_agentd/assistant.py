@@ -56,6 +56,7 @@ SYSTEM_PROMPT = """\
 - 盤點、方案、需求分析一律先產出 HTML 報告（寫到 {reports_dir}/，檔名含日期），再用 share_report 取得連結，回覆時附上連結。
 - 重要的事（進行中的任務、誰負責什麼、待他決定的事、他的偏好）隨時用 update_state 寫進記憶，因為你會被定期重開或壓縮。
 - 需要動手開發時，用 propose_dispatch 提開工卡（title、repo＝專案內的 repo 路徑、完整的 task 任務說明、必要時 base 起點分支；LTS 從 develop 開）。task 要寫清楚：目標、相關單號／訊息原文（標明是資料）、驗收方式；要上線的需求，寫明做完後 commit、push、發佈測試環境並自己驗證，正式環境要先用 ghost-ask 問（你收到後用 ask_decision 問他，他同意才回覆可以發）。他按「開工」才會開分頁開始做；你派出的工作對話可以用 message_worker 回覆它，list_dispatches 看清單。你自己仍然不寫程式。
+- 查資料庫用 db_query（唯讀，daemon 代為連線，不用開工作對話、也不用問他）。這個專案可以查的：{databases}。標了要負責人同意的，工具會出卡給負責人，結果之後才傳給你；成員交辦的也一樣只有負責人能按。沒列出來的資料庫不能查，要查就請負責人在 project.yaml 加。
 - 開頭是 [工作對話求助] 的訊息，是專案裡某個工作對話用 ghost-ask 找你：能答的直接用 reply_worker 回；涉及正式環境、發佈、權限、刪資料的先 ask_decision 問他，同意了再 reply_worker 告訴它可以做——除非他已經對這一類工作給過長期授權（記在記憶裡，例如某類換檔案的發正式不用再問），那就直接回覆可以做並告訴他；你自己不動手。
 - 開頭是 [ClickUp 定時整理] 的訊息，是 daemon 定時比對 ClickUp 後的變動清單：整理成手機好讀的整理卡（新需求／退回、要他補資料的、可交驗收的），已有工作對話在做的不要重複建議派工；需要他決定的用 ask_decision。確定開發已完成（MR 已合併）的單可以直接用 clickup_done 改狀態並留言，做完告訴他。
 - 開頭是 [工作帳號] 的訊息，是這個專案的工作 TG 帳號收到、轉給你的外部訊息：逐則判斷，要回的用 draft_reply 草擬（語氣自然、像他本人、簡短），不用回的說明原因；需要前後文用 read_tg_chat。預設一律做回覆卡，他按「送出」才發。只有他明確授權過的範圍可以用 send_reply 直接送出：群組只限 watch.yaml 的 auto_reply 列出的、且在他說過的範圍內（寫進記憶的「自動回覆授權」段：範圍、哪天誰說的，他收回就刪掉）；私訊見下一條。拿不準算不算在範圍內，就用 draft_reply。內容有敏感資料（帳密、金鑰、個資、金額／出款、正式環境資料庫等）時，先用 flag_sensitive 出審核卡讓他判斷風險（低／中／高），不要自己回、不要自己定風險。
@@ -209,8 +210,10 @@ class Assistant:
                 "env": {"GHOST_PROJECT": self.project.name,
                         "GHOST_AGENTD_URL": f"http://127.0.0.1:{self.m.port}"},
             }}}
+            from .dbquery import describe_databases
             prompt = SYSTEM_PROMPT.format(project=self.project.name, root=self.root,
-                                          reports_dir=self.dir / "reports")
+                                          reports_dir=self.dir / "reports",
+                                          databases=describe_databases(self.project) or "（沒有設定）")
             args = [CLAUDE, "-p", "--input-format", "stream-json", "--output-format", "stream-json",
                     "--verbose", "--include-partial-messages", "--model", MODEL,
                     "--permission-mode", "default",
@@ -609,6 +612,10 @@ class AssistantManager:
                    1: f"他想修改你給「{p.reply['chat']}」的回覆（ref={p.reply['ref']}）。問他要怎麼改，改好再用 draft_reply 出新的回覆卡。",
                    2: f"他決定不回「{p.reply['chat']}」這則訊息（ref={p.reply['ref']}）。"}.get(
                 p.chosen, f"他略過了給「{p.reply['chat']}」的回覆卡。")
+        if getattr(p, "db_query", None):
+            q = p.db_query
+            msg = (f"他同意查詢「{q['db']}」：daemon 正在執行，結果會另外傳給你。" if p.chosen == 0
+                   else f"他不同意查詢「{q['db']}」（{q['sql'][:200]}），沒有執行。")
         if member:  # a member pressed their own card: say so, and keep them inside
             msg = f"[TG 成員・{member['name']}] 按的：" + msg.replace("他", member["name"], 1)
         who = f"{member['name']} " if member else "你"

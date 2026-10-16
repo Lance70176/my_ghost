@@ -70,6 +70,9 @@ class Pending:
     reply: dict | None = None
     # A dispatch card (P3): option 0 starts the proposed work — {id}.
     dispatch: dict | None = None
+    # A query card (db_query on a `confirm` database): option 0 runs
+    # {db, sql, by}. Only the owner may press it, whoever asked.
+    db_query: dict | None = None
     # A private-message grant card (review / renew / sensitive data), read
     # by the AccountWatcher: {"type": ..., "chat_id": ..., ...}.
     grant: dict | None = None
@@ -341,6 +344,25 @@ class Broker:
                 options=[{"label": o, "action": None} for o in options], dispatch=dispatch,
             )
             p.requested_by = self.requester_of(project)
+            self.pending[p.id] = p
+            self.by_key[p.key] = p
+            self._bump()
+            self._emit("on_pending", p)
+        return p
+
+    def create_db_query(self, project: str, summary: str, ref: dict, options: list[str]) -> Pending:
+        """A query on a database that needs the owner's OK each time."""
+        now = time.time()
+        with self.lock:
+            p = Pending(
+                id=secrets.token_hex(4), key="dbq-" + secrets.token_hex(6), project=project,
+                session_id="", tmux_session="", tab_title=f"{project} 助手", cwd="",
+                tool_name="db_query", tool_input={}, summary=summary[:4000],
+                level=L2, reason="查詢要負責人同意的資料庫", always_pattern=None,
+                created=now, deadline=now + 7 * 86400, kind="choice",
+                options=[{"label": o, "action": None} for o in options], db_query=ref,
+            )
+            p.requested_by = None  # never a member's to press
             self.pending[p.id] = p
             self.by_key[p.key] = p
             self._bump()

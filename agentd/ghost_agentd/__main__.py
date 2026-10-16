@@ -87,7 +87,10 @@ def main() -> int:
     broker.listeners.append(dispatcher)
     from .helpdesk import HelpDesk
     helpdesk = HelpDesk(broker, assistants, dispatcher)
-    tools = Tools(broker, assistants, bot_for, accounts, sources, dispatcher, helpdesk)
+    from .dbquery import DBQuery
+    dbquery = DBQuery(broker, assistants)
+    broker.listeners.append(dbquery)
+    tools = Tools(broker, assistants, bot_for, accounts, sources, dispatcher, helpdesk, dbquery)
 
     def bring_up(name: str) -> None:
         """A project was added from MyGhost: serve it without a restart."""

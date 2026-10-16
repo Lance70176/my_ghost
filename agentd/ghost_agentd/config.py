@@ -72,6 +72,10 @@ class Project:
     # Permission mode for work dispatched into a `claude agents` view
     # (default there: bypassPermissions, like the commander's own views).
     dispatch_permission: str = ""
+    # Databases the assistant may query read-only (db_query), by name:
+    # {tunnel: script with up|down, client: script taking mariadb args,
+    #  port: the tunnel's local port, confirm: owner presses a card first}.
+    databases: dict = field(default_factory=dict)
     # Members: Telegram accounts that may talk to this project's assistant
     # besides the owner (config.yaml's commanders, who always may). A member
     # may press only the cards that came from their own requests.
@@ -139,6 +143,7 @@ class Projects:
                 resident=bool(raw.get("resident", True)),  # assistants watch all the time unless told not to
                 tg_account=tg.get("account") if isinstance(tg.get("account"), dict) else None,
                 dispatch_permission=str(raw.get("dispatch_permission") or ""),
+                databases=raw.get("databases") if isinstance(raw.get("databases"), dict) else {},
                 commander_user_ids=[int(u) for u in tg.get("commander_user_ids") or []],
                 policy=ProjectPolicy(
                     root_paths=paths,

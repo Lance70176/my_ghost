@@ -328,7 +328,7 @@ def close_idle_attachments(max_idle: float = 1800) -> None:
 
 class Tools:
     def __init__(self, broker, assistants, bots_for, accounts=None, sources=None, dispatcher=None,
-                 helpdesk=None):
+                 helpdesk=None, dbquery=None):
         self.broker = broker
         self.assistants = assistants
         self.bots_for = bots_for  # project name -> Bot or None
@@ -336,6 +336,7 @@ class Tools:
         self.sources = sources  # Sources (requirement sources), or None
         self.dispatcher = dispatcher  # Dispatcher, or None
         self.helpdesk = helpdesk  # HelpDesk, or None
+        self.dbquery = dbquery  # DBQuery, or None
 
     def call(self, project: str, name: str, args: dict) -> str:
         fn = getattr(self, "t_" + name, None)
@@ -501,6 +502,12 @@ class Tools:
         if args.get("chat") and not args.get("ref"):
             return w.history_of(str(args["chat"]), limit)
         return w.history(str(args.get("ref") or ""), limit)
+
+    def t_db_query(self, p, args) -> str:
+        if self.dbquery is None:
+            return "資料庫查詢沒有啟用。"
+        return self.dbquery.query(p, str(args.get("database") or "").strip(), str(args.get("sql") or ""),
+                                  str(args.get("why") or ""))
 
     def t_clickup_task(self, p, args) -> str:
         tid = str(args.get("task_id") or "").strip()
