@@ -459,6 +459,34 @@ class Tools:
             return "這個專案沒有設定工作帳號。"
         return w.send_now(str(args.get("ref") or ""), str(args.get("text") or ""))
 
+    def _owner_turn(self, p) -> bool:
+        return bool(getattr(self.assistants.get(p.name), "turn_owner", False))
+
+    def t_grant_dm(self, p, args) -> str:
+        w = self.accounts.get(p.name)
+        if w is None:
+            return "這個專案沒有設定工作帳號。"
+        return w.grant(str(args.get("person") or ""), str(args.get("level") or ""),
+                       str(args.get("scope") or ""), args.get("days") or 0, self._owner_turn(p))
+
+    def t_revoke_dm(self, p, args) -> str:
+        w = self.accounts.get(p.name)
+        if w is None:
+            return "這個專案沒有設定工作帳號。"
+        return w.revoke(str(args.get("person") or ""))
+
+    def t_list_dm_grants(self, p, args) -> str:
+        w = self.accounts.get(p.name)
+        if w is None:
+            return "這個專案沒有設定工作帳號。"
+        return w.list_grants(self._owner_turn(p))
+
+    def t_flag_sensitive(self, p, args) -> str:
+        w = self.accounts.get(p.name)
+        if w is None:
+            return "這個專案沒有設定工作帳號。"
+        return w.flag_sensitive(str(args.get("ref") or ""), str(args.get("what") or ""))
+
     def t_post_message(self, p, args) -> str:
         w = self.accounts.get(p.name)
         if w is None:

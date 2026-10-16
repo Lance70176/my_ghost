@@ -136,8 +136,10 @@ class WatchCommands:
         raw = load_raw(w)
         lines = [f"👀 {w.me or '工作帳號'} 的監看規則"]
         dms = raw.get("dms", True)
-        if dms:
-            lines.append(f"• 私訊：{describe_window(dms if isinstance(dms, str) else raw.get('window'))}")
+        grants = [g for g in w.grants.all() if g.until > time.time()]
+        lines.append(f"• 私訊：只轉已授權的人（{describe_window(dms if isinstance(dms, str) else raw.get('window'))}），"
+                     "其他只記錄" + ("" if grants else "；目前沒有人"))
+        lines += [f"　– {g.describe()}" for g in grants]
         if raw.get("mentions", True):
             lines.append(f"• 任何群組 @我／回覆我：{describe_window(raw.get('window'))}")
         for g in raw["groups"]:

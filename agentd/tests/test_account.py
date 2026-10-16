@@ -78,12 +78,21 @@ class FakeTransport:
         return [(-300, "日報群"), (-301, "日報群（舊）")]
 
 
-def watcher(broker, manager):
+def let_in(w, *chat_ids, level="forward", days=1):
+    """The owner agreed to these people's private messages."""
+    from ghost_agentd.dmgrants import Grant
+    for cid in chat_ids:
+        w.grants.put(Grant(chat_id=cid, name=f"user{cid}", level=level, scope="測試任務",
+                           until=time.time() + days * 86400, granted_at=time.time()))
+
+
+def watcher(broker, manager, people=(42, 77, 5, 8, 9, -100)):
     p = broker.projects.get("fq")
     (p.dir / "watch.yaml").write_text("window: always\nbatch: 0\n")
     w = AccountWatcher(broker, manager, p, FakeTransport())
     w.me = "@SnakeFQ"
     broker.listeners.append(w)
+    let_in(w, *people)
     return w
 
 
@@ -146,8 +155,8 @@ def test_send_reply_goes_out_at_once_and_is_reported(broker, manager):
     ref = next(iter(w.inbox))
     w.draft(ref, "我查一下")  # an open card for the same message…
     assert "找不到" in w.send_now("nope", "hi") and "空的" in w.send_now(ref, "  ")
-    # Only chats listed in auto_reply, whatever the assistant thinks.
-    assert "auto_reply" in w.send_now(ref, "換好了") and w.transport.sent == []
+    # Let in only to be seen (forward): replies stay cards, whatever the assistant thinks.
+    assert "draft_reply" in w.send_now(ref, "換好了") and w.transport.sent == []
     (w.project.dir / "watch.yaml").write_text("window: always\nbatch: 0\nauto_reply: [77]\n")
     w._watch = None
     assert w.send_now(ref, "換好了，測試站已更新。") == "已用 @SnakeFQ 送出。"

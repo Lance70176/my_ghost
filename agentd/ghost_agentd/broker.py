@@ -70,6 +70,9 @@ class Pending:
     reply: dict | None = None
     # A dispatch card (P3): option 0 starts the proposed work — {id}.
     dispatch: dict | None = None
+    # A private-message grant card (review / renew / sensitive data), read
+    # by the AccountWatcher: {"type": ..., "chat_id": ..., ...}.
+    grant: dict | None = None
     # Who asked for it: {id, name} of the project member whose request led
     # the assistant to make this card; None = the owner. The member may press
     # their own cards; the owner may press every card.
@@ -280,7 +283,7 @@ class Broker:
         return {"behavior": "deny", "message": msg, "id": p.id}
 
     def create_choice(self, project: str, question: str, options: list, card_id: str | None = None,
-                      session_id: str = "") -> Pending:
+                      session_id: str = "", grant: dict | None = None, owner_only: bool = False) -> Pending:
         """An assistant's multiple-choice question. Options with an action
         ("allow"/"deny") decide card_id when picked."""
         clean = []
@@ -296,8 +299,10 @@ class Broker:
                 tool_name="ask_decision", tool_input={}, summary=question[:900],
                 level=L1, reason="助手的選擇題", always_pattern=None,
                 created=now, deadline=now + 30 * 86400, kind="choice", options=clean, card_id=card_id,
+                grant=grant,
             )
-            p.requested_by = self._card_requester(project, p.card_id)
+            # owner_only: who may talk to the work account is the owner's call.
+            p.requested_by = None if owner_only else self._card_requester(project, p.card_id)
             self.pending[p.id] = p
             self.by_key[p.key] = p
             self._bump()

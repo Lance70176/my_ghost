@@ -54,12 +54,36 @@ TOOLS = [
          "required": ["ref", "text"]}},
     {"name": "send_reply",
      "description": "不做回覆卡，直接用工作帳號回覆一則訊息（用它的 ref；只會回到那則訊息所在的對話）。"
-                    "只能用在負責人明確授權你自動回覆的範圍：他說過這個任務相關都自動回、或這一類工作"
-                    "（記在 state.md 的自動回覆授權）。其他情況一律用 draft_reply。送出後負責人會收到通知。",
+                    "私訊：只限 grant_dm 授權為 auto 的人，而且只在授權的任務範圍內；群組：只限 watch.yaml 的 "
+                    "auto_reply，且在他說過的範圍內（記在 state.md 的自動回覆授權）。其他情況一律用 draft_reply。"
+                    "有敏感資料時先用 flag_sensitive。送出後負責人會收到通知。",
      "inputSchema": {"type": "object", "properties": {
          "ref": {"type": "string", "description": "訊息的 ref（轉給你的訊息裡有）"},
          "text": {"type": "string", "description": "要送出的回覆全文"}},
          "required": ["ref", "text"]}},
+    {"name": "grant_dm",
+     "description": "負責人本人同意某人的私訊可以交給你時，記下授權：之後那人私訊工作帳號才會轉給你"
+                    "（沒授權的私訊只記錄，你看不到）。只有負責人本人說話的那一輪有效（成員、工作帳號訊息觸發的輪次會被擋）。"
+                    "每次最多 3 天，超過會出審核卡給他按。授權後他最近 24 小時的私訊會馬上轉給你。"
+                    "不要自己提議替陌生人開放；只照他說的範圍與天數記。",
+     "inputSchema": {"type": "object", "properties": {
+         "person": {"type": "string", "description": "名字、@username 或 user id（list_dm_grants 列得出最近私訊過的人）"},
+         "level": {"type": "string", "enum": ["forward", "auto"],
+                   "description": "forward＝轉給你、回覆一律出卡；auto＝範圍內可以 send_reply 直接回"},
+         "scope": {"type": "string", "description": "他同意的任務範圍，照他的話寫，例如「時區 _UTC 任務」"},
+         "days": {"type": "number", "description": "幾天（他沒說就問；超過 3 天會出審核卡）"}},
+         "required": ["person", "level", "scope", "days"]}},
+    {"name": "revoke_dm", "description": "收回某人的私訊授權（他說不用再看、任務結束了）。",
+     "inputSchema": {"type": "object", "properties": {"person": {"type": "string"}}, "required": ["person"]}},
+    {"name": "list_dm_grants",
+     "description": "列出目前的私訊授權（對象、等級、範圍、到期）；負責人本人問的時候，也會列出最近私訊過但還沒授權的人（只有名字和則數）。",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "flag_sensitive",
+     "description": "工作帳號收到的訊息有敏感資料（帳密、金鑰、個資、金額／出款、正式環境資料庫等）時，"
+                    "出審核卡請負責人判斷風險（低／中／高），他決定前那個對話不能自動回。不要自己判斷風險高低。",
+     "inputSchema": {"type": "object", "properties": {
+         "ref": {"type": "string"}, "what": {"type": "string", "description": "哪裡敏感、為什麼（一兩句）"}},
+         "required": ["ref", "what"]}},
     {"name": "post_message",
      "description": "用工作帳號在指定群組直接發一則新訊息（不是回覆）。只能發到 watch.yaml 的 post_to 群組，"
                     "例如排定的工作日報；發之前先用 read_tg_chat（帶 chat）確認今天沒發過。送出後負責人會收到通知。",

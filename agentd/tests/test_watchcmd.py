@@ -35,6 +35,8 @@ def setup(broker, manager):
     w = AccountWatcher(broker, manager, p)
     w.transport = FakeTransport(w.uploads)
     w.me = "@SnakeFQ"
+    from test_account import let_in
+    let_in(w, -100)
     return p, w, WatchCommands({"fq": w})
 
 
