@@ -140,6 +140,42 @@ def test_into_an_open_agent_view_as_a_background_job(broker, manager, tmp_path, 
     wait_for(lambda: any(r == "user" and "做好了" in t for r, t in roles(manager.get("fq"))))
 
 
+def test_a_members_work_stays_theirs(broker, manager, tmp_path, monkeypatch):
+    """Work a member asked for: the turns its conversation causes (stopping,
+    asking for help) work for that member, so they may press those cards."""
+    from ghost_agentd.helpdesk import HelpDesk
+    p, root, d, tm = setup(broker, manager, tmp_path, monkeypatch)
+    elsa = {"id": 8653633889, "name": "王 爾莎"}
+    d.propose(p, "成員的", "platform", "x", branch="feature/m")
+    card = next(x for x in broker.pending.values() if getattr(x, "dispatch", None))
+    card.requested_by = elsa  # proposed while working for her
+    broker.decide(card.id, "o0", "tg")
+    item = next(iter(d.items.values()))
+    wait_for(lambda: item.state == "started")
+    assert item.requested_by == elsa
+
+    sent = []
+    a = manager.get("fq")
+    monkeypatch.setattr(a, "send", lambda text, source, **kw: sent.append((source, kw.get("requester"), text)))
+    d.on_stop(item.tmux, "", "做完了")
+    wait_for(lambda: len(sent) == 1)
+    assert sent[0][1] == elsa and "王 爾莎" in sent[0][2]
+
+    import yaml
+    f = p.dir / "project.yaml"
+    conf = yaml.safe_load(f.read_text()) or {}
+    conf["paths"] = [str(root)]  # ask() reloads the project from disk
+    f.write_text(yaml.safe_dump(conf, allow_unicode=True))
+    h = HelpDesk(broker, manager, d)
+    assert h.ask({"text": "可以上正式嗎", "cwd": item.worktree + "/src", "session_id": "s9"})["ok"]
+    wait_for(lambda: len(sent) == 2)
+    assert sent[1][:2] == ("worker", elsa)
+    # Any other conversation in the project is still the owner's.
+    assert h.ask({"text": "別的", "cwd": str(root / "platform"), "session_id": "s10"})["ok"]
+    wait_for(lambda: len(sent) == 3)
+    assert sent[2][1] is None
+
+
 def test_trust_keeps_the_rest_of_the_config(tmp_path):
     import json
     tmp_path = tmp_path / "home"

@@ -86,7 +86,7 @@ def main() -> int:
     dispatcher = Dispatcher(broker, assistants)
     broker.listeners.append(dispatcher)
     from .helpdesk import HelpDesk
-    helpdesk = HelpDesk(broker, assistants)
+    helpdesk = HelpDesk(broker, assistants, dispatcher)
     tools = Tools(broker, assistants, bot_for, accounts, sources, dispatcher, helpdesk)
 
     def bring_up(name: str) -> None:

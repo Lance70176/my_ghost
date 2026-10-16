@@ -48,9 +48,10 @@ class HelpRequest:
 
 
 class HelpDesk:
-    def __init__(self, broker: Broker, assistants):
+    def __init__(self, broker: Broker, assistants, dispatcher=None):
         self.broker = broker
         self.assistants = assistants
+        self.dispatcher = dispatcher  # Dispatcher, to know whose work a conversation is
         self.lock = threading.Lock()
         self.items: dict[str, HelpRequest] = {}
         self._load()
@@ -115,7 +116,15 @@ class HelpDesk:
                "涉及正式環境、發佈、權限、刪資料或花錢的，先用 ask_decision 問負責人，他同意後再用 reply_worker "
                "告訴它可以做（它自己的權限檢查照舊）；不該做的，用 reply_worker 說明原因和替代做法。"
                "你自己不要動手改任何東西。")
-        threading.Thread(target=self.assistants.get(p.name).send, args=(msg, "worker"), daemon=True).start()
+        # Dispatched for a member: deciding for it is theirs too, so this turn works for them.
+        d = self.dispatcher.owning(h.session_id, h.tmux, h.job, h.cwd) if self.dispatcher else None
+        requester = d.requested_by if d and d.project == p.name else None
+        if requester:
+            from .dispatch import member_name
+            msg += (f"\n（這個工作對話是 TG 成員 {member_name(requester)} 交辦的，要決定的事開卡會標對方的名字，"
+                    "對方和負責人都能按。）")
+        threading.Thread(target=self.assistants.get(p.name).send, args=(msg, "worker"), daemon=True,
+                         kwargs={"requester": requester}).start()
         return {"ok": True, "id": h.id, "project": p.name, "deliverable": h.deliverable}
 
     def _name(self, h: HelpRequest) -> str:
