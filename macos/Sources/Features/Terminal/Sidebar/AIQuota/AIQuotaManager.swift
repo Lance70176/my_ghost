@@ -55,7 +55,7 @@ class AIQuotaManager: ObservableObject {
             Task { @MainActor in
                 let manager = AIQuotaManager.shared
                 guard manager.showInSidebar else { return }
-                manager.refreshAllVisible()
+                manager.refreshAllVisible(trigger: .timer)
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -65,11 +65,11 @@ class AIQuotaManager: ObservableObject {
     // MARK: - Refresh
 
     /// Fetch fresh usage for one account.
-    func refresh(_ account: AIQuotaAccount) {
+    func refresh(_ account: AIQuotaAccount, trigger: AIUsageTrigger) {
         guard !refreshing.contains(account.id) else { return }
         refreshing.insert(account.id)
         Task {
-            let snapshot = await AIUsageFetcher.fetch(for: account)
+            let snapshot = await AIUsageFetcher.fetch(for: account, trigger: trigger)
             if snapshot.isError,
                let previous = self.snapshots[account.id], !previous.windows.isEmpty {
                 // Transient failures (e.g. the endpoint's own 429) shouldn't
@@ -87,9 +87,9 @@ class AIQuotaManager: ObservableObject {
     }
 
     /// Fetch fresh usage for every visible account.
-    func refreshAllVisible() {
+    func refreshAllVisible(trigger: AIUsageTrigger) {
         for account in visibleAccounts {
-            refresh(account)
+            refresh(account, trigger: trigger)
         }
     }
 

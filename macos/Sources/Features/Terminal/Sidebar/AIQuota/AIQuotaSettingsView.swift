@@ -65,7 +65,7 @@ struct AIQuotaSettingsView: View {
                     } else {
                         manager.accounts.append(saved)
                     }
-                    manager.refresh(saved)
+                    manager.refresh(saved, trigger: .settings)
                 })
         }
     }

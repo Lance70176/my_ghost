@@ -17,16 +17,88 @@ enum AIUsageFetchError: LocalizedError {
     }
 }
 
+/// What caused a usage fetch, recorded in the request log so a burst of
+/// requests (and the 429s it earns) can be traced back to its source.
+enum AIUsageTrigger: String {
+    case timer      // the periodic auto-refresh
+    case appear     // the sidebar section appearing
+    case button     // the section's ⟳ button
+    case row        // clicking an account row
+    case settings   // saving an account in settings
+}
+
+/// Appends one line per usage request to
+/// Application Support/MyGhost/ai_usage.log. The usage endpoints rate-limit
+/// per account, and other clients (the Claude Code CLI, the web frontend)
+/// share that budget, so the log is how to tell whether a 429 followed our
+/// own traffic or someone else's.
+enum AIUsageRequestLog {
+    private static let maxBytes = 1_000_000
+    private static let queue = DispatchQueue(label: "com.myghost.ai-usage-log")
+
+    private static var fileURL: URL {
+        FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("MyGhost/ai_usage.log")
+    }
+
+    private static let timestampFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = .current
+        return formatter
+    }()
+
+    static func record(
+        provider: String,
+        trigger: AIUsageTrigger,
+        start: Date,
+        status: String,
+        detail: String = ""
+    ) {
+        let ms = Int(Date().timeIntervalSince(start) * 1000)
+        var line = "\(timestampFormatter.string(from: start)) \(provider) trigger=\(trigger.rawValue) status=\(status) ms=\(ms)"
+        if !detail.isEmpty { line += " \(detail)" }
+        line += "\n"
+        queue.async { append(line) }
+    }
+
+    private static func append(_ line: String) {
+        let url = fileURL
+        let fm = FileManager.default
+        // Keep one previous generation so the log never grows unbounded.
+        if let size = (try? fm.attributesOfItem(atPath: url.path))?[.size] as? Int,
+           size > maxBytes {
+            let old = url.appendingPathExtension("1")
+            try? fm.removeItem(at: old)
+            try? fm.moveItem(at: url, to: old)
+        }
+        guard let data = line.data(using: .utf8) else { return }
+        if let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+        } else {
+            try? fm.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? data.write(to: url)
+        }
+    }
+}
+
 /// Fetches usage for one account, dispatching on the provider.
 enum AIUsageFetcher {
-    static func fetch(for account: AIQuotaAccount) async -> AIUsageSnapshot {
+    static func fetch(
+        for account: AIQuotaAccount,
+        trigger: AIUsageTrigger
+    ) async -> AIUsageSnapshot {
         do {
             let windows: [AIUsageWindow]
             switch account.provider {
             case .claudeCode:
-                windows = try await ClaudeUsageFetcher.fetch(account: account)
+                windows = try await ClaudeUsageFetcher.fetch(account: account, trigger: trigger)
             case .chatGPT:
-                windows = try await ChatGPTUsageFetcher.fetch(account: account)
+                windows = try await ChatGPTUsageFetcher.fetch(account: account, trigger: trigger)
             }
             return AIUsageSnapshot(windows: windows, fetchedAt: Date())
         } catch {
@@ -39,17 +111,37 @@ enum AIUsageFetcher {
 
     // MARK: Shared helpers
 
-    static func getJSON(url: URL, headers: [String: String]) async throws -> Any {
+    static func getJSON(
+        url: URL,
+        headers: [String: String],
+        provider: String,
+        trigger: AIUsageTrigger
+    ) async throws -> Any {
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = 15
         for (key, value) in headers {
             request.setValue(value, forHTTPHeaderField: key)
         }
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let start = Date()
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            AIUsageRequestLog.record(
+                provider: provider, trigger: trigger, start: start,
+                status: "error", detail: "error=\"\(error.localizedDescription)\"")
+            throw error
+        }
         guard let http = response as? HTTPURLResponse else {
+            AIUsageRequestLog.record(
+                provider: provider, trigger: trigger, start: start, status: "no-http")
             throw AIUsageFetchError.badResponse("No HTTP response")
         }
+        AIUsageRequestLog.record(
+            provider: provider, trigger: trigger, start: start,
+            status: String(http.statusCode), detail: limitHeaders(http))
         guard (200..<300).contains(http.statusCode) else {
             // Prefer the API's own error message over the raw body (which can
             // be an HTML page when a proxy rejects the request).
@@ -62,6 +154,21 @@ enum AIUsageFetcher {
             throw AIUsageFetchError.httpError(http.statusCode, detail)
         }
         return try JSONSerialization.jsonObject(with: data)
+    }
+
+    /// The response headers worth logging: anything describing a rate limit
+    /// plus the request ID to quote when asking the provider about it.
+    private static func limitHeaders(_ http: HTTPURLResponse) -> String {
+        http.allHeaderFields
+            .compactMap { key, value -> String? in
+                guard let name = (key as? String)?.lowercased(),
+                      name == "retry-after" || name == "request-id"
+                        || name == "x-request-id" || name.contains("ratelimit")
+                else { return nil }
+                return "\(name)=\(value)"
+            }
+            .sorted()
+            .joined(separator: " ")
     }
 
     static func parseISODate(_ value: Any?) -> Date? {
@@ -80,13 +187,16 @@ enum AIUsageFetcher {
 enum ClaudeUsageFetcher {
     private static let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
 
-    static func fetch(account: AIQuotaAccount) async throws -> [AIUsageWindow] {
+    static func fetch(
+        account: AIQuotaAccount,
+        trigger: AIUsageTrigger
+    ) async throws -> [AIUsageWindow] {
         let token = try resolveToken(account: account)
         let json = try await AIUsageFetcher.getJSON(url: usageURL, headers: [
             "Authorization": "Bearer \(token)",
             "anthropic-beta": "oauth-2025-04-20",
             "Content-Type": "application/json",
-        ])
+        ], provider: "claude", trigger: trigger)
         guard let dict = json as? [String: Any] else {
             throw AIUsageFetchError.badResponse("Unexpected response shape")
         }
@@ -232,7 +342,10 @@ enum ClaudeUsageFetcher {
 enum ChatGPTUsageFetcher {
     private static let usageURL = URL(string: "https://chatgpt.com/backend-api/codex/usage")!
 
-    static func fetch(account: AIQuotaAccount) async throws -> [AIUsageWindow] {
+    static func fetch(
+        account: AIQuotaAccount,
+        trigger: AIUsageTrigger
+    ) async throws -> [AIUsageWindow] {
         let credential = try resolveCredential(account: account)
         // The Codex CLI User-Agent/originator headers are required — without
         // them Cloudflare rejects the request with an HTML 403 page.
@@ -245,7 +358,8 @@ enum ChatGPTUsageFetcher {
         if let accountID = credential.accountID {
             headers["chatgpt-account-id"] = accountID
         }
-        let json = try await AIUsageFetcher.getJSON(url: usageURL, headers: headers)
+        let json = try await AIUsageFetcher.getJSON(
+            url: usageURL, headers: headers, provider: "chatgpt", trigger: trigger)
 
         // Look for rate-limit windows anywhere in the response: objects with a
         // used_percent field, optionally window_minutes / resets_in_seconds.

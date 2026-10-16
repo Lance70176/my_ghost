@@ -21,7 +21,7 @@ struct AIQuotaSectionView: View {
 
                 Spacer()
 
-                Button(action: { manager.refreshAllVisible() }) {
+                Button(action: { manager.refreshAllVisible(trigger: .button) }) {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 10))
                 }
@@ -41,12 +41,12 @@ struct AIQuotaSectionView: View {
                     account: account,
                     snapshot: manager.snapshots[account.id],
                     isRefreshing: manager.refreshing.contains(account.id),
-                    onTap: { manager.refresh(account) })
+                    onTap: { manager.refresh(account, trigger: .row) })
             }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .onAppear { manager.refreshAllVisible() }
+        .onAppear { manager.refreshAllVisible(trigger: .appear) }
     }
 }
 
