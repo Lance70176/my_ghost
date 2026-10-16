@@ -65,10 +65,20 @@ class AIQuotaManager: ObservableObject {
     // MARK: - Refresh
 
     /// Fetch fresh usage for one account.
+    /// Automatic triggers (timer, the section appearing) back off while the
+    /// last answer was a 429 still inside its Retry-After, or a 401 for the
+    /// token that's still in place; clicking refresh always asks.
     func refresh(_ account: AIQuotaAccount, trigger: AIUsageTrigger) {
         guard !refreshing.contains(account.id) else { return }
+        let previous = snapshots[account.id]
+        if trigger.isAutomatic, let until = previous?.pausedUntil, until > Date() { return }
         refreshing.insert(account.id)
         Task {
+            if trigger.isAutomatic, let rejected = previous?.rejectedCredential,
+               await AIUsageFetcher.credentialFingerprint(for: account) == rejected {
+                self.refreshing.remove(account.id)
+                return
+            }
             let snapshot = await AIUsageFetcher.fetch(for: account, trigger: trigger)
             if snapshot.isError,
                let previous = self.snapshots[account.id], !previous.windows.isEmpty {
@@ -78,7 +88,9 @@ class AIQuotaManager: ObservableObject {
                 self.snapshots[account.id] = AIUsageSnapshot(
                     windows: previous.windows,
                     fetchedAt: previous.fetchedAt,
-                    errorMessage: snapshot.errorMessage)
+                    errorMessage: snapshot.errorMessage,
+                    pausedUntil: snapshot.pausedUntil,
+                    rejectedCredential: snapshot.rejectedCredential)
             } else {
                 self.snapshots[account.id] = snapshot
             }

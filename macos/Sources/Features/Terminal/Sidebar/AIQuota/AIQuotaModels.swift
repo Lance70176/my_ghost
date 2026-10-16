@@ -98,6 +98,11 @@ struct AIUsageSnapshot: Equatable {
     var windows: [AIUsageWindow] = []
     var fetchedAt: Date
     var errorMessage: String?
+    /// After a 429: automatic refreshes hold off until this time.
+    var pausedUntil: Date?
+    /// After a 401: fingerprint of the rejected token. Automatic refreshes
+    /// hold off until the CLI writes a different one.
+    var rejectedCredential: String?
 
     var isError: Bool { errorMessage != nil }
 }

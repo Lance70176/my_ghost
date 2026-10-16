@@ -310,6 +310,19 @@ enum L10nStrings {
         "Refresh all accounts": t("重新整理所有帳號", "刷新所有账号", "すべてのアカウントを更新"),
         "AI usage settings": t("AI 用量設定", "AI 用量设置", "AI 使用量の設定"),
         "Click to check quota": t("點一下查詢額度", "点击查询额度", "クリックして残量を確認"),
+        "Rate limited — auto-refresh paused until %@": t("已被限流，自動更新暫停到 %@", "已被限流，自动刷新暂停到 %@", "レート制限中、自動更新は %@ まで停止"),
+        "Claude Code login expired — open Claude Code once to refresh it":
+            t("Claude Code 登入已過期，請開一次 Claude Code 讓它更新",
+              "Claude Code 登录已过期，请打开一次 Claude Code 让它刷新",
+              "Claude Code のログインが期限切れです。Claude Code を一度起動して更新してください"),
+        "Codex login expired — run codex once to refresh it":
+            t("Codex 登入已過期，請執行一次 codex 讓它更新",
+              "Codex 登录已过期，请运行一次 codex 让它刷新",
+              "Codex のログインが期限切れです。codex を一度実行して更新してください"),
+        "Token rejected — paste a new one in AI usage settings":
+            t("Token 已失效，請到 AI 用量設定貼上新的",
+              "Token 已失效，请到 AI 用量设置粘贴新的",
+              "トークンが無効です。AI 使用量の設定で新しいものを貼り付けてください"),
         "No usage windows reported": t("沒有回報任何用量區間", "没有返回任何用量区间", "使用量の区間が報告されていません"),
         "reset time unavailable": t("無法取得重置時間", "无法获取重置时间", "リセット時刻は不明"),
         "resetting now": t("正在重置", "正在重置", "まもなくリセット"),

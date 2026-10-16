@@ -1,9 +1,15 @@
+import CryptoKit
 import Foundation
 import Security
 
 enum AIUsageFetchError: LocalizedError {
     case noCredential(String)
     case httpError(Int, String)
+    /// 401: the credential was rejected — usually an access token the CLI
+    /// hasn't refreshed because it hasn't been run lately.
+    case unauthorized(String)
+    /// 429, with the server's Retry-After in seconds when it sent one.
+    case rateLimited(retryAfter: TimeInterval?, String)
     case badResponse(String)
 
     var errorDescription: String? {
@@ -12,6 +18,10 @@ enum AIUsageFetchError: LocalizedError {
         case .httpError(let code, let body):
             let detail = body.isEmpty ? "" : ": \(body.prefix(120))"
             return "HTTP \(code)\(detail)"
+        case .unauthorized(let body):
+            return "HTTP 401" + (body.isEmpty ? "" : ": \(body.prefix(120))")
+        case .rateLimited(_, let body):
+            return "HTTP 429" + (body.isEmpty ? "" : ": \(body.prefix(120))")
         case .badResponse(let msg): return msg
         }
     }
@@ -25,6 +35,9 @@ enum AIUsageTrigger: String {
     case button     // the section's ⟳ button
     case row        // clicking an account row
     case settings   // saving an account in settings
+
+    /// Fired without the user asking, so it should back off after errors.
+    var isAutomatic: Bool { self == .timer || self == .appear }
 }
 
 /// Appends one line per usage request to
@@ -101,12 +114,59 @@ enum AIUsageFetcher {
                 windows = try await ChatGPTUsageFetcher.fetch(account: account, trigger: trigger)
             }
             return AIUsageSnapshot(windows: windows, fetchedAt: Date())
+        } catch AIUsageFetchError.unauthorized {
+            // Asking again with the same token only earns more 401s — and
+            // enough of those get the token locked out with 429s for most of
+            // an hour — so remember which token failed and wait for a new one.
+            return AIUsageSnapshot(
+                windows: [],
+                fetchedAt: Date(),
+                errorMessage: expiredMessage(for: account),
+                rejectedCredential: await credentialFingerprint(for: account))
+        } catch AIUsageFetchError.rateLimited(let retryAfter, _) {
+            let resume = Date().addingTimeInterval(retryAfter ?? defaultRateLimitPause)
+            return AIUsageSnapshot(
+                windows: [],
+                fetchedAt: Date(),
+                errorMessage: L("Rate limited — auto-refresh paused until %@",
+                                resume.formatted(date: .omitted, time: .shortened)),
+                pausedUntil: resume)
         } catch {
             return AIUsageSnapshot(
                 windows: [],
                 fetchedAt: Date(),
                 errorMessage: error.localizedDescription)
         }
+    }
+
+    /// How long to hold off after a 429 that carried no Retry-After.
+    private static let defaultRateLimitPause: TimeInterval = 15 * 60
+
+    private static func expiredMessage(for account: AIQuotaAccount) -> String {
+        if account.authMode == .manualToken {
+            return L("Token rejected — paste a new one in AI usage settings")
+        }
+        switch account.provider {
+        case .claudeCode:
+            return L("Claude Code login expired — open Claude Code once to refresh it")
+        case .chatGPT:
+            return L("Codex login expired — run codex once to refresh it")
+        }
+    }
+
+    /// A hash of the token a fetch for this account would send right now, so
+    /// a rejected token can be told apart from its refreshed replacement
+    /// without keeping the token itself around.
+    static func credentialFingerprint(for account: AIQuotaAccount) async -> String? {
+        let token: String?
+        switch account.provider {
+        case .claudeCode:
+            token = try? ClaudeUsageFetcher.resolveToken(account: account)
+        case .chatGPT:
+            token = try? ChatGPTUsageFetcher.resolveCredential(account: account).token
+        }
+        guard let token else { return nil }
+        return SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     // MARK: Shared helpers
@@ -151,7 +211,16 @@ enum AIUsageFetcher {
                let message = error["message"] as? String {
                 detail = message
             }
-            throw AIUsageFetchError.httpError(http.statusCode, detail)
+            switch http.statusCode {
+            case 401:
+                throw AIUsageFetchError.unauthorized(detail)
+            case 429:
+                let retryAfter = http.value(forHTTPHeaderField: "Retry-After")
+                    .flatMap { TimeInterval($0.trimmingCharacters(in: .whitespaces)) }
+                throw AIUsageFetchError.rateLimited(retryAfter: retryAfter, detail)
+            default:
+                throw AIUsageFetchError.httpError(http.statusCode, detail)
+            }
         }
         return try JSONSerialization.jsonObject(with: data)
     }
@@ -284,7 +353,7 @@ enum ClaudeUsageFetcher {
         }
     }
 
-    private static func resolveToken(account: AIQuotaAccount) throws -> String {
+    static func resolveToken(account: AIQuotaAccount) throws -> String {
         if account.authMode == .manualToken {
             let token = account.token.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !token.isEmpty else {
@@ -470,7 +539,7 @@ enum ChatGPTUsageFetcher {
         return parts.map { $0.capitalized }.joined(separator: " ")
     }
 
-    private static func resolveCredential(
+    static func resolveCredential(
         account: AIQuotaAccount
     ) throws -> (token: String, accountID: String?) {
         if account.authMode == .manualToken {
