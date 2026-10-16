@@ -146,6 +146,10 @@ def test_send_reply_goes_out_at_once_and_is_reported(broker, manager):
     ref = next(iter(w.inbox))
     w.draft(ref, "我查一下")  # an open card for the same message…
     assert "找不到" in w.send_now("nope", "hi") and "空的" in w.send_now(ref, "  ")
+    # Only chats listed in auto_reply, whatever the assistant thinks.
+    assert "auto_reply" in w.send_now(ref, "換好了") and w.transport.sent == []
+    (w.project.dir / "watch.yaml").write_text("window: always\nbatch: 0\nauto_reply: [77]\n")
+    w._watch = None
     assert w.send_now(ref, "換好了，測試站已更新。") == "已用 @SnakeFQ 送出。"
     assert w.transport.sent == [(77, "換好了，測試站已更新。", 12)]  # only that chat, as a reply
     assert not any(p.reply for p in broker.pending.values())  # …is closed
