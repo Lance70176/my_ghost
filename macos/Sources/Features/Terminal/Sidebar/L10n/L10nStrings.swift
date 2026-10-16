@@ -101,6 +101,7 @@ enum L10nStrings {
         "Skip": t("略過", "略过", "スキップ"),
         "Not sure yet: set it aside without answering": t("還不確定：先放著不回答", "还不确定：先放着不回答", "まだ決められない：答えずに保留"),
         "%@ assistant asks": t("%@ 助手問你", "%@ 助手问你", "%@ アシスタントからの質問"),
+        "Open it in the decision list": t("到決策列表處理", "到决策列表处理", "判断リストで開く"),
         "Open the assistant conversation": t("打開助手對話", "打开助手对话", "アシスタントとの会話を開く"),
         "Under discussion": t("討論中", "讨论中", "相談中"),
         "These requests stay open without a time limit. Once the assistant runs it will talk them through with you here; for now, decide when you're ready.": t("這些請求不會逾時，會一直保留。助手上線後會在這裡和你討論；在那之前，想好了直接在這裡同意或拒絕。", "这些请求不会超时，会一直保留。助手上线后会在这里和你讨论；在那之前，想好了直接在这里同意或拒绝。", "これらの要求は期限なしで保留されます。アシスタントが動き出すとここで一緒に検討します。それまでは、決まったらここで許可か拒否を選んでください。"),

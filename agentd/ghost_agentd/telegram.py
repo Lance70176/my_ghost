@@ -32,9 +32,9 @@ from .policy import L3, LEVEL_NAMES
 API = "https://api.telegram.org/bot{token}/{method}"
 LEVEL_ICON = {0: "⚪️", 1: "🟢", 2: "🟠", 3: "🔴"}
 STATE_TEXT = {
-    "allowed": "✅ 已同意",
-    "denied": "❌ 已拒絕",
-    "expired": "⌛️ 逾時，已預設拒絕",
+    "allowed": ("✅", "已同意"),
+    "denied": ("❌", "已拒絕"),
+    "expired": ("⌛️", "逾時，已預設拒絕"),
 }
 SOURCE_TEXT = {"tg": "TG", "myghost": "MyGhost", "web": "手機網頁", "timeout": "逾時",
                "self_reply": "你已在 TG 自己回覆", "replaced": "已改稿"}
@@ -204,8 +204,14 @@ class Bot:
                     "🚀 <b>{} 助手提議開工</b>" if getattr(p, "dispatch", None) else "❓ <b>{} 助手問你</b>")
             lines = [head.format(esc(p.project)), f"<blockquote>{esc(p.summary[:3000])}</blockquote>"]
             if not p.open:
-                pick = p.options[p.chosen]["label"] if p.chosen is not None else "（略過）"
-                lines.append(f"<b>你選了：{esc(pick)}</b>（{esc(SOURCE_TEXT.get(p.decided_by, p.decided_by))}）")
+                # Bot messages can't set a text colour; inline code is the one
+                # style every client draws in its own colour, so the answer
+                # stands apart from the question quoted above it.
+                src = esc(SOURCE_TEXT.get(p.decided_by, p.decided_by))
+                if p.chosen is not None:
+                    lines.append(f"✅ <b>你選了：</b><code>{esc(p.options[p.chosen]['label'])}</code>（{src}）")
+                else:
+                    lines.append(f"⏭️ <b>你選了：</b><code>略過</code>（{src}）")
             return framed(p, lines)
         who = esc(p.tab_title or p.session_id[:8] or "?")
         head = f"{LEVEL_ICON[p.level]} <b>{LEVEL_NAMES[p.level]}</b> · {esc(p.project)} · {who}"
@@ -220,7 +226,8 @@ class Bot:
         else:
             when = time.strftime("%H:%M")
             src = SOURCE_TEXT.get(p.decided_by, p.decided_by)
-            lines.append(f"<b>{STATE_TEXT.get(p.state, p.state)}</b>（{esc(src)} · {when}）")
+            icon, text = STATE_TEXT.get(p.state, ("", p.state))
+            lines.append(f"{icon} <code>{esc(text)}</code>（{esc(src)} · {when}）")
             if p.always_added:
                 lines.append(f"♾ 之後此專案一律允許 <code>{esc(p.always_added)}</code>")
         return framed(p, lines)

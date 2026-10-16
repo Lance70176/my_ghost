@@ -9,7 +9,9 @@ import SwiftUI
 @MainActor
 enum AgentAssistantNav {
     /// `focusCard`: scroll the conversation to the question behind this card.
-    static func show(project: String?, hostKey: String, focusCard: String? = nil) {
+    /// `focusDecision`: scroll the pending-decisions list to this card.
+    static func show(project: String?, hostKey: String, focusCard: String? = nil,
+                     focusDecision: String? = nil) {
         let windows = NSApp.orderedWindows.filter { $0.windowController is SidebarTerminalController }
         // Prefer a window that has this host open.
         let withHost = windows.first { w in
@@ -22,6 +24,11 @@ enum AgentAssistantNav {
         }
         controller.sidebarUIState.assistantProject = project
         controller.sidebarUIState.assistantFocusCard = focusCard
+        if let focusDecision {
+            // The decision list is the right column's default view.
+            controller.sidebarUIState.focusedWorkerID = nil
+            controller.sidebarUIState.assistantFocusDecision = focusDecision
+        }
         controller.sidebarUIState.sidebarMode = .assistant
         if controller.sidebarUIState.isSidebarCollapsed {
             controller.sidebarUIState.isSidebarCollapsed = false
@@ -1017,6 +1024,23 @@ private struct AgentRightColumn: View {
         client.pending.filter { project == nil || $0.project == project }
     }
 
+    /// The card opened from the bottom-right stack, lit up for a moment.
+    @State private var highlighted: String?
+
+    /// Scroll to the card the bottom-right stack was clicked on, once it's
+    /// in the list (the page and its cards may arrive after the click).
+    private func landOnFocus(_ proxy: ScrollViewProxy) {
+        guard let id = uiState.assistantFocusDecision, pending.contains(where: { $0.id == id }) else { return }
+        uiState.assistantFocusDecision = nil
+        DispatchQueue.main.async {
+            withAnimation { proxy.scrollTo(id, anchor: .top) }
+            highlighted = id
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                if highlighted == id { highlighted = nil }
+            }
+        }
+    }
+
     var body: some View {
         if let project, let id = uiState.focusedWorkerID {
             AgentWorkerConversationView(project: project, workerID: id, hostKey: client.hostKey) {
@@ -1039,13 +1063,26 @@ private struct AgentRightColumn: View {
                         .padding(.vertical, 6)
                     Spacer(minLength: 0)
                 } else {
-                    ScrollView {
-                        VStack(spacing: 8) {
-                            ForEach(pending) { p in
-                                AgentDecisionCard(p: p, width: nil)
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            VStack(spacing: 8) {
+                                ForEach(pending) { p in
+                                    AgentDecisionCard(p: p, width: nil)
+                                        .id(p.id)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 12)
+                                                .fill(Color.accentColor.opacity(highlighted == p.id ? 0.22 : 0))
+                                                .padding(-4)
+                                                .animation(.easeOut(duration: 0.4), value: highlighted)
+                                        )
+                                }
                             }
+                            .padding(4)
+                            .padding(.bottom, 2)
                         }
-                        .padding(.bottom, 6)
+                        .onAppear { landOnFocus(proxy) }
+                        .onChange(of: uiState.assistantFocusDecision) { _ in landOnFocus(proxy) }
+                        .onChange(of: pending.map(\.id)) { _ in landOnFocus(proxy) }
                     }
                 }
             }

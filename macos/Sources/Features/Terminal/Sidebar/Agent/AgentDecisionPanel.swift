@@ -183,7 +183,7 @@ private struct AgentDecisionStack: View {
             ScrollView(.vertical) {
                 VStack(alignment: .trailing, spacing: 8) {
                     ForEach(hub.allPending.suffix(3)) { hp in
-                        AgentDecisionCard(p: hp.pending, showHost: hub.clients.count > 1 || !hp.client.isLocal)
+                        AgentDecisionNotice(p: hp.pending, showHost: hub.clients.count > 1 || !hp.client.isLocal)
                             .environmentObject(hp.client)
                     }
                 }
@@ -228,8 +228,86 @@ private final class KeyablePanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
 
-/// A pending request with its buttons; used by the bottom-right stack and the
-/// assistant window.
+/// One waiting decision in the bottom-right stack: what it is, no buttons.
+/// Clicking it opens the assistant page at that card in its decision list,
+/// where it's answered.
+private struct AgentDecisionNotice: View {
+    let p: AgentPending
+    var showHost = false
+    @EnvironmentObject private var client: AgentDaemonClient
+    @State private var hovering = false
+
+    private var icon: (name: String, color: Color) {
+        if p.reply != nil { return ("paperplane.circle.fill", .orange) }
+        if p.dispatch != nil { return ("hammer.circle.fill", .green) }
+        if p.isChoice { return ("questionmark.bubble.fill", .accentColor) }
+        if p.isHighRisk { return ("exclamationmark.shield.fill", .red) }
+        return ("lock.shield", p.level >= 2 ? .orange : .green)
+    }
+
+    private var title: String {
+        if let r = p.reply {
+            return L("Reply to %@ as %@?", r.isPrivate == false ? r.chat : r.sender, r.account)
+        }
+        if p.dispatch != nil { return L("%@ assistant proposes work", p.project) }
+        if p.isChoice { return L("%@ assistant asks", p.project) }
+        return L("%@ · %@ needs permission", p.project,
+                 p.tabTitle.isEmpty ? String(p.sessionId.prefix(8)) : p.tabTitle)
+    }
+
+    private var detail: String {
+        if let d = p.dispatch, let t = d.title, !t.isEmpty { return t }
+        return p.summary
+    }
+
+    var body: some View {
+        Button {
+            AgentAssistantNav.show(project: p.project, hostKey: client.hostKey, focusDecision: p.id)
+        } label: {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: icon.name)
+                    .foregroundColor(icon.color)
+                    .agentFont(.title3)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .agentFont(.callout, weight: .semibold)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(detail)
+                        .agentFont(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
+                        .truncationMode(.tail)
+                    if showHost {
+                        Label(client.hostName, systemImage: client.isLocal ? "laptopcomputer" : "server.rack")
+                            .agentFont(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right")
+                    .foregroundColor(.secondary)
+                    .agentFont(.caption)
+                    .padding(.top, 3)
+            }
+            .padding(10)
+            .frame(width: 344, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(.regularMaterial)
+                    .overlay(RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.primary.opacity(hovering ? 0.06 : 0)))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(icon.color.opacity(0.6), lineWidth: 1))
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(L("Open it in the decision list"))
+    }
+}
+
+/// A pending request with its buttons; used by the assistant page.
 struct AgentDecisionCard: View {
     let p: AgentPending
     /// nil: fill the space given (the assistant's right column).

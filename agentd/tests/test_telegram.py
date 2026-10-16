@@ -136,7 +136,15 @@ def test_cards_stand_out_from_chat(broker):
     assert text.startswith(RULE) and text.endswith(RULE) and "待你決定" in text
     assert "<blockquote>要不要換影片？</blockquote>" in text
     broker.decide(p.id, "deny", "tg")
-    assert "已處理" in bot.card_text(p) and "（略過）" in bot.card_text(p)
+    assert "已處理" in bot.card_text(p) and "<code>略過</code>（TG）" in bot.card_text(p)
+
+
+def test_answer_drawn_apart_from_question(broker):
+    from ghost_agentd.telegram import Bot
+    bot = Bot.__new__(Bot)
+    p = broker.create_choice("fq", "上傳嗎？", [{"label": "OK <上傳>"}, {"label": "先不要"}])
+    broker.decide(p.id, "o0", "myghost")
+    assert "✅ <b>你選了：</b><code>OK &lt;上傳&gt;</code>（MyGhost）" in bot.card_text(p)
 
 
 from test_broker import broker, home  # noqa: E402,F401  (fixtures)
