@@ -103,6 +103,7 @@ class DBQuery:
         self.broker = broker
         self.assistants = assistants
         self.locks: dict[str, threading.Lock] = {}
+        self.flavors: dict[str, str] = {}  # project/db -> mysql | mariadb
 
     # ------------------------------------------------------------ the tool
 
@@ -139,7 +140,7 @@ class DBQuery:
                 if err:
                     return f"連不上「{name}」：{err}"
             # Read-only twice over: the session and the transaction itself.
-            script = ("SET SESSION TRANSACTION READ ONLY; SET SESSION max_statement_time = 60; "
+            script = (f"SET SESSION TRANSACTION READ ONLY; {self._time_limit(project, name, client, env)}"
                       f"START TRANSACTION READ ONLY; {sql.rstrip().rstrip(';')}; ROLLBACK;")
             t0 = time.time()
             try:
@@ -163,6 +164,24 @@ class DBQuery:
             text = text[:MAX_CHARS]
             more = f"\n（只列前面一部分，共 {rows} 列；要看更多請加條件或 LIMIT。）"
         return f"「{name}」{rows} 列（tab 分隔，第一列是欄位名）：\n{text}{more}"
+
+    def _time_limit(self, project: Project, name: str, client: str, env: dict) -> str:
+        """The server-side 60 s limit, which MySQL and MariaDB spell differently
+        (asked once per database; none if the server can't be asked)."""
+        key = f"{project.name}/{name}"
+        if key not in self.flavors:
+            try:
+                r = subprocess.run([client, "--batch", "--skip-column-names", "--connect-timeout=10",
+                                    "-e", "SELECT VERSION()"], capture_output=True, text=True, timeout=30,
+                                   env=env, stdin=subprocess.DEVNULL)
+                v = r.stdout.strip()
+            except subprocess.TimeoutExpired:
+                v = ""
+            if not v:
+                return ""  # ask again next time
+            self.flavors[key] = "mariadb" if "mariadb" in v.lower() else "mysql"
+        return ("SET SESSION max_statement_time = 60; " if self.flavors[key] == "mariadb"
+                else "SET SESSION max_execution_time = 60000; ")
 
     def _tunnel(self, db: dict, env: dict) -> str:
         tunnel = os.path.expanduser(str(db.get("tunnel") or ""))

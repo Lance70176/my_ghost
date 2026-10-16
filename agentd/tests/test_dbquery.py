@@ -51,6 +51,7 @@ def test_runs_read_only_and_logs(broker, manager, tmp_path):
     ran = log.read_text()
     assert "--batch" in ran and "START TRANSACTION READ ONLY; SELECT id, name FROM member LIMIT 2; ROLLBACK;" in ran
     assert "SET SESSION TRANSACTION READ ONLY" in ran
+    assert "max_execution_time = 60000" in ran  # the fake isn't MariaDB: MySQL's limit
     ev = [json.loads(l) for l in (p.dir / "events.jsonl").read_text().splitlines()]
     assert ev[-1]["type"] == "db_query" and ev[-1]["db"] == "lsc-dev" and ev[-1]["rows"] == 2
     srv.close()
