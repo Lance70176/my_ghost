@@ -239,6 +239,8 @@ struct SidebarView: View {
 
     /// ghost-agentd: pending decisions count on the assistant button.
     @ObservedObject private var agentHub = AgentHub.shared
+    /// Whether the AI assistant is switched on (app menu); off hides ✦.
+    @ObservedObject private var agentFeature = AgentFeature.shared
 
     /// Pending cards on the host this window is showing.
     private var hostPending: Int {
@@ -321,6 +323,7 @@ struct SidebarView: View {
                 }
                 .buttonStyle(.borderless)
 
+                if agentFeature.isEnabled {
                 Button(action: { sidebarMode = .assistant }) {
                     Image(systemName: "sparkles")
                         .font(.system(size: 15))
@@ -340,6 +343,7 @@ struct SidebarView: View {
                 }
                 .buttonStyle(.borderless)
                 .help(L("AI assistants"))
+                }
             }
             .background(Color(nsColor: .controlBackgroundColor))
             .padding(.top, 2)
@@ -834,7 +838,7 @@ private struct SidebarStandaloneTabRow: View {
 
             Spacer()
 
-            AgentStatusBadge(tab: tab)
+            AgentStatusBadgeIfEnabled(tab: tab)
 
             if tab.bell {
                 Image(systemName: "bell.fill")
@@ -1057,7 +1061,7 @@ private struct SidebarGroupChildRow: View {
 
             Spacer()
 
-            AgentStatusBadge(tab: child)
+            AgentStatusBadgeIfEnabled(tab: child)
 
             if isActiveChild {
                 Image(systemName: "circle.fill")

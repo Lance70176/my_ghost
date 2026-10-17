@@ -4,6 +4,8 @@ import Foundation
 enum AIProvider: String, Codable, CaseIterable, Identifiable {
     case claudeCode = "claude_code"
     case chatGPT = "chatgpt"
+    /// Google Antigravity CLI (agy).
+    case antigravity = "antigravity"
 
     var id: String { rawValue }
 
@@ -11,6 +13,7 @@ enum AIProvider: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .claudeCode: return "Claude Code"
         case .chatGPT: return "ChatGPT"
+        case .antigravity: return "Antigravity (agy)"
         }
     }
 
@@ -19,8 +22,13 @@ enum AIProvider: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .claudeCode: return "asterisk"
         case .chatGPT: return "sparkles"
+        case .antigravity: return "triangle"
         }
     }
+
+    /// Whether a pasted token can stand in for the local login. agy reads
+    /// its own login, so it only has the local one.
+    var supportsManualToken: Bool { self != .antigravity }
 }
 
 /// How the account's credential is obtained.

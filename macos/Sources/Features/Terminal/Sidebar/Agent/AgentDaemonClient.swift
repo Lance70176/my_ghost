@@ -702,6 +702,19 @@ final class AgentHub: ObservableObject {
         timer = t
     }
 
+    /// The AI assistant was switched off: stop polling, close every host's
+    /// client (and its ssh forward), and forget their cards.
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        if let activity { ProcessInfo.processInfo.endActivity(activity) }
+        activity = nil
+        for c in clients.values { c.shutdown() }
+        clients.removeAll()
+        allPending = []
+        objectWillChange.send()
+    }
+
     private var ticks = 0
 
     private func tick() {
@@ -764,6 +777,20 @@ final class AgentHub: ObservableObject {
             .flatMap { c in c.pending.map { AgentHostPending(client: c, pending: $0) } }
         if next.map(\.id) != allPending.map(\.id) || next != allPending {
             allPending = next
+        }
+    }
+}
+
+/// A row's status badge, only while the AI assistant is on: building the
+/// badge asks the hub for the tab's host client, which would start polling
+/// (and open an ssh forward) even with the feature off.
+struct AgentStatusBadgeIfEnabled: View {
+    @ObservedObject private var feature = AgentFeature.shared
+    let tab: SidebarTabEntry
+
+    var body: some View {
+        if feature.isEnabled {
+            AgentStatusBadge(tab: tab)
         }
     }
 }

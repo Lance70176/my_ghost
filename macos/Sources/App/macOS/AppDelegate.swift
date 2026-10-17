@@ -214,10 +214,11 @@ class AppDelegate: NSObject,
         applicationLaunchTime = ProcessInfo.processInfo.systemUptime
 
         installWebAccessMenuItem()
+        installAgentAssistantMenuItem()
 
-        // Decision cards and tab status from ghost-agentd (agentd/), when it runs.
-        AgentDecisionPanel.shared.start()
-        AgentZoom.shared.start()
+        // Decision cards and tab status from ghost-agentd (agentd/), when the
+        // AI assistant is switched on (off by default).
+        AgentFeature.shared.startIfEnabled()
 
         // Check if secure input was enabled when we last quit.
         if UserDefaults.standard.bool(forKey: "SecureInput") != SecureInput.shared.enabled {
@@ -1264,6 +1265,31 @@ class AppDelegate: NSObject,
         item.target = self
         let afterAbout = appMenu.indexOfItem(withTarget: nil, andAction: #selector(showAbout(_:)))
         appMenu.insertItem(item, at: afterAbout >= 0 ? afterAbout + 1 : 1)
+    }
+
+    /// "AI Assistant" in the app menu, under Web Access: a checkmark item
+    /// switching the ghost-agentd feature on and off.
+    private func installAgentAssistantMenuItem() {
+        guard let appMenu = NSApp.mainMenu?.item(at: 0)?.submenu else { return }
+        guard appMenu.items.allSatisfy({ $0.action != #selector(toggleAgentAssistant(_:)) }) else { return }
+        let item = NSMenuItem(
+            title: L("AI Assistant"),
+            action: #selector(toggleAgentAssistant(_:)),
+            keyEquivalent: "")
+        item.target = self
+        item.toolTip = L("Project assistants that watch your Claude Code work, ask you to decide in cards, and talk to you in Telegram. Needs ghost-agentd running.")
+        item.state = MainActor.assumeIsolated { AgentFeature.shared.isEnabled } ? .on : .off
+        let afterWeb = appMenu.indexOfItem(withTarget: self, andAction: #selector(showWebAccess(_:)))
+        appMenu.insertItem(item, at: afterWeb >= 0 ? afterWeb + 1 : 1)
+    }
+
+    @IBAction func toggleAgentAssistant(_ sender: Any?) {
+        let on = MainActor.assumeIsolated {
+            let on = !AgentFeature.shared.isEnabled
+            AgentFeature.shared.setEnabled(on)
+            return on
+        }
+        (sender as? NSMenuItem)?.state = on ? .on : .off
     }
 
     @IBAction func showWebAccess(_ sender: Any?) {

@@ -135,7 +135,8 @@ private struct AIQuotaAccountRow: View {
             HStack(spacing: 4) {
                 Image(systemName: account.provider.symbolName)
                     .font(.caption2)
-                    .foregroundColor(account.provider == .claudeCode ? .orange : .green)
+                    .foregroundColor(account.provider == .claudeCode ? .orange
+                                 : account.provider == .antigravity ? .blue : .green)
                     .frame(width: 12)
 
                 Text(account.name)

@@ -24,6 +24,7 @@ final class AgentDecisionPanel {
     private init() {}
 
     func start() {
+        guard cancellables.isEmpty else { return }
         let hub = AgentHub.shared
         hub.start()
         hub.$allPending
@@ -45,6 +46,14 @@ final class AgentDecisionPanel {
                 }
                 .store(in: &cancellables)
         }
+    }
+
+    /// The AI assistant was switched off: no more cards.
+    func stop() {
+        cancellables.removeAll()
+        pending = []
+        seenIDs.removeAll()
+        panel?.orderOut(nil)
     }
 
     /// MyGhost is in front showing the ✦ assistant page, whose chat already

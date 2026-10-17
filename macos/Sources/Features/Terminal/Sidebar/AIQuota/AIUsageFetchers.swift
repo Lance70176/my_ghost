@@ -112,6 +112,8 @@ enum AIUsageFetcher {
                 windows = try await ClaudeUsageFetcher.fetch(account: account, trigger: trigger)
             case .chatGPT:
                 windows = try await ChatGPTUsageFetcher.fetch(account: account, trigger: trigger)
+            case .antigravity:
+                windows = try await AntigravityUsageFetcher.fetch(trigger: trigger)
             }
             return AIUsageSnapshot(windows: windows, fetchedAt: Date())
         } catch AIUsageFetchError.unauthorized {
@@ -151,6 +153,8 @@ enum AIUsageFetcher {
             return L("Claude Code login expired — open Claude Code once to refresh it")
         case .chatGPT:
             return L("Codex login expired — run codex once to refresh it")
+        case .antigravity:
+            return L("agy login expired — run agy once to sign in again")
         }
     }
 
@@ -164,6 +168,8 @@ enum AIUsageFetcher {
             token = try? ClaudeUsageFetcher.resolveToken(account: account)
         case .chatGPT:
             token = try? ChatGPTUsageFetcher.resolveCredential(account: account).token
+        case .antigravity:
+            token = nil  // agy keeps its own login; never rejected here
         }
         guard let token else { return nil }
         return SHA256.hash(data: Data(token.utf8)).map { String(format: "%02x", $0) }.joined()
@@ -578,5 +584,103 @@ enum ChatGPTUsageFetcher {
               let auth = payload["https://api.openai.com/auth"] as? [String: Any]
         else { return nil }
         return auth["chatgpt_account_id"] as? String
+    }
+}
+
+// MARK: - Antigravity (agy)
+
+/// Asks the Antigravity CLI for its usage: `agy -p /usage --output-format
+/// json` is a read-only command (no agent turn, no quota spent) that answers
+/// with agy's own login, so no token is read here. Limits come in groups
+/// (Gemini, Claude and GPT, Argon), each with a 5-hour and/or weekly window
+/// reported as the fraction remaining.
+enum AntigravityUsageFetcher {
+    private static let candidates = [
+        "~/.local/bin/agy", "/opt/homebrew/bin/agy", "/usr/local/bin/agy",
+    ].map { NSString(string: $0).expandingTildeInPath }
+
+    static func fetch(trigger: AIUsageTrigger) async throws -> [AIUsageWindow] {
+        guard let agy = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            throw AIUsageFetchError.noCredential(L("agy not found (~/.local/bin/agy)"))
+        }
+        let start = Date()
+        let (status, out, err) = try await run(agy, ["-p", "/usage", "--output-format", "json"])
+        guard status == 0,
+              let json = (try? JSONSerialization.jsonObject(with: Data(out.utf8))) as? [String: Any]
+        else {
+            AIUsageRequestLog.record(provider: "antigravity", trigger: trigger, start: start,
+                                     status: "exit-\(status)")
+            let detail = (err.isEmpty ? out : err).trimmingCharacters(in: .whitespacesAndNewlines)
+            throw AIUsageFetchError.badResponse("agy: " + String(detail.suffix(160)))
+        }
+        AIUsageRequestLog.record(provider: "antigravity", trigger: trigger, start: start,
+                                 status: (json["status"] as? String) ?? "?")
+        guard json["status"] as? String == "SUCCESS",
+              let data = (json["command"] as? [String: Any])?["data"] as? [String: Any],
+              let groups = data["groups"] as? [[String: Any]]
+        else {
+            throw AIUsageFetchError.badResponse(L("agy couldn't read usage — is it signed in?"))
+        }
+        var windows: [AIUsageWindow] = []
+        for group in groups {
+            let name = shortName(group["name"] as? String ?? "")
+            for bucket in group["buckets"] as? [[String: Any]] ?? [] {
+                guard let remaining = (bucket["remaining_fraction"] as? NSNumber)?.doubleValue else { continue }
+                windows.append(AIUsageWindow(
+                    label: "\(name) \(period(bucket["window"] as? String))",
+                    usedPercent: min(max((1 - remaining) * 100, 0), 100),
+                    resetsAt: AIUsageFetcher.parseISODate(bucket["reset_time"])))
+            }
+        }
+        guard !windows.isEmpty else {
+            throw AIUsageFetchError.badResponse("No usage windows in response")
+        }
+        return windows
+    }
+
+    /// "Gemini Models" → Gemini, "Claude and GPT models" → Claude/GPT,
+    /// "Gemini 4 Argon" → Argon; anything new keeps its first word.
+    private static func shortName(_ name: String) -> String {
+        let lower = name.lowercased()
+        if lower.contains("argon") { return "Argon" }
+        if lower.contains("claude") || lower.contains("gpt") { return "Claude/GPT" }
+        if lower.contains("gemini") { return "Gemini" }
+        return name.split(separator: " ").first.map(String.init) ?? name
+    }
+
+    private static func period(_ window: String?) -> String {
+        switch window {
+        case "5h": return "5h"
+        case "weekly": return "Week"
+        case let other?: return other
+        case nil: return ""
+        }
+    }
+
+    /// Runs agy off the main thread; gives up after 30 s.
+    private static func run(_ path: String, _ args: [String]) async throws -> (Int32, String, String) {
+        try await withCheckedThrowingContinuation { cont in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: path)
+            process.arguments = args
+            let out = Pipe(), err = Pipe()
+            process.standardOutput = out
+            process.standardError = err
+            process.standardInput = FileHandle.nullDevice
+            process.terminationHandler = { p in
+                let o = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                let e = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+                cont.resume(returning: (p.terminationStatus, o, e))
+            }
+            do {
+                try process.run()
+            } catch {
+                cont.resume(throwing: AIUsageFetchError.badResponse("agy: \(error.localizedDescription)"))
+                return
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 30) {
+                if process.isRunning { process.terminate() }
+            }
+        }
     }
 }

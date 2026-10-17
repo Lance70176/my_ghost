@@ -85,7 +85,8 @@ struct AIQuotaSettingsView: View {
     private func accountHeader(_ account: AIQuotaAccount) -> some View {
         HStack(spacing: 8) {
             Image(systemName: account.provider.symbolName)
-                .foregroundColor(account.provider == .claudeCode ? .orange : .green)
+                .foregroundColor(account.provider == .claudeCode ? .orange
+                                 : account.provider == .antigravity ? .blue : .green)
                 .frame(width: 16)
 
             VStack(alignment: .leading, spacing: 1) {
@@ -211,9 +212,11 @@ private struct AIQuotaAccountForm: View {
                     }
                 }
 
-                Picker(L("Credential:"), selection: $account.authMode) {
-                    ForEach(AIQuotaAuthMode.allCases) { mode in
-                        Text(mode.displayName).tag(mode)
+                if account.provider.supportsManualToken {
+                    Picker(L("Credential:"), selection: $account.authMode) {
+                        ForEach(AIQuotaAuthMode.allCases) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
                     }
                 }
 
@@ -251,6 +254,9 @@ private struct AIQuotaAccountForm: View {
         }
         .padding(20)
         .frame(width: 420)
+        .onChange(of: account.provider) { provider in
+            if !provider.supportsManualToken { account.authMode = .localLogin }
+        }
     }
 
     private var defaultName: String {
@@ -266,6 +272,7 @@ private struct AIQuotaAccountForm: View {
         switch account.provider {
         case .claudeCode: return "sk-ant-oat01-…"
         case .chatGPT: return "eyJhbGciOi… (access token)"
+        case .antigravity: return ""
         }
     }
 
@@ -282,6 +289,9 @@ private struct AIQuotaAccountForm: View {
         case (.chatGPT, .manualToken):
             return L("Paste the access_token from ~/.codex/auth.json of the account "
                 + "to track. Tokens expire and may need re-pasting.")
+        case (.antigravity, _):
+            return L("Runs `agy -p /usage` on this Mac, which reads agy's own login and spends "
+                + "no quota. Limits are shared per model group (Gemini, Claude/GPT, Argon).")
         }
     }
 }
