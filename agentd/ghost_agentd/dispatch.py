@@ -200,7 +200,7 @@ class Dispatcher:
         with self.lock:
             self.items[d.id] = d
             self._save()
-        return (f"已做成開工卡（id={card.id}）給他決定。先結束這一輪；他按了之後你會收到通知。"
+        return (f"已做成開工卡（id={card.id}，{card.tag}）給他決定。先結束這一輪；他按了之後你會收到通知。"
                 "要改就再呼叫一次 propose_dispatch。")
 
     def _plan(self, d: Dispatch, project: Project) -> tuple[str, str]:

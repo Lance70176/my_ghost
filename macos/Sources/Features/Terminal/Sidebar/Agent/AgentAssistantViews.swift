@@ -1456,6 +1456,7 @@ private struct AgentHistoryRow: View {
                 Image(systemName: icon.0).foregroundColor(icon.1)
                 Text(Self.time.string(from: record.date))
                     .agentFont(.caption, monoDigits: true).foregroundColor(.secondary)
+                AgentCardTag(tag: record.tag, day: record.serialDay)
                 Text(record.level).agentFont(.caption, weight: .bold).foregroundColor(.secondary)
                 if showProject {
                     Text(record.project).agentFont(.caption).foregroundColor(.accentColor)

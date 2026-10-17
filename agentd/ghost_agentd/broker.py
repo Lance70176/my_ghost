@@ -10,6 +10,7 @@ other surfaces can mark their card handled.
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import threading
 import time
@@ -82,6 +83,15 @@ class Pending:
     requested_by: dict | None = None
     # The newer card that took this one over (closed as "superseded").
     superseded_by: str | None = None
+    # The day's running number in its project (#1, #2…), to tell cards apart
+    # when talking about them; serial_day is the day it counts in (MM/DD).
+    serial: int = 0
+    serial_day: str = ""
+
+    @property
+    def tag(self) -> str:
+        """"#3" — the card's number for the day, or its id before numbering."""
+        return f"#{self.serial}" if self.serial else self.id
     # Who pressed it: {"owner": True} or a member's {"id", "name"}; the
     # assistant's next turn runs with that person's scope.
     decided_actor: dict | None = None
@@ -259,6 +269,7 @@ class Broker:
                     self._resolve(p, "allowed", f"rule:{LEVEL_NAMES[g.level]}")
                     self._queue_digest(project, g.level, p)
                 else:
+                    self._number(p)
                     self.pending[p.id] = p
                     self._touch_session(payload, project, status="waiting",
                                         message=f"等待授權：{summary}")
@@ -308,6 +319,7 @@ class Broker:
             )
             # owner_only: who may talk to the work account is the owner's call.
             p.requested_by = None if owner_only else self._card_requester(project, p.card_id)
+            self._number(p)
             self.pending[p.id] = p
             self.by_key[p.key] = p
             self._bump()
@@ -327,6 +339,7 @@ class Broker:
                 created=now, deadline=now + 30 * 86400, kind="choice",
                 options=[{"label": o, "action": None} for o in options], reply=reply,
             )
+            self._number(p)
             self.pending[p.id] = p
             self.by_key[p.key] = p
             self._bump()
@@ -346,6 +359,7 @@ class Broker:
                 options=[{"label": o, "action": None} for o in options], dispatch=dispatch,
             )
             p.requested_by = self.requester_of(project)
+            self._number(p)
             self.pending[p.id] = p
             self.by_key[p.key] = p
             self._bump()
@@ -365,6 +379,7 @@ class Broker:
                 options=[{"label": o, "action": None} for o in options], db_query=ref,
             )
             p.requested_by = None  # never a member's to press
+            self._number(p)
             self.pending[p.id] = p
             self.by_key[p.key] = p
             self._bump()
@@ -388,6 +403,40 @@ class Broker:
         with self.lock:
             self._bump()
 
+    # Numbers of cards closed as superseded, by id, for saying which ones.
+    closed_tags: dict = {}
+
+    def _number(self, p: Pending) -> None:
+        """The card's running number for the day in its project (lock held);
+        kept on disk so a restart doesn't count again from 1."""
+        project = self.projects.get(p.project)
+        f = project.dir / "card_serial.json"
+        day = time.strftime("%Y-%m-%d")
+        try:
+            last = json.loads(f.read_text())
+        except (OSError, ValueError):
+            last = {}
+        n = int(last.get("n") or 0) + 1 if last.get("day") == day else 1
+        try:
+            f.write_text(json.dumps({"day": day, "n": n}))
+        except OSError:
+            pass
+        p.serial, p.serial_day = n, time.strftime("%m/%d")
+
+    def find(self, project: str, ref: str) -> Pending | None:
+        """An open card by id, or by today's number ("#3" or "3") in the project."""
+        ref = str(ref or "").strip()
+        with self.lock:
+            p = self.pending.get(ref)
+            if p is not None:
+                return p
+            m = re.fullmatch(r"#?(\d{1,4})", ref)
+            if not m:
+                return None
+            today = time.strftime("%m/%d")
+            return next((x for x in self.pending.values() if x.project == project
+                         and x.serial == int(m.group(1)) and x.serial_day == today), None)
+
     def supersede(self, project: str, old_ids: list[str], new_id: str,
                   requester: dict | None = None) -> tuple[list[str], list[str]]:
         """The assistant's newer card takes over older ones: close them so a
@@ -396,7 +445,11 @@ class Broker:
         permission request), only in this project, and in a member's turn
         only that member's. Returns (closed ids, why each other one wasn't)."""
         done, refused = [], []
+        new = self.pending.get(new_id)
+        new_tag = new.tag if new else new_id
         for oid in dict.fromkeys(str(i).strip() for i in old_ids if str(i).strip()):
+            found = self.find(project, oid)
+            oid = found.id if found else oid
             with self.lock:
                 p = self.pending.get(oid)
                 if oid == new_id:
@@ -410,10 +463,11 @@ class Broker:
                 if requester and (p.requested_by or {}).get("id") != requester.get("id"):
                     refused.append(f"{oid}：不是這位成員交辦的卡")
                     continue
-                p.superseded_by = new_id
-                p.deny_message = f"已改由新決策卡 {new_id} 處理"
+                p.superseded_by = new_tag
+                p.deny_message = f"已改由新決策卡 {new_tag} 處理"
                 self._resolve(p, "denied", "superseded")
             done.append(oid)
+            self.closed_tags[oid] = p.tag
         return done, refused
 
     def dismiss(self, pid: str, by: str) -> bool:
@@ -513,6 +567,7 @@ class Broker:
             if p.reply else None,
             # send | revise | skip | self_reply | replaced
             "superseded_by": p.superseded_by,
+            "serial": p.serial, "serial_day": p.serial_day,
             "outcome": (by if by in ("self_reply", "replaced", "superseded") else
                         {0: "send", 1: "revise"}.get(p.chosen, "skip")) if p.reply else None,
             "wait_seconds": round(time.time() - p.created, 1),

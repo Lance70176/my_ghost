@@ -28,16 +28,16 @@ def test_new_card_closes_the_ones_it_replaces(broker, manager, tmp_path, monkeyp
 
     out = t.t_ask_decision(p, {"question": "改用方案 B？", "options": [{"label": "好"}, {"label": "不要"}],
                                "replaces": [old.id, old_dispatch.id, other.id, perm_card.id]})
-    new_id = out.split("id=")[1].split("）")[0]
-    assert old.id in out and old_dispatch.id in out and "沒撤掉" in out
+    new_tag = out.split("（")[1].split("，")[0]  # "#2"
+    assert f"已撤掉舊卡：{old.tag}、{old_dispatch.tag}" in out and "沒撤掉" in out
     assert not old.open and not old_dispatch.open and other.open and perm_card.open
-    assert old.superseded_by == new_id and old.decided_by == "superseded"
+    assert old.superseded_by == new_tag and new_tag.startswith("#") and old.decided_by == "superseded"
     assert next(iter(d.items.values())).state == "dropped"  # its proposal is off
     # A late press on the old card does nothing.
     assert broker.decide(old.id, "o0", "tg")[0] is False
     recs = [json.loads(l) for l in (p.dir / "decisions.jsonl").read_text().splitlines()]
     rec = next(r for r in recs if r["id"] == old.id)
-    assert rec["superseded_by"] == new_id and new_id in rec["deny_message"]
+    assert rec["superseded_by"] == new_tag and new_tag in rec["deny_message"] and rec["serial"]
     broker.decide(perm_card.id, "deny", "myghost")
 
 
@@ -62,7 +62,7 @@ def test_marked_in_the_assistants_chat(broker, manager):
     a.add("choice", "舊題", choice_id=old.id)
     out = t.t_ask_decision(p, {"question": "新題", "options": [{"label": "好"}, {"label": "不要"}],
                                "replaces": [old.id]})
-    new_id = out.split("id=")[1].split("）")[0]
+    new_tag = out.split("（")[1].split("，")[0]  # "#2"
     item = next(i for i in a.items if i.choice_id == old.id)
-    assert item.chosen == f"已改由新決策卡 {new_id} 處理"
+    assert item.chosen == f"已改由新決策卡 {new_tag} 處理"
     time.sleep(0.05)

@@ -32,6 +32,12 @@ struct AgentPending: Decodable, Identifiable, Equatable {
     let dispatch: AgentDispatchDraft?
     /// The project member whose request this card came from (nil: the owner).
     let requestedBy: AgentRequester?
+    /// The day's running number in its project, and that day (MM/DD).
+    let serial: Int?
+    let serialDay: String?
+
+    /// "#3", to tell cards apart when talking about them.
+    var tag: String? { AgentCardTag.text(serial) }
 
     var isChoice: Bool { kind == "choice" }
 
@@ -44,6 +50,29 @@ struct AgentPending: Decodable, Identifiable, Equatable {
         a.id == b.id && a.state == b.state && a.discussing == b.discussing
     }
     var isHighRisk: Bool { level >= 3 }
+}
+
+/// A card's number for the day, as a small label ("#3").
+struct AgentCardTag: View {
+    let tag: String?
+    var day: String?
+
+    static func text(_ serial: Int?) -> String? {
+        guard let serial, serial > 0 else { return nil }
+        return "#\(serial)"
+    }
+
+    var body: some View {
+        if let tag, !tag.isEmpty {
+            Text(tag)
+                .agentFont(.caption2, weight: .semibold, monoDigits: true)
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 1)
+                .background(Capsule().fill(Color.primary.opacity(0.08)))
+                .help(day.map { L("Card %@ of %@", tag, $0) } ?? tag)
+        }
+    }
 }
 
 struct AgentRequester: Decodable, Equatable {
@@ -101,6 +130,8 @@ struct AgentChatItem: Decodable, Identifiable, Equatable {
     /// A reply / dispatch card's draft, shown with the card.
     let reply: AgentReplyDraft?
     let dispatch: AgentDispatchDraft?
+    /// A card's number for the day ("#3"); older daemons don't send it.
+    let serial: String?
 
     var id: Int { seq }
 }
@@ -235,7 +266,10 @@ struct AgentDecisionRecord: Decodable, Identifiable, Equatable {
     /// send | revise | skip | self_reply | replaced.
     let reply: AgentReplyDraft?
     let outcome: String?
+    let serial: Int?
+    let serialDay: String?
 
+    var tag: String? { AgentCardTag.text(serial) }
     var date: Date { Date(timeIntervalSince1970: ts) }
     var allowed: Bool { state == "allowed" }
     /// L0/L1 decisions made by the rules rather than a person.

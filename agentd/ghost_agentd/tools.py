@@ -353,12 +353,13 @@ class Tools:
         if not question or len(options) < 2:
             return "需要 question 和至少兩個 options。"
         card = args.get("card_id") or None
-        if card and self.broker.get(card) is None:
-            card = None  # already decided elsewhere; still ask, but don't link
+        if card:
+            found = self.broker.find(p.name, card)  # an id, or today's "#3"
+            card = found.id if found else None  # decided elsewhere: still ask, don't link
         a = self.assistants.get(p.name)
         c = self.broker.create_choice(p.name, question, options, card_id=card,
                                       session_id=a.meta.get("session_id", ""))
-        return (f"已把選擇題送給他（id={c.id}），在 MyGhost 和 TG 都看得到。不要等待，先結束這一輪；"
+        return (f"已把選擇題送給他（{c.tag}，id={c.id}），在 MyGhost 和 TG 都看得到。提到這張卡時用 {c.tag}。不要等待，先結束這一輪；"
                 "他選好後你會收到一則新訊息告訴你選了什麼。" + self._replace(p, args, c.id))
 
     def _replace(self, p, args, new_id: str) -> str:
@@ -370,12 +371,15 @@ class Tools:
             return ""
         done, refused = self.broker.supersede(p.name, list(old), new_id, self.broker.requester_of(p.name))
         a = self.assistants.get(p.name)
+        new = self.broker.get(new_id)
+        new_tag = new.tag if new else new_id
         for item in a.items:
             if item.role == "choice" and item.choice_id in done:
-                item.chosen = f"已改由新決策卡 {new_id} 處理"
+                item.chosen = f"已改由新決策卡 {new_tag} 處理"
         if self.dispatcher is not None:
             self.dispatcher.drop_cards(done)
-        out = f"\n已撤掉舊卡：{'、'.join(done)}（標為已改由 {new_id} 處理）。" if done else ""
+        out = (f"\n已撤掉舊卡：{'、'.join(self.broker.closed_tags.get(i, i) for i in done)}"
+               f"（標為已改由 {new_tag} 處理）。") if done else ""
         if refused:
             out += "\n沒撤掉：" + "；".join(refused)
         return out
@@ -643,7 +647,7 @@ class Tools:
                                       str(args.get("task") or ""), str(args.get("branch") or ""),
                                       str(args.get("base") or ""), str(args.get("source") or ""),
                                       owner_turn=self._owner_turn(p))
-        m = re.search(r"開工卡（id=([0-9a-f]+)）", out)
+        m = re.search(r"開工卡（id=([0-9a-f]+)", out)
         return out + (self._replace(p, args, m.group(1)) if m else "")
 
     def t_message_worker(self, p, args) -> str:

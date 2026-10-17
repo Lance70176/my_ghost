@@ -91,6 +91,7 @@ class ChatItem:
     # A reply / dispatch card: its draft, so the chat can show it as a card.
     reply: dict | None = None
     dispatch: dict | None = None
+    serial: str = ""  # a card's number for the day ("#3"), to talk about it
 
 
 class Assistant:
@@ -598,7 +599,7 @@ class AssistantManager:
         if p.kind == "choice":
             a = self.get(p.project)
             reply = {k: p.reply.get(k) for k in REPLY_KEYS} if getattr(p, "reply", None) else None
-            a.add("choice", p.summary, choice_id=p.id, options=p.options, card_id=p.card_id or "",
+            a.add("choice", p.summary, choice_id=p.id, options=p.options, card_id=p.card_id or "", serial=p.tag,
                   reply=reply, dispatch=dict(p.dispatch) if getattr(p, "dispatch", None) else None)
 
     def on_update(self, p: Pending) -> None:
@@ -632,8 +633,8 @@ class AssistantManager:
         label = option["label"] if option else None
         actor = getattr(p, "decided_actor", None) or {"owner": True}
         member = None if actor.get("owner") else {"id": actor.get("id"), "name": actor.get("name")}
-        msg = (f"他回覆了你的選擇題「{p.summary[:120]}」：選了「{label}」。" if label
-               else f"他略過了你的選擇題「{p.summary[:120]}」。")
+        msg = (f"他回覆了你的選擇題 {p.tag}「{p.summary[:120]}」：選了「{label}」。" if label
+               else f"他略過了你的選擇題 {p.tag}「{p.summary[:120]}」。")
         if option and option.get("action") and p.card_id:
             msg += f"（這個選項已直接對決策卡 {p.card_id} 執行 {option['action']}，你不需要再做什麼。）"
         if getattr(p, "dispatch", None):

@@ -55,7 +55,8 @@ RULE = "━━━━━━━━━━━━━━"
 def framed(p: Pending, lines: list[str]) -> str:
     """A card between two rules, so it stands out from the plain chat
     mirrored into the same group."""
-    tag = "📋 <b>待你決定</b>" if p.open else "📋 決策單・已處理"
+    num = f" <code>{p.tag}</code>（{p.serial_day}）" if p.serial else ""
+    tag = (f"📋 <b>待你決定</b>{num}" if p.open else f"📋 決策單・已處理{num}")
     if p.requested_by:  # a member's request: they (and the owner) may press it
         tag += f"\n👤 {html.escape(str(p.requested_by.get('name') or p.requested_by.get('id')))} 交辦"
     return "\n".join([f"{RULE}\n{tag}", *lines, RULE])

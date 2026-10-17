@@ -338,10 +338,13 @@ private struct AgentDecisionNotice: View {
                     .foregroundColor(icon.color)
                     .agentFont(.title3)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(title)
-                        .agentFont(.callout, weight: .semibold)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    HStack(spacing: 5) {
+                        AgentCardTag(tag: p.tag, day: p.serialDay)
+                        Text(title)
+                            .agentFont(.callout, weight: .semibold)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                     Text(detail)
                         .agentFont(.caption)
                         .foregroundColor(.secondary)
@@ -434,6 +437,9 @@ struct AgentDecisionCard: View {
         .padding(10)
         .frame(width: width, alignment: .leading)
         .frame(maxWidth: width == nil ? .infinity : nil, alignment: .leading)
+        .overlay(alignment: .topTrailing) {
+            AgentCardTag(tag: p.tag, day: p.serialDay).padding(6)
+        }
         .background(
             RoundedRectangle(cornerRadius: 10)
                 .fill(.regularMaterial)

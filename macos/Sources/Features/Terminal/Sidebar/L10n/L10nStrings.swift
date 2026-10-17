@@ -162,6 +162,7 @@ enum L10nStrings {
         "Phone page": t("手機網頁", "手机网页", "スマホ用ページ"),
         "Timed out": t("逾時", "超时", "タイムアウト"),
         "Hide": t("隱藏", "隐藏", "非表示"),
+        "Card %@ of %@": t("%2$@ 的第 %1$@ 張決策卡", "%2$@ 的第 %1$@ 张决策卡", "%2$@ の決定カード %1$@"),
         "Stop showing this card here; it stays in the decision list and Telegram": t("不再在這裡顯示這張卡；決策區和 TG 裡仍可處理", "不再在这里显示这张卡；决策区和 TG 里仍可处理", "このカードをここに表示しません。決定リストと Telegram では引き続き対応できます"),
         "agy login expired — run agy once to sign in again": t("agy 登入已過期，請執行一次 agy 重新登入", "agy 登录已过期，请运行一次 agy 重新登录", "agy のログインが期限切れです。agy を一度実行して再ログインしてください"),
         "agy not found (~/.local/bin/agy)": t("找不到 agy（~/.local/bin/agy）", "找不到 agy（~/.local/bin/agy）", "agy が見つかりません（~/.local/bin/agy）"),

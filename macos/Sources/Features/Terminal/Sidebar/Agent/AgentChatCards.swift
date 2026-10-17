@@ -37,6 +37,7 @@ struct AgentChatCard: View {
     private var decided: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
+                AgentCardTag(tag: item.serial)
                 Image(systemName: icon).foregroundColor(accent)
                 Text(title)
                     .agentFont(.headline)
