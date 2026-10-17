@@ -220,13 +220,17 @@ def set_chat_id(p: Project, old: int, new: int) -> bool:
 
 
 def bind_chat_id(p: Project, chat_id: int) -> bool:
-    """Give a project that has no group yet its group (`chat_id: null`)."""
+    """Give a project that has no group yet its group (`chat_id: null`, or
+    nothing after the colon, as hand-written files often have)."""
     f = HOME / "projects" / p.dir.name / "project.yaml"
     try:
         text = f.read_text()
     except OSError:
         return False
-    fixed = re.sub(r"(chat_id:\s*)(null|~|\"\")(?=\s|$)", rf"\g<1>{chat_id}", text, count=1)
+    # A comment needs a space before it, or YAML reads it as part of the value.
+    fixed = re.sub(r"(?m)chat_id:[ \t]*(?:null|~|\"\"|)(?=([ \t]*)(#|$))",
+                   lambda m: f"chat_id: {chat_id}" + ("  " if m.group(2) == "#" and not m.group(1) else ""),
+                   text, count=1)
     if fixed == text:
         return False
     tmp = f.with_suffix(".tmp")
