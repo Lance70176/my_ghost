@@ -602,6 +602,8 @@ class Broker:
                 "tab": payload.get("tab_title"),
                 "notification_type": payload.get("notification_type"),
                 "message": (payload.get("message") or payload.get("last_assistant_message") or "")[:500],
+                **({"error": payload.get("error"), "error_details": str(payload.get("error_details") or "")[:500]}
+                   if ev == "StopFailure" else {}),
             })
             has_pending = any(p.session_id == payload.get("session_id") for p in self.pending.values())
             if ev == "UserPromptSubmit":
@@ -611,6 +613,15 @@ class Broker:
                                     payload.get("last_assistant_message") or "")
                 self._emit("on_stop", payload.get("tmux_session") or "", payload.get("session_id") or "",
                            payload.get("last_assistant_message") or "")
+            elif ev == "StopFailure":
+                # The turn ended on an API error (rate limit, auth, a safety
+                # refusal…) instead of a Stop: the conversation won't go on by
+                # itself, so it needs someone — and its assistant must hear.
+                note = failure_note(payload)
+                self._touch_session(payload, project, "waiting", note)
+                last = payload.get("last_assistant_message") or ""
+                self._emit("on_stop", payload.get("tmux_session") or "", payload.get("session_id") or "",
+                           note + ("\n" + last if last else ""))
             elif ev == "SessionEnd":
                 self._touch_session(payload, project, "ended")
             elif ev == "Notification":
@@ -706,3 +717,13 @@ def log(msg: str) -> None:
     line = time.strftime("%Y-%m-%d %H:%M:%S ") + msg
     with _log_lock:
         print(line, flush=True)
+
+
+FAILURE_PREFIX = "（這一輪因 API 錯誤中斷"
+
+
+def failure_note(payload: dict) -> str:
+    """One line saying a turn ended on an API error, and which."""
+    error = str(payload.get("error") or "unknown")
+    details = str(payload.get("error_details") or "").strip()
+    return f"{FAILURE_PREFIX}：{error}{'，' + details[:300] if details else ''}）"

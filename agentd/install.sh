@@ -39,7 +39,7 @@ if mode == "add":
     # Tells conversations in a project about ghost-ask (needs its output).
     hooks.setdefault("SessionStart", []).append(
         {"hooks": [{"type": "command", "command": cmd, "timeout": 5}]})
-    for ev in ("Notification", "Stop", "UserPromptSubmit", "SessionEnd"):
+    for ev in ("Notification", "Stop", "StopFailure", "UserPromptSubmit", "SessionEnd"):
         hooks.setdefault(ev, []).append(
             {"hooks": [{"type": "command", "command": cmd, "timeout": 5, "async": True}]})
 for ev in [e for e, g in hooks.items() if not g]:

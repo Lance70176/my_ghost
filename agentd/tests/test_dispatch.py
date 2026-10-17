@@ -140,6 +140,27 @@ def test_into_an_open_agent_view_as_a_background_job(broker, manager, tmp_path, 
     wait_for(lambda: any(r == "user" and "做好了" in t for r, t in roles(manager.get("fq"))))
 
 
+def test_a_turn_ended_by_an_api_error_is_reported(broker, manager, tmp_path, monkeypatch):
+    """No Stop comes when an API error ends the turn; StopFailure stands in."""
+    p, root, d, tm = setup(broker, manager, tmp_path, monkeypatch)
+    d.propose(p, "翻譯", "platform", "x", branch="feature/tr")
+    card = next(x for x in broker.pending.values() if getattr(x, "dispatch", None))
+    broker.decide(card.id, "o0", "tg")
+    item = next(iter(d.items.values()))
+    wait_for(lambda: item.state == "started")
+    sent = []
+    monkeypatch.setattr(manager.get("fq"), "send", lambda text, source, **kw: sent.append(text))
+    broker.hook_event({"hook_event_name": "StopFailure", "session_id": "s-tr", "cwd": item.worktree,
+                       "tmux_session": item.tmux, "error": "invalid_request",
+                       "error_details": "safeguards flagged this session [cyber]",
+                       "last_assistant_message": "測試站發佈成功，正在登入後台抽查"})
+    wait_for(lambda: sent)
+    assert "API 錯誤中斷" in sent[0] and "[cyber]" in sent[0] and "測試站發佈成功" in sent[0]
+    assert "跳過被擋的那一步" in sent[0] and item.stops == 1
+    s = broker.sessions["s-tr"]
+    assert s.status == "waiting" and "API 錯誤" in s.last_message
+
+
 def test_a_members_work_stays_theirs(broker, manager, tmp_path, monkeypatch):
     """Work a member asked for: the turns its conversation causes (stopping,
     asking for help) work for that member, so they may press those cards."""
