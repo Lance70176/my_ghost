@@ -40,8 +40,12 @@ TOOLS = [
          "session_id": {"type": "string"}, "max_messages": {"type": "integer", "description": "預設 30"}},
          "required": ["session_id"]}},
     {"name": "share_report",
-     "description": "把 HTML/PDF 報告用 share 產生對外連結（保留 90 天），並在本機永久存檔。回傳連結。",
-     "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
+     "description": "把 HTML/PDF 報告用 share 產生對外連結（保留 90 天），並在本機永久存檔。回傳連結。"
+                    "同一個檔名再分享會沿用原本的連結、只更新內容（所以改報告就直接改原檔，不要另存新檔名）；"
+                    "真的要新連結才帶 new_link。",
+     "inputSchema": {"type": "object", "properties": {
+         "path": {"type": "string"},
+         "new_link": {"type": "boolean", "description": "不沿用舊連結，另外產生新連結"}}, "required": ["path"]}},
     {"name": "tg_send", "description": "發一則訊息到這個專案的 TG 群組（只有這個群組）。",
      "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}},
     {"name": "draft_reply",

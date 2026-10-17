@@ -431,12 +431,30 @@ class Tools:
         local = path if path.parent == reports else reports / path.name
         if local != path:
             shutil.copy2(path, local)
+        # The same report keeps its link: sharing it again updates the file
+        # behind the link it got the first time (until that one expires).
+        links_file = reports / "shared_links.json"
         try:
-            out = subprocess.run([SHARE, str(local)], capture_output=True, text=True, timeout=120).stdout
+            links = json.loads(links_file.read_text())
+        except (OSError, ValueError):
+            links = {}
+        prev = "" if args.get("new_link") else str(links.get(local.name) or "")
+        try:
+            r = None
+            if prev:
+                r = subprocess.run([SHARE, "-u", prev, str(local)], capture_output=True, text=True, timeout=120)
+            if r is None or r.returncode != 0:  # first time, or the old link expired
+                prev = ""
+                r = subprocess.run([SHARE, str(local)], capture_output=True, text=True, timeout=120)
         except (OSError, subprocess.SubprocessError) as e:
             return f"分享失敗：{e}；報告已存在 {local}"
-        url = next((l.strip() for l in out.splitlines() if l.strip().startswith("http")), "")
-        return f"連結：{url}\n本機存檔：{local}" if url else f"分享失敗：{out[-300:]}；報告已存在 {local}"
+        url = next((l.strip() for l in r.stdout.splitlines() if l.strip().startswith("http")), "")
+        if not url:
+            return f"分享失敗：{(r.stderr or r.stdout)[-300:]}；報告已存在 {local}"
+        links[local.name] = url
+        links_file.write_text(json.dumps(links, ensure_ascii=False, indent=1))
+        note = "（沿用這份報告原本的連結，內容已更新）" if prev else ""
+        return f"連結：{url}{note}\n本機存檔：{local}"
 
     def t_tg_send(self, p, args) -> str:
         text = str(args.get("text") or "").strip()
