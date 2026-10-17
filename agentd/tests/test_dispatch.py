@@ -79,7 +79,7 @@ def test_propose_validates_and_only_start_starts(broker, manager, tmp_path, monk
     sent = (broker.projects.get("fq").dir / "dispatch" / f"{item.id}.md").read_text()
     assert sent.startswith("把 A 改成 B") and "ghost-ask" in sent and "正式環境" in sent
     assert item.tmux.startswith("myghost_")
-    assert ("set-option", "-t", item.tmux, "@myghost_title", "LSC #198 優惠設置") in tm.calls
+    assert ("set-option", "-t", item.tmux, "@myghost_title", "FQ AI - LSC #198 優惠設置") in tm.calls
     assert [x["id"] for x in d.live()] == [item.id]
 
 
@@ -133,7 +133,7 @@ def test_into_an_open_agent_view_as_a_background_job(broker, manager, tmp_path, 
     item = next(iter(d.items.values()))
     wait_for(lambda: item.state == "started")
     cmd, cwd = ran[0]
-    assert cmd[1:5] == ["--bg", "-n", "背景示範", "--permission-mode"] and cmd[5] == "bypassPermissions"
+    assert cmd[1:5] == ["--bg", "-n", "FQ AI - 背景示範", "--permission-mode"] and cmd[5] == "bypassPermissions"
     assert cwd == item.worktree and item.job_id == "abcd1234" and item.session_id == "sess-1"
     assert not any("new-session" in c for c in tm.calls) and d.live() == []  # no tab
     d.on_stop("", "sess-1", "做好了")

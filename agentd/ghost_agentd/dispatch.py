@@ -96,6 +96,11 @@ class Dispatch:
     # The project the repo belongs to when it isn't this one ("" = none).
     target_project: str = ""
 
+    @property
+    def label(self) -> str:
+        """Its conversation's name, saying which assistant started it."""
+        return f"{self.project.upper()} AI - {self.title}"
+
 
 class Dispatcher:
     """Every project's dispatched work. A broker listener (the 開工 card) and
@@ -300,7 +305,7 @@ class Dispatcher:
             r = _tmux(*first, "new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", str(wt), run)
             if r.returncode != 0:
                 raise RuntimeError(f"開不了分頁：{r.stderr.strip()[:200]}")
-            _tmux("set-option", "-t", name, "@myghost_title", d.title)
+            _tmux("set-option", "-t", name, "@myghost_title", d.label)
             d.worktree, d.tmux, d.state, d.started = str(wt), name, "started", time.time()
         except Exception as e:
             d.state, d.error = "failed", str(e)
@@ -323,7 +328,7 @@ class Dispatcher:
     def _start_job(self, d: Dispatch, wt: Path, task: str) -> None:
         """Start it as a background job (it shows in the agent view)."""
         env = {k: v for k, v in os.environ.items() if not k.startswith(("CLAUDE", "ANTHROPIC_API_KEY", "GHOST_"))}
-        r = subprocess.run([CLAUDE, "--bg", "-n", d.title, "--permission-mode", d.perm, task],
+        r = subprocess.run([CLAUDE, "--bg", "-n", d.label, "--permission-mode", d.perm, task],
                            cwd=str(wt), env=env, capture_output=True, text=True, timeout=90,
                            stdin=subprocess.DEVNULL)
         m = re.search(r"backgrounded\s*·\s*([0-9a-f]{8})", r.stdout)
