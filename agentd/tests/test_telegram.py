@@ -128,6 +128,44 @@ def test_group_upgraded_to_supergroup_is_followed(setup, monkeypatch):
     assert "chat_id: -100222    # group" in f.read_text()
 
 
+def test_photo_with_caption_reaches_the_assistant(setup, monkeypatch, tmp_path):
+    """A photo carries its words as a caption: the assistant gets both."""
+    home, broker, bots, sent = setup
+    fq = bots["TOKEN_FQ"]
+    got = []
+
+    class FakeAssistant:
+        uploads = tmp_path / "uploads"
+
+        def send(self, text, source, **kw):
+            got.append((text, source, kw.get("files") or []))
+
+    fq.assistants = type("M", (), {"get": lambda self, name: FakeAssistant()})()
+    fq.call = lambda method, **kw: {"file_path": "photos/file_7.jpg"} if method == "getFile" else {}
+
+    class Resp:
+        def __init__(self, data): self.data = data
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self, n=-1): return self.data
+
+    from ghost_agentd import telegram
+    monkeypatch.setattr(telegram.urllib.request, "urlopen", lambda url, timeout=0: Resp(b"\xff\xd8jpeg"))
+    msg = {"message_id": 5, "chat": {"id": -1001, "type": "supergroup"}, "from": {"id": COMMANDER},
+           "caption": "幫我確認這個是不是真的",
+           "photo": [{"file_id": "small", "file_size": 10}, {"file_id": "big", "file_size": 2000}]}
+    fq._handle({"message": msg})
+    text, source, files = got[-1]
+    assert text == "幫我確認這個是不是真的" and source == "tg"
+    assert len(files) == 1 and files[0].path.suffix == ".jpg" and files[0].path.read_bytes() == b"\xff\xd8jpeg"
+
+    # Too big for the Bot API: still delivered, with a note instead of the file.
+    big = dict(msg, caption="", photo=[{"file_id": "huge", "file_size": 30 * 1024 * 1024}])
+    fq._handle({"message": big})
+    text, _, files = got[-1]
+    assert not files and "20MB" in text
+
+
 def test_cards_stand_out_from_chat(broker):
     from ghost_agentd.telegram import RULE, Bot
     bot = Bot.__new__(Bot)

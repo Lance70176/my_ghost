@@ -24,12 +24,17 @@ import time
 import urllib.error
 import urllib.request
 
+from pathlib import Path
+
 from . import config as cfgmod
+from . import uploads
 from .broker import Broker, Pending, log
 from .config import DEFAULT_PROJECT, Config, Project
 from .policy import L3, LEVEL_NAMES
 
 API = "https://api.telegram.org/bot{token}/{method}"
+FILE_API = "https://api.telegram.org/file/bot{token}/{path}"
+MAX_DOWNLOAD = 20 * 1024 * 1024  # the Bot API's own limit for getFile
 LEVEL_ICON = {0: "⚪️", 1: "🟢", 2: "🟠", 3: "🔴"}
 STATE_TEXT = {
     "allowed": ("✅", "已同意"),
@@ -92,6 +97,29 @@ class Bot:
         return "@" + self.me.get("username", "?")
 
     # --------------------------------------------------------------- plumbing
+
+    def _download(self, m: dict, folder: Path) -> tuple[list, str]:
+        """The message's photo / file saved into `folder`, and a note for
+        the assistant when it couldn't be."""
+        att = attachment(m)
+        if att is None:
+            return [], ""
+        file_id, name, size = att
+        if size and size > MAX_DOWNLOAD:
+            return [], f"（附件「{name}」超過 20MB，Telegram bot 下載不了，請改傳較小的檔案。）"
+        try:
+            info = self.call("getFile", file_id=file_id)
+            url = FILE_API.format(token=self.token, path=info["file_path"])
+            with urllib.request.urlopen(url, timeout=60) as r:
+                data = r.read(MAX_DOWNLOAD + 1)
+            if len(data) > MAX_DOWNLOAD:
+                raise RuntimeError("超過 20MB")
+            if name == "photo.jpg" and "." in info["file_path"]:
+                name = "photo" + Path(info["file_path"]).suffix
+            return [uploads.Attached(uploads.save(folder, name, data))], ""
+        except Exception as e:
+            log(f"telegram: {self.name} attachment download failed: {e!r}")
+            return [], f"（附件「{name}」下載失敗：{e}）"
 
     def call(self, method: str, timeout: float = 15, **params) -> dict:
         url = API.format(token=self.token, method=method)
@@ -447,7 +475,9 @@ class Bot:
             return
 
         m = u.get("message") or {}
-        chat, user, text = m.get("chat") or {}, m.get("from") or {}, (m.get("text") or "").strip()
+        chat, user = m.get("chat") or {}, m.get("from") or {}
+        # A photo or file carries its words as a caption, not text.
+        text = (m.get("text") or m.get("caption") or "").strip()
         self._outsiders(m, chat)
         if text.startswith("/chatid"):
             # Setup helper: works before chat_id is configured — but only
@@ -503,16 +533,19 @@ class Bot:
             self.call("sendMessage", chat_id=chat["id"], text=reply_text,
                       reply_markup={"inline_keyboard": rows} if rows else None)
             return
-        if text and not text.startswith("/") and self.assistants is not None and len(mine) == 1 \
-                and chat.get("type") != "private":
+        if (text or attachment(m)) and not text.startswith("/") and self.assistants is not None \
+                and len(mine) == 1 and chat.get("type") != "private":
             # A message from the commander in a project group: for its assistant.
+            a = self.assistants.get(mine[0])
+            files, note = self._download(m, a.uploads)
+            text = "\n".join(x for x in (text, note) if x)
             if not owner:  # a member: the assistant must know who is talking
                 who = " ".join(x for x in (user.get("first_name"), user.get("last_name")) if x) \
                     or str(user.get("id"))
                 text = f"[TG 成員・{who}] {text}"
-                self.assistants.get(mine[0]).send(text, "tg", requester={"id": user.get("id"), "name": who})
+                a.send(text, "tg", files=files, requester={"id": user.get("id"), "name": who})
                 return
-            self.assistants.get(mine[0]).send(text, "tg")
+            a.send(text, "tg", files=files)
             return
         if text.startswith("/status"):
             rows = [s for s in self.broker.list_sessions() if s["project"] in mine][:20]
@@ -521,3 +554,17 @@ class Bot:
                      for s in rows] or ["沒有進行中的對話"]
             self.call("sendMessage", chat_id=chat["id"],
                       text="\n".join(lines))
+
+
+def attachment(m: dict) -> tuple[str, str, int] | None:
+    """(file_id, file name, size) of a message's photo or file; stickers and
+    the like are skipped."""
+    if m.get("photo"):
+        p = m["photo"][-1]  # the largest size
+        return p["file_id"], "photo.jpg", int(p.get("file_size") or 0)
+    for key, default in (("document", "file"), ("video", "video.mp4"), ("voice", "voice.ogg"),
+                         ("audio", "audio.mp3"), ("video_note", "video_note.mp4")):
+        d = m.get(key)
+        if d and d.get("file_id"):
+            return d["file_id"], d.get("file_name") or default, int(d.get("file_size") or 0)
+    return None
