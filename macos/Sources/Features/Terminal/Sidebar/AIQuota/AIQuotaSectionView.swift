@@ -170,6 +170,8 @@ private struct AIQuotaAccountRow: View {
                         Text(L(window.label))
                             .font(.system(size: 9))
                             .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
                             // Wide enough for the longest name the APIs hand
                             // back ("Reserve"), so a window isn't labelled
                             // with a truncated word.

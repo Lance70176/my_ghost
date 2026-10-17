@@ -638,14 +638,15 @@ enum AntigravityUsageFetcher {
         return windows
     }
 
-    /// "Gemini Models" → Gemini, "Claude and GPT models" → Claude/GPT,
-    /// "Gemini 4 Argon" → Argon; anything new keeps its first word.
+    /// Short enough for the sidebar's label column on one line:
+    /// "Gemini Models" → Gem, "Claude and GPT models" → C/G,
+    /// "Gemini 4 Argon" → Arg; anything new keeps its first three letters.
     private static func shortName(_ name: String) -> String {
         let lower = name.lowercased()
-        if lower.contains("argon") { return "Argon" }
-        if lower.contains("claude") || lower.contains("gpt") { return "Claude/GPT" }
-        if lower.contains("gemini") { return "Gemini" }
-        return name.split(separator: " ").first.map(String.init) ?? name
+        if lower.contains("argon") { return "Arg" }
+        if lower.contains("claude") || lower.contains("gpt") { return "C/G" }
+        if lower.contains("gemini") { return "Gem" }
+        return String((name.split(separator: " ").first.map(String.init) ?? name).prefix(3))
     }
 
     private static func period(_ window: String?) -> String {
