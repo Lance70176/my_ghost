@@ -46,6 +46,18 @@ final class AgentDecisionPanel {
                 }
                 .store(in: &cancellables)
         }
+        // Follow a MyGhost window that is moved or resized: the cards sit at
+        // its bottom-right, and stayed behind where it used to be.
+        for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification] {
+            center.publisher(for: name)
+                .filter { ($0.object as? NSWindow)?.windowController is SidebarTerminalController }
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in
+                    guard let self, let panel = self.panel, panel.isVisible else { return }
+                    self.layout(panel)
+                }
+                .store(in: &cancellables)
+        }
     }
 
     /// The AI assistant was switched off: no more cards.
