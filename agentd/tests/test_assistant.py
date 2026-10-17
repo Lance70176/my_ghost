@@ -56,6 +56,21 @@ def test_conversation_and_context_probe(manager):
     assert len(saved) == 3
 
 
+def test_a_background_turn_during_the_probe(manager):
+    """A background task finishing starts a turn of its own, which can answer
+    before the /context probe sent first: that reply shows, the probe's
+    output never does, and no further probes chain off it."""
+    a = manager.get("fq")
+    a.send("跑健檢BG", "myghost")
+    wait_for(lambda: ("assistant", "背景工作完成") in roles(a))
+    wait_for(lambda: a.context_pct == 10 and a._inflight is None and not a._outbox)
+    import time
+    time.sleep(0.5)  # a chained probe would land here
+    assert all("Context Usage" not in t for _, t in roles(a))
+    assert [r for r, _ in roles(a)].count("assistant") == 2
+    assert a._inflight is None and not a._outbox
+
+
 def test_compaction_when_context_is_high(manager, monkeypatch):
     monkeypatch.setenv("FAKE_CTX", "85")
     a = manager.get("fq")

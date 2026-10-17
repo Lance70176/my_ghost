@@ -32,6 +32,7 @@ def result(text="", is_error=False):
 
 
 out({"type": "system", "subtype": "init", "model": "fake"})
+pending_bg = False  # "…BG": a background task that finishes during the next probe
 for line in sys.stdin:
     try:
         msg = json.loads(line)
@@ -48,10 +49,18 @@ for line in sys.stdin:
         if n:
             text += f" [圖{n}]"
     if text == "/context":
+        if pending_bg:
+            # A background task finished: Claude Code starts a turn of its
+            # own, and it answers before the probe that was sent first.
+            pending_bg = False
+            out({"type": "assistant", "message": {"content": [{"type": "text", "text": "背景工作完成"}]}})
+            result("背景工作完成")
         pct = int(os.environ.get("FAKE_CTX", "10"))
-        out({"type": "assistant", "message": {"content": [{"type": "text", "text": f"Context {pct}%"}]},
+        probe = f"## Context Usage\n\n**Tokens:** {pct}k / 1m ({pct}%)"
+        out({"type": "assistant", "message": {"model": "<synthetic>",
+                                              "content": [{"type": "text", "text": probe}]},
              "context_usage": {"percentage": pct}})
-        result()
+        result(probe)
     elif text == "/compact":
         out({"type": "system", "subtype": "compact_boundary", "compact_metadata": {"trigger": "manual"}})
         result()
@@ -62,6 +71,8 @@ for line in sys.stdin:
             sys.stdin.readline()
         result("interrupted", is_error=True)
     else:
+        if text.endswith("BG"):
+            pending_bg = True
         reply = "回覆：" + text
         out({"type": "stream_event", "event": {"delta": {"type": "text_delta", "text": reply[:3]}}})
         out({"type": "assistant", "message": {"content": [

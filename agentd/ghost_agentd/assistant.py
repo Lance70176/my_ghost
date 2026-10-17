@@ -185,6 +185,14 @@ class Assistant:
         return self._inflight is True
 
     @property
+    def _hiding(self) -> bool:
+        """Output to keep out of the chat: the compaction steps. (The
+        /context probe's own output is recognised by its content instead:
+        a background task finishing starts a turn of its own, so while the
+        probe waits, a real reply can come first.)"""
+        return self._internal and bool(self.compact_stage)
+
+    @property
     def running(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
 
@@ -384,7 +392,7 @@ class Assistant:
         t, sub = ev.get("type"), ev.get("subtype", "")
         if t == "stream_event":
             delta = (ev.get("event") or {}).get("delta") or {}
-            if delta.get("type") == "text_delta" and not self._internal:
+            if delta.get("type") == "text_delta" and not self._hiding:
                 with self.lock:
                     self.partial += delta.get("text", "")
                 self._touch()
@@ -393,7 +401,7 @@ class Assistant:
             msg = ev.get("message") or {}
             if "context_usage" in ev:
                 self.context_pct = (ev["context_usage"] or {}).get("percentage")
-            if self._internal:
+            if self._hiding or is_probe_output(msg):
                 return
             for block in msg.get("content") or []:
                 if block.get("type") == "text" and block.get("text", "").strip():
@@ -409,15 +417,29 @@ class Assistant:
             self._save_meta()
             return
         if t == "result":
+            probe = str(ev.get("result") or "").lstrip().startswith(PROBE_HEADING)
             with self.lock:
-                internal = bool(self._inflight)
-                self._inflight = None
+                if probe:  # the /context probe, whenever it lands
+                    internal, spontaneous = True, False
+                    if self._inflight is True:
+                        self._inflight = None
+                elif self._inflight is True and not self.compact_stage:
+                    # A turn of its own (a background task finished) ended
+                    # while the probe still waits: a real reply, and the
+                    # probe already pending measures after it.
+                    internal, spontaneous = False, True
+                else:
+                    internal, spontaneous = bool(self._inflight), False
+                    self._inflight = None
                 self.partial = ""
                 self.last_activity = time.time()
             if ev.get("is_error") and not internal:
                 self.add("notice", f"這一輪出錯了：{str(ev.get('result') or ev.get('subtype'))[:200]}",
                          source="system")
             self.m.on_turn_end(self, internal)
+            if spontaneous:
+                self._touch()
+                return
             self._after_turn(internal)
             with self.lock:
                 self._pump()
@@ -472,6 +494,17 @@ class Assistant:
             self.send("每日重開前：請用 update_state 把目前的記憶寫完整，完成後只回覆「已整理」。",
                       "system", show=False, internal=True)
             self.m.after_turn(self, lambda: (self.stop("daily restart"), self.start()))
+
+
+PROBE_HEADING = "## Context Usage"
+
+
+def is_probe_output(msg: dict) -> bool:
+    """The /context probe's reply: a local command's synthetic message."""
+    if msg.get("model") != "<synthetic>":
+        return False
+    return any(b.get("type") == "text" and str(b.get("text", "")).lstrip().startswith(PROBE_HEADING)
+               for b in msg.get("content") or [])
 
 
 def _tool_line(block: dict) -> str:
