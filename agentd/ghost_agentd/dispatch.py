@@ -89,6 +89,12 @@ class Dispatch:
     # None = the owner. Turns the conversation causes (its stops, its
     # ghost-ask requests) work for them, so they may press those cards too.
     requested_by: dict | None = None
+    # Where .worktrees/ goes and agent views are looked for: the root of the
+    # project the repo belongs to, or for a repo in no project (only in the
+    # owner's own turn) the repo itself. Empty = this project's first path.
+    root: str = ""
+    # The project the repo belongs to when it isn't this one ("" = none).
+    target_project: str = ""
 
 
 class Dispatcher:
@@ -135,7 +141,9 @@ class Dispatcher:
     # ----------------------------------------------- the assistant's tools
 
     def propose(self, project: Project, title: str, repo: str, task: str,
-                branch: str = "", base: str = "", source: str = "") -> str:
+                branch: str = "", base: str = "", source: str = "", owner_turn: bool = False) -> str:
+        """`owner_turn`: the owner asked in person, so the repo may be in
+        another project, or in no project at all under ~/projects."""
         title, task = title.strip()[:80], task.strip()
         if not title or not task:
             return "需要 title 和 task。"
@@ -143,8 +151,25 @@ class Dispatcher:
         rp = Path(os.path.expanduser(repo)) if repo else None
         if rp is not None and not rp.is_absolute() and root is not None:
             rp = root / rp
-        if rp is None or not any(_under(str(rp), p) for p in project.paths):
-            return f"repo 要在專案資料夾內（{', '.join(project.paths)}），例如 {root}/platform。"
+        if rp is None:
+            return f"需要 repo（專案資料夾內的 repo，例如 {root}/platform）。"
+        target, wt_root = project.name, str(root or "")
+        if not any(_under(str(rp), p) for p in project.paths):
+            if not owner_turn:
+                return (f"repo 要在專案資料夾內（{', '.join(project.paths)}），例如 {root}/platform。"
+                        "派工到其他專案只限負責人本人親自交辦的那一輪。")
+            other = next((x for x in self.broker.projects.all()
+                          for path in x.paths if _under(str(rp), path)), None)
+            if other is not None:
+                target = other.name
+                wt_root = next(path for path in other.paths if _under(str(rp), path))
+            elif _under(str(rp), str(PROJECTS_HOME)):
+                top = git(rp, "rev-parse", "--show-toplevel")
+                if top.returncode != 0:
+                    return f"{rp} 不是 git repo。"
+                target, wt_root = "", top.stdout.strip()
+            else:
+                return f"跨專案派工只能派到專案資料夾，或 {PROJECTS_HOME} 底下的 git repo。"
         if git(rp, "rev-parse", "--show-toplevel").returncode != 0:
             return f"{rp} 不是 git repo。"
         branch = branch.strip() or f"feature/{slug(title)}-{secrets.token_hex(2)}"
@@ -156,9 +181,14 @@ class Dispatcher:
         if git(rp, "rev-parse", "--verify", "--quiet", base).returncode != 0:
             return f"找不到起點分支 {base}。"
         d = Dispatch(id=secrets.token_hex(4), project=project.name, title=title, repo=str(rp),
-                     branch=branch, base=base, task=task, created=time.time(), source=source[:200])
+                     branch=branch, base=base, task=task, created=time.time(), source=source[:200],
+                     root=wt_root, target_project="" if target == project.name else target)
         place, perm_note = self._plan(d, project)
-        summary = (f"🚀 開工：{title}\n"
+        cross = ""
+        if target != project.name:
+            cross = (f"🏷 目標 repo：{rp}（{'屬於 ' + target + ' 專案' if target else '不屬於任何專案'}），"
+                     f"由 {project.name} 助手提議\n")
+        summary = (f"🚀 開工：{title}\n{cross}"
                    f"📁 {rp.name}　🌿 {branch}（從 {base} 開）\n"
                    f"📍 {place}\n🔐 {perm_note}\n\n"
                    f"要交給工作對話的任務：\n{task}")
@@ -175,7 +205,7 @@ class Dispatcher:
 
     def _plan(self, d: Dispatch, project: Project) -> tuple[str, str]:
         """Where it will run and with which permissions; sets d.mode/d.perm."""
-        root = project.paths[0] if project.paths else ""
+        root = d.root or (project.paths[0] if project.paths else "")
         view = agent_view_for(root) if root else None
         d.perm = project.dispatch_permission or "bypassPermissions"
         if view:
@@ -241,16 +271,18 @@ class Dispatcher:
         project = self.broker.projects.get(d.project)
         a = self.assistants.get(d.project)
         try:
-            root = Path(project.paths[0])
+            root = Path(d.root or project.paths[0])
             wt = root / ".worktrees" / f"{Path(d.repo).name}-{slug(d.branch.split('/')[-1], 50)}"
             wt.parent.mkdir(exist_ok=True)
+            if d.root and Path(d.root).resolve() == Path(d.repo).resolve():
+                exclude_worktrees(Path(d.repo))  # inside the repo itself: keep git status clean
             r = git(Path(d.repo), "worktree", "add", "-b", d.branch, str(wt), d.base, timeout=180)
             if r.returncode != 0:
                 raise RuntimeError(f"建 worktree 失敗：{r.stderr.strip()[:300]}")
             d.worktree = str(wt)
             self._plan(d, project)  # the agent view may have opened or closed since
             trust(wt)
-            task = d.task + brief(project)
+            task = d.task + brief(project, d.root)
             if d.mode == "job":
                 self._start_job(d, wt, task)
                 return
@@ -379,9 +411,9 @@ def trust(folder: Path, config: Path | None = None) -> None:
     os.replace(tmp, config)
 
 
-def brief(project: Project) -> str:
+def brief(project: Project, root: str = "") -> str:
     """What every dispatched task is told on top of the assistant's text."""
-    root = project.paths[0] if project.paths else ""
+    root = root or (project.paths[0] if project.paths else "")
     notes = Path.home() / ".claude/projects" / re.sub(r"[^A-Za-z0-9]", "-", root) / "memory/MEMORY.md"
     lines = ["", "", "---", "（ghost-agentd 附註）"]
     if root and notes.exists():
@@ -389,6 +421,25 @@ def brief(project: Project) -> str:
     lines.append("- 測試環境可以直接發佈；要發正式環境（生产环境／online）之前，先用 ghost-ask "
                  "說明要發哪個專案、哪個 commit，等回覆同意才發。")
     return "\n".join(lines)
+
+
+PROJECTS_HOME = Path.home() / "projects"
+
+
+def exclude_worktrees(repo: Path) -> None:
+    """List .worktrees/ in the repo's own git exclude file."""
+    r = git(repo, "rev-parse", "--git-common-dir")
+    if r.returncode != 0:
+        return
+    gd = Path(r.stdout.strip())
+    f = (gd if gd.is_absolute() else repo / gd) / "info" / "exclude"
+    try:
+        text = f.read_text() if f.exists() else ""
+        if ".worktrees/" not in text.split():
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_text(text + ("" if not text or text.endswith("\n") else "\n") + ".worktrees/\n")
+    except OSError:
+        pass
 
 
 def agent_view_for(path: str) -> str | None:

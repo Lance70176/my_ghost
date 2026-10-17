@@ -16,6 +16,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from .config import DEFAULT_PROJECT
 from .policy import redact
 
 TRANSCRIPTS = Path(os.path.expanduser("~/.claude/projects"))
@@ -394,6 +395,9 @@ class Tools:
         return f"已更新記憶（{len(content)} 字）。"
 
     def t_list_workers(self, p, args) -> str:
+        p, err = self._project_arg(p, args, "project")
+        if err:
+            return err
         days = float(args.get("days") or 2)
         own = self.assistants.get(p.name).meta.get("session_id")
         live = {s["session_id"]: s for s in self.broker.list_sessions()}
@@ -420,6 +424,9 @@ class Tools:
         return json.dumps(rows, ensure_ascii=False, indent=1)
 
     def t_read_worker_log(self, p, args) -> str:
+        p, err = self._project_arg(p, args, "project")
+        if err:
+            return err
         sid = str(args.get("session_id") or "")
         limit = min(int(args.get("max_messages") or 30), 120)
         files = [f for f in _transcripts(p.paths, 60) if f.stem == sid]
@@ -485,57 +492,105 @@ class Tools:
         bot.jobs.put((bot._send_notice, (p, redact(text))))
         return "已送到專案群組。"
 
-    def t_draft_reply(self, p, args) -> str:
-        w = self.accounts.get(p.name)
+    # ------------------------------------------- cross-project (owner only)
+
+    CROSS_REFUSED = ("沒有執行：{key}={name} 是跨專案操作，只限負責人本人（主帳號在 TG、MyGhost 或手機網頁）"
+                     "親自交辦的那一輪。這一輪是成員、工作帳號訊息、排程、工作對話求助或內部維護觸發的，"
+                     "不能跨專案；請負責人本人來交辦。")
+
+    def _project_arg(self, p, args, key: str):
+        """(project, "") for args[key] — this project when it's missing — or
+        (None, why not). Another project only in the owner's own turn."""
+        name = str(args.get(key) or "").strip()
+        if not name or name == p.name:
+            return p, ""
+        if not self._owner_turn(p):
+            return None, self.CROSS_REFUSED.format(key=key, name=name)
+        names = {x.name for x in self.broker.projects.all() if x.name != DEFAULT_PROJECT}
+        if name not in names:
+            return None, f"沒有叫「{name}」的專案。有的：{'、'.join(sorted(names))}。"
+        return self.broker.projects.get(name), ""
+
+    def _account(self, p, args):
+        """(watcher, on_behalf, error): the work account to use — another
+        project's with account_project, in the owner's own turn only."""
+        target, err = self._project_arg(p, args, "account_project")
+        if err:
+            return None, "", err
+        w = self.accounts.get(target.name)
         if w is None:
-            return "這個專案沒有設定工作帳號。"
-        return w.draft(str(args.get("ref") or ""), str(args.get("text") or ""), str(args.get("note") or ""))
+            return None, "", ("這個專案沒有設定工作帳號。" if target is p
+                              else f"{target.name} 專案沒有設定工作帳號。")
+        return w, ("" if target is p else p.name), ""
+
+    def _used_by(self, w, on_behalf: str, what: str, detail: str = "") -> None:
+        if on_behalf:
+            w._event("account_used_by", by_project=on_behalf, what=what, detail=detail[:200])
+
+    def t_draft_reply(self, p, args) -> str:
+        w, behalf, err = self._account(p, args)
+        if err:
+            return err
+        return w.draft(str(args.get("ref") or ""), str(args.get("text") or ""), str(args.get("note") or ""),
+                       on_behalf=behalf)
+
+    def t_draft_dm(self, p, args) -> str:
+        w, behalf, err = self._account(p, args)
+        if err:
+            return err
+        return w.draft_dm(str(args.get("to") or ""), str(args.get("text") or ""), str(args.get("note") or ""),
+                          on_behalf=behalf)
 
     def t_send_reply(self, p, args) -> str:
-        w = self.accounts.get(p.name)
-        if w is None:
-            return "這個專案沒有設定工作帳號。"
-        return w.send_now(str(args.get("ref") or ""), str(args.get("text") or ""))
+        w, behalf, err = self._account(p, args)
+        if err:
+            return err
+        return w.send_now(str(args.get("ref") or ""), str(args.get("text") or ""), on_behalf=behalf)
 
     def _owner_turn(self, p) -> bool:
         return bool(getattr(self.assistants.get(p.name), "turn_owner", False))
 
     def t_grant_dm(self, p, args) -> str:
-        w = self.accounts.get(p.name)
-        if w is None:
-            return "這個專案沒有設定工作帳號。"
+        w, behalf, err = self._account(p, args)
+        if err:
+            return err
+        self._used_by(w, behalf, "grant_dm", str(args.get("person") or ""))
         return w.grant(str(args.get("person") or ""), str(args.get("level") or ""),
                        str(args.get("scope") or ""), args.get("days") or 0, self._owner_turn(p))
 
     def t_revoke_dm(self, p, args) -> str:
-        w = self.accounts.get(p.name)
-        if w is None:
-            return "這個專案沒有設定工作帳號。"
+        w, behalf, err = self._account(p, args)
+        if err:
+            return err
+        self._used_by(w, behalf, "revoke_dm", str(args.get("person") or ""))
         return w.revoke(str(args.get("person") or ""))
 
     def t_list_dm_grants(self, p, args) -> str:
-        w = self.accounts.get(p.name)
-        if w is None:
-            return "這個專案沒有設定工作帳號。"
+        w, behalf, err = self._account(p, args)
+        if err:
+            return err
+        self._used_by(w, behalf, "list_dm_grants")
         return w.list_grants(self._owner_turn(p))
 
     def t_flag_sensitive(self, p, args) -> str:
-        w = self.accounts.get(p.name)
-        if w is None:
-            return "這個專案沒有設定工作帳號。"
+        w, behalf, err = self._account(p, args)
+        if err:
+            return err
+        self._used_by(w, behalf, "flag_sensitive", str(args.get("ref") or ""))
         return w.flag_sensitive(str(args.get("ref") or ""), str(args.get("what") or ""))
 
     def t_post_message(self, p, args) -> str:
-        w = self.accounts.get(p.name)
-        if w is None:
-            return "這個專案沒有設定工作帳號。"
-        return w.post(str(args.get("chat") or ""), str(args.get("text") or ""))
+        w, behalf, err = self._account(p, args)
+        if err:
+            return err
+        return w.post(str(args.get("chat") or ""), str(args.get("text") or ""), on_behalf=behalf)
 
     def t_read_tg_chat(self, p, args) -> str:
-        w = self.accounts.get(p.name)
-        if w is None:
-            return "這個專案沒有設定工作帳號。"
+        w, behalf, err = self._account(p, args)
+        if err:
+            return err
         limit = int(args.get("limit") or 20)
+        self._used_by(w, behalf, "read_tg_chat", str(args.get("chat") or args.get("ref") or ""))
         if args.get("chat") and not args.get("ref"):
             return w.history_of(str(args["chat"]), limit)
         return w.history(str(args.get("ref") or ""), limit)
@@ -586,19 +641,29 @@ class Tools:
             return "派工沒有啟用。"
         out = self.dispatcher.propose(p, str(args.get("title") or ""), str(args.get("repo") or ""),
                                       str(args.get("task") or ""), str(args.get("branch") or ""),
-                                      str(args.get("base") or ""), str(args.get("source") or ""))
+                                      str(args.get("base") or ""), str(args.get("source") or ""),
+                                      owner_turn=self._owner_turn(p))
         m = re.search(r"開工卡（id=([0-9a-f]+)）", out)
         return out + (self._replace(p, args, m.group(1)) if m else "")
 
     def t_message_worker(self, p, args) -> str:
         if self.dispatcher is None:
             return "派工沒有啟用。"
+        p, err = self._project_arg(p, args, "project")
+        if err:
+            return err
         return self.dispatcher.message(p, str(args.get("dispatch_id") or ""), str(args.get("text") or ""))
 
     def t_list_dispatches(self, p, args) -> str:
-        return self.dispatcher.list_for(p) if self.dispatcher else "派工沒有啟用。"
+        if self.dispatcher is None:
+            return "派工沒有啟用。"
+        p, err = self._project_arg(p, args, "project")
+        return err or self.dispatcher.list_for(p)
 
     def t_reply_worker(self, p, args) -> str:
         if self.helpdesk is None:
             return "求助沒有啟用。"
+        p, err = self._project_arg(p, args, "project")
+        if err:
+            return err
         return self.helpdesk.reply(p.name, str(args.get("help_id") or ""), str(args.get("text") or ""))

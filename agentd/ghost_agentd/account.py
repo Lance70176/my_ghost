@@ -476,7 +476,10 @@ class AccountWatcher:
             return "這則他判斷為高風險，交給他本人處理，不能回。"
         return m
 
-    def draft(self, ref: str, text: str, note: str = "") -> str:
+    def draft(self, ref: str, text: str, note: str = "", on_behalf: str = "") -> str:
+        """A reply card for message `ref`. `on_behalf`: the project whose
+        assistant drafted it with this project's account (its card shows
+        there; the caller has checked it's the owner's own turn)."""
         m = self._lookup(ref)
         if isinstance(m, str):
             return m
@@ -492,19 +495,69 @@ class AccountWatcher:
                 self.broker.dismiss(p.id, "replaced")
         who = self.me or "工作帳號"
         where = "私訊" if m.private else f"群組「{m.chat}」"
-        summary = (f"📨 {where}｜{m.sender}：\n「{m.text.strip()[:400]}」\n\n"
+        summary = (f"{self._behalf_line(on_behalf)}📨 {where}｜{m.sender}：\n「{m.text.strip()[:400]}」\n\n"
                    f"✍️ 草擬用 {who} 回覆：\n{text}")
         if note.strip():
             summary += f"\n\n💡 {note.strip()[:300]}"
-        card = self.broker.create_reply(self.project.name, summary, {
+        card = self.broker.create_reply(on_behalf or self.project.name, summary, {
             "ref": ref, "chat_id": m.chat_id, "msg_id": m.msg_id, "chat": m.chat,
             "sender": m.sender, "text": text, "account": who, "private": m.private,
             "original": m.text.strip()[:1500], "note": note.strip()[:300],
+            "account_project": self.project.name,
         }, options=[f"📤 用 {who} 送出", "💬 要改", "🙈 不用回"])
+        self._record_behalf(on_behalf, "draft_reply", card.id, m.chat, text)
         return (f"已做成回覆卡（id={card.id}）給他決定。先結束這一輪；他按了之後你會收到通知。"
                 "改稿就再呼叫一次 draft_reply（舊卡會被取代）。")
 
-    def send_now(self, ref: str, text: str) -> str:
+    def _behalf_line(self, on_behalf: str) -> str:
+        if not on_behalf or on_behalf == self.project.name:
+            return ""
+        return f"🔁 {on_behalf} 助手代發（用 {self.project.name} 專案的帳號 {self.me or '工作帳號'}）\n"
+
+    def _record_behalf(self, on_behalf: str, what: str, card: str, chat: str, text: str) -> None:
+        """Another project's assistant used this account: say so here too."""
+        if not on_behalf or on_behalf == self.project.name:
+            return
+        self._event("account_used_by", by_project=on_behalf, what=what, card=card, chat=chat,
+                    text=redact(text)[:500])
+        self.assistants.get(self.project.name).add(
+            "notice", f"🔁 {on_behalf} 助手用這個專案的帳號{'草擬' if card else '處理'}了給「{chat}」的訊息"
+                      f"{f'（卡片 {card} 在 {on_behalf}）' if card else ''}：{text[:300]}", source="system")
+
+    def draft_dm(self, person: str, text: str, note: str = "", on_behalf: str = "") -> str:
+        """A card to message someone privately who may never have written to
+        the account. Only a card: it goes out when the owner presses 送出."""
+        text = text.strip()
+        if not text:
+            return "訊息內容是空的。"
+        if len(text) > 4000:
+            return "訊息太長（上限 4000 字）。"
+        if self.transport is None and not re.fullmatch(r"\s*\d+\s*", person or ""):
+            return "帳號目前沒有連線，查不到對象。"
+        t = self.resolve(person)
+        if isinstance(t, str):
+            return t
+        chat_id, name = t
+        if chat_id in self.holds:
+            return "這個對話有敏感資料正在等他判斷風險，先不要發。"
+        for p in list(self.broker.pending.values()):  # one open draft per person
+            r = getattr(p, "reply", None)
+            if r and r.get("dm") and r.get("chat_id") == chat_id:
+                self.broker.dismiss(p.id, "replaced")
+        who = self.me or "工作帳號"
+        summary = f"{self._behalf_line(on_behalf)}✉️ 主動私訊 {name}（{chat_id}）\n\n✍️ 草擬用 {who} 發送：\n{text}"
+        if note.strip():
+            summary += f"\n\n💡 {note.strip()[:300]}"
+        card = self.broker.create_reply(on_behalf or self.project.name, summary, {
+            "ref": "", "chat_id": chat_id, "msg_id": None, "chat": name, "sender": name,
+            "text": text, "account": who, "private": True, "original": "", "note": note.strip()[:300],
+            "dm": True, "account_project": self.project.name,
+        }, options=[f"📤 用 {who} 送出", "💬 要改", "🙅 不發"])
+        self._record_behalf(on_behalf, "draft_dm", card.id, name, text)
+        return (f"已做成私訊卡（id={card.id}）給他決定，按「送出」才會發。先結束這一輪；他按了之後你會收到通知。"
+                "對方回覆後照現有的私訊規則處理（沒有授權就照樣出回覆卡）。")
+
+    def send_now(self, ref: str, text: str, on_behalf: str = "") -> str:
         """Send a reply from the account right away (no card), to the chat
         message `ref` came from."""
         m = self._lookup(ref)
@@ -548,8 +601,9 @@ class AccountWatcher:
                                  "chat": m.chat, "chat_id": m.chat_id, "ref": ref, "text": text},
                                 ensure_ascii=False) + "\n")
         where = "私訊" if m.private else f"群組「{m.chat}」"
+        by = f"（{on_behalf} 助手代發）" if on_behalf and on_behalf != self.project.name else ""
         self.assistants.get(self.project.name).add(
-            "notice", f"已用 {who} 回覆{where}的 {m.sender}：{text[:500]}", source="system")
+            "notice", f"已用 {who} 回覆{where}的 {m.sender}{by}：{text[:500]}", source="system")
         self.assistants.notify(self.project, f"📤 助手用 {who} 回覆{where}的 {m.sender}：\n{redact(text)[:1500]}")
         return f"已用 {who} 送出。"
 
@@ -572,7 +626,7 @@ class AccountWatcher:
             return f"群組「{chat}」{'找不到' if not hits else '有好幾個同名的，請在 post_to 改用 chat id'}。"
         return hits[0]
 
-    def post(self, chat: str, text: str) -> str:
+    def post(self, chat: str, text: str, on_behalf: str = "") -> str:
         """Post a new message (not a reply) from the account in a post_to group."""
         text = text.strip()
         if not text:
@@ -592,8 +646,9 @@ class AccountWatcher:
         with open(self.project.dir / "events.jsonl", "a", encoding="utf-8") as fh:
             fh.write(json.dumps({"ts": time.time(), "type": "account_post", "by": "assistant",
                                  "chat": title, "chat_id": chat_id, "text": text}, ensure_ascii=False) + "\n")
+        by = f"（{on_behalf} 助手代發）" if on_behalf and on_behalf != self.project.name else ""
         self.assistants.get(self.project.name).add(
-            "notice", f"已用 {who} 在群組「{title}」發文：{text[:500]}", source="system")
+            "notice", f"已用 {who} 在群組「{title}」發文{by}：{text[:500]}", source="system")
         self.assistants.notify(self.project, f"📤 助手用 {who} 在群組「{title}」發文：\n{redact(text)[:1500]}")
         return f"已用 {who} 發到「{title}」。"
 
@@ -857,12 +912,12 @@ class AccountWatcher:
             self._on_grant_card(p)
             return
         r = getattr(p, "reply", None)
-        if not r or p.project != self.project.name or p.chosen != SEND:
+        if not r or r.get("account_project", p.project) != self.project.name or p.chosen != SEND:
             return
         threading.Thread(target=self._send, args=(p, r), daemon=True).start()
 
     def _send(self, p: Pending, r: dict) -> None:
-        a = self.assistants.get(self.project.name)
+        a = self.assistants.get(p.project)  # the card's project: who asked for it
         try:
             if self.transport is None:
                 raise RuntimeError("帳號沒有連線")
@@ -874,10 +929,15 @@ class AccountWatcher:
             return
         self.on_mine(r["chat_id"])
         with open(self.project.dir / "events.jsonl", "a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"ts": time.time(), "type": "account_reply", "card": p.id,
-                                 "chat": r["chat"], "chat_id": r["chat_id"], "by": p.decided_by},
+            fh.write(json.dumps({"ts": time.time(), "type": "account_dm" if r.get("dm") else "account_reply",
+                                 "card": p.id, "chat": r["chat"], "chat_id": r["chat_id"], "by": p.decided_by,
+                                 **({"by_project": p.project} if p.project != self.project.name else {})},
                                 ensure_ascii=False) + "\n")
-        a.add("notice", f"已用 {r['account']} 回覆「{r['chat']}」。", source="system", choice_id=p.id)
+        verb = "私訊" if r.get("dm") else "回覆"
+        a.add("notice", f"已用 {r['account']} {verb}「{r['chat']}」。", source="system", choice_id=p.id)
+        if p.project != self.project.name:
+            self.assistants.get(self.project.name).add(
+                "notice", f"🔁 {p.project} 助手的卡片已用 {r['account']} {verb}「{r['chat']}」。", source="system")
 
 
 # ------------------------------------------------------- the real account

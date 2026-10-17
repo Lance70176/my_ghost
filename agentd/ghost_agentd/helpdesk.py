@@ -77,10 +77,20 @@ class HelpDesk:
 
     # -------------------------------------------------------------- asking
 
+    def _project_for(self, cwd: str, session_id: str = "", tmux: str = "", job: str = ""):
+        """The project a conversation answers to: the one its folder is in,
+        or for work dispatched into a repo in no project, the dispatcher's."""
+        p = self.broker.projects.match(cwd or "")
+        if p.name == DEFAULT_PROJECT and self.dispatcher is not None:
+            d = self.dispatcher.owning(session_id, tmux, job, cwd)
+            if d is not None:
+                return self.broker.projects.get(d.project)
+        return p
+
     def context_for(self, cwd: str) -> str:
         """What a conversation starting in `cwd` is told (SessionStart)."""
         self.broker.projects.maybe_reload()
-        p = self.broker.projects.match(cwd or "")
+        p = self._project_for(cwd or "")
         if p.name == DEFAULT_PROJECT:
             return ""
         from . import config as cfgmod
@@ -96,10 +106,11 @@ class HelpDesk:
         if not text:
             return {"ok": False, "message": "沒有內容"}
         self.broker.projects.maybe_reload()
-        p = self.broker.projects.match(str(payload.get("cwd") or ""))
+        job = str(payload.get("job") or "")
+        p = self._project_for(str(payload.get("cwd") or ""), str(payload.get("session_id") or ""),
+                              str(payload.get("tmux") or ""), job if JOB_ID.match(job) else "")
         if p.name == DEFAULT_PROJECT:
             return {"ok": False, "message": "這個資料夾不屬於任何專案，沒有專案助手可以問。"}
-        job = str(payload.get("job") or "")
         h = HelpRequest(id=secrets.token_hex(3), project=p.name, session_id=str(payload.get("session_id") or ""),
                         cwd=str(payload.get("cwd") or ""), text=text[:6000], ts=time.time(),
                         tmux=str(payload.get("tmux") or "")[:80], job=job if JOB_ID.match(job) else "")
