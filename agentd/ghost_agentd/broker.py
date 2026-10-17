@@ -80,6 +80,8 @@ class Pending:
     # the assistant to make this card; None = the owner. The member may press
     # their own cards; the owner may press every card.
     requested_by: dict | None = None
+    # The newer card that took this one over (closed as "superseded").
+    superseded_by: str | None = None
     # Who pressed it: {"owner": True} or a member's {"id", "name"}; the
     # assistant's next turn runs with that person's scope.
     decided_actor: dict | None = None
@@ -386,6 +388,34 @@ class Broker:
         with self.lock:
             self._bump()
 
+    def supersede(self, project: str, old_ids: list[str], new_id: str,
+                  requester: dict | None = None) -> tuple[list[str], list[str]]:
+        """The assistant's newer card takes over older ones: close them so a
+        late press can't send it down a decided path again. Only its own
+        cards (choices, dispatch and reply cards — never a conversation's
+        permission request), only in this project, and in a member's turn
+        only that member's. Returns (closed ids, why each other one wasn't)."""
+        done, refused = [], []
+        for oid in dict.fromkeys(str(i).strip() for i in old_ids if str(i).strip()):
+            with self.lock:
+                p = self.pending.get(oid)
+                if oid == new_id:
+                    continue
+                if p is None or not p.open or p.project != project:
+                    refused.append(f"{oid}：已處理過或不是這個專案的卡")
+                    continue
+                if p.kind != "choice":
+                    refused.append(f"{oid}：是工作對話的權限請求，不能由你撤掉")
+                    continue
+                if requester and (p.requested_by or {}).get("id") != requester.get("id"):
+                    refused.append(f"{oid}：不是這位成員交辦的卡")
+                    continue
+                p.superseded_by = new_id
+                p.deny_message = f"已改由新決策卡 {new_id} 處理"
+                self._resolve(p, "denied", "superseded")
+            done.append(oid)
+        return done, refused
+
     def dismiss(self, pid: str, by: str) -> bool:
         """Close a card nobody needs any more (answered elsewhere, replaced)
         without it counting as anyone's answer."""
@@ -482,7 +512,8 @@ class Broker:
             "reply": {k: p.reply.get(k) for k in ("chat", "sender", "text", "account", "private", "original", "note")}
             if p.reply else None,
             # send | revise | skip | self_reply | replaced
-            "outcome": (by if by in ("self_reply", "replaced") else
+            "superseded_by": p.superseded_by,
+            "outcome": (by if by in ("self_reply", "replaced", "superseded") else
                         {0: "send", 1: "revise"}.get(p.chosen, "skip")) if p.reply else None,
             "wait_seconds": round(time.time() - p.created, 1),
         })

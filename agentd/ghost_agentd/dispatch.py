@@ -309,6 +309,15 @@ class Dispatcher:
             time.sleep(0.5)
         d.state, d.started = "started", time.time()
 
+    def drop_cards(self, card_ids: list[str]) -> None:
+        """Proposals whose 開工 cards a newer card took over: not happening."""
+        with self.lock:
+            hit = [d for d in self.items.values() if d.card in card_ids and d.state == "proposed"]
+            for d in hit:
+                d.state = "dropped"
+            if hit:
+                self._save()
+
     # ------------------------------------------------------ worker events
 
     def owning(self, session_id: str = "", tmux: str = "", job: str = "", cwd: str = "") -> Dispatch | None:

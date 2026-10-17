@@ -24,7 +24,10 @@ TOOLS = [
              "action": {"type": "string", "enum": ["allow", "deny"],
                         "description": "只在討論決策卡時使用：選了這個選項就同意或拒絕那張卡"}},
              "required": ["label"]}},
-         "card_id": {"type": "string", "description": "正在討論的決策卡 id（沒有就省略）"}},
+         "card_id": {"type": "string", "description": "正在討論的決策卡 id（沒有就省略）"},
+         "replaces": {"type": "array", "items": {"type": "string"},
+                      "description": "這張新卡推翻／取代的舊卡 id（還沒人按的選擇題、開工卡、回覆卡）。"
+                                     "舊卡會被撤掉並標「已改由新決策卡處理」，免得有人再按舊卡"}},
          "required": ["question", "options"]}},
     {"name": "read_state", "description": "讀你自己的記憶 state.md。",
      "inputSchema": {"type": "object", "properties": {}}},
@@ -105,7 +108,10 @@ TOOLS = [
          "task": {"type": "string", "description": "交給工作對話的完整任務說明（目標、相關原文、驗收方式、做完先別 push）"},
          "base": {"type": "string", "description": "起點分支，例如 origin/develop（省略則用遠端預設分支）"},
          "branch": {"type": "string", "description": "新分支名稱（省略則自動產生 feature/...）"},
-         "source": {"type": "string", "description": "來源，例如 ClickUp 單號或訊息 ref"}},
+         "source": {"type": "string", "description": "來源，例如 ClickUp 單號或訊息 ref"},
+         "replaces": {"type": "array", "items": {"type": "string"},
+                      "description": "這張新卡推翻／取代的舊卡 id（還沒人按的選擇題、開工卡、回覆卡）。"
+                                     "舊卡會被撤掉並標「已改由新決策卡處理」，免得有人再按舊卡"}},
          "required": ["title", "repo", "task"]}},
     {"name": "reply_worker",
      "description": "回覆工作對話的求助（用求助 id）。回覆會直接打進那個對話。涉及正式環境、發佈、權限等，"
