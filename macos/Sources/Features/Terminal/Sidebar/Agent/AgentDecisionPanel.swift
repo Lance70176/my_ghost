@@ -69,6 +69,10 @@ final class AgentDecisionPanel {
 
     private func update(_ pending: [AgentHostPending]) {
         self.pending = pending
+        AgentHiddenCards.shared.prune(keeping: Set(pending.map(\.pending.id)))
+        // Cards hidden from the corner stay answerable in the decision list
+        // and Telegram; here they're gone for good.
+        let pending = pending.filter { !AgentHiddenCards.shared.contains($0.pending.id) }
         guard !pending.isEmpty else {
             panel?.orderOut(nil)
             seenIDs.removeAll()
@@ -117,6 +121,11 @@ final class AgentDecisionPanel {
             }
         }
         return panel
+    }
+
+    /// Re-apply the current cards (one was just hidden).
+    func refresh() {
+        update(pending)
     }
 
     /// The cards grew or shrank (a reason field opened, a card was answered).
@@ -173,9 +182,48 @@ final class AgentDecisionPanel {
     }
 }
 
+/// Cards hidden from the bottom-right stack ("Hide"), by card id.
+/// Remembered across launches until the card is answered.
+@MainActor
+final class AgentHiddenCards: ObservableObject {
+    static let shared = AgentHiddenCards()
+    private static let defaultsKey = "MyGhostHiddenDecisionCards"
+
+    @Published private(set) var ids: Set<String>
+
+    private init() {
+        ids = Set(UserDefaults.standard.stringArray(forKey: Self.defaultsKey) ?? [])
+    }
+
+    func contains(_ id: String) -> Bool { ids.contains(id) }
+
+    func hide(_ id: String) {
+        ids.insert(id)
+        save()
+        AgentDecisionPanel.shared.refresh()
+    }
+
+    /// Forget cards that are no longer waiting.
+    func prune(keeping waiting: Set<String>) {
+        let kept = ids.intersection(waiting)
+        guard kept != ids else { return }
+        ids = kept
+        save()
+    }
+
+    private func save() {
+        UserDefaults.standard.set(Array(ids), forKey: Self.defaultsKey)
+    }
+}
+
 private struct AgentDecisionStack: View {
     @ObservedObject private var hub = AgentHub.shared
+    @ObservedObject private var hidden = AgentHiddenCards.shared
     @ObservedObject private var lang = LanguageManager.shared
+
+    private var shown: [AgentHostPending] {
+        hub.allPending.filter { !hidden.contains($0.pending.id) }
+    }
 
     /// The cards' natural height, measured inside the scroll view.
     @State private var cardsHeight: CGFloat = 0
@@ -191,7 +239,7 @@ private struct AgentDecisionStack: View {
             // than run off the screen.
             ScrollView(.vertical) {
                 VStack(alignment: .trailing, spacing: 8) {
-                    ForEach(hub.allPending.suffix(3)) { hp in
+                    ForEach(shown.suffix(3)) { hp in
                         AgentDecisionNotice(p: hp.pending, showHost: hub.clients.count > 1 || !hp.client.isLocal)
                             .environmentObject(hp.client)
                     }
@@ -202,8 +250,8 @@ private struct AgentDecisionStack: View {
             }
             .frame(height: min(max(cardsHeight, 1), maxCardsHeight))
             .onPreferenceChange(CardsHeightKey.self) { cardsHeight = $0 }
-            if hub.allPending.count > 3 {
-                Text(L("%d more waiting", hub.allPending.count - 3))
+            if shown.count > 3 {
+                Text(L("%d more waiting", shown.count - 3))
                     .agentFont(.caption)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 4)
@@ -313,6 +361,21 @@ private struct AgentDecisionNotice: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .help(L("Open it in the decision list"))
+        .overlay(alignment: .bottomTrailing) {
+            Button {
+                AgentHiddenCards.shared.hide(p.id)
+            } label: {
+                Text(L("Hide"))
+                    .agentFont(.caption2)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.primary.opacity(0.08)))
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(.secondary)
+            .padding(8)
+            .help(L("Stop showing this card here; it stays in the decision list and Telegram"))
+        }
     }
 }
 
