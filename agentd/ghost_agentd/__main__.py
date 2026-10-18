@@ -2,9 +2,10 @@
 
     python -m ghost_agentd            run (launchd does this)
     python -m ghost_agentd check      validate config and print the projects
-    python -m ghost_agentd account-login <project>
-                                      log the project's work TG account in
-                                      (you type the code Telegram sends)
+    python -m ghost_agentd account-login <account>
+                                      log a work TG account in (its name under
+                                      ~/.myghost/accounts, or a project it serves;
+                                      you type the code Telegram sends)
 """
 
 from __future__ import annotations
@@ -34,10 +35,12 @@ def check() -> int:
         bot = "own bot" if p.tg_token else ("fallback bot" if tg.token else "NO BOT")
         print(f"project {p.name}{' (resident)' if p.resident else ''}: {bot}, chat_id {p.tg_chat_id}, "
               f"paths {p.paths or '-'}, {len(p.policy.allow)} always-allow rules")
-        if p.tg_account:
-            from .account import session_file
-            state = "logged in" if session_file(p).exists() else "NOT logged in (run account-login)"
-            print(f"  work account {p.tg_account.get('phone', '?')[:4]}…: {state}")
+    from .workaccounts import load_accounts
+    for a in load_accounts(projects):
+        state = "logged in" if a.session_file.exists() else "NOT logged in (run account-login)"
+        print(f"work account {a.name} ({a.phone[:4]}…): {state}")
+        for r in a.routes:
+            print(f"  {r.describe()}")
     return 0
 
 
@@ -46,7 +49,12 @@ def main() -> int:
         return check()
     if sys.argv[1:2] == ["account-login"] and len(sys.argv) > 2:
         from .account import login
-        return login(cfgmod.Projects().get(sys.argv[2]))
+        from .workaccounts import find
+        acc = find(sys.argv[2], cfgmod.Projects())
+        if acc is None:
+            print(f"沒有叫 {sys.argv[2]} 的帳號（~/.myghost/accounts/<名稱>/account.yaml），也沒有帳號分配給這個專案")
+            return 1
+        return login(acc)
     cfg = cfgmod.load_config()
     projects = cfgmod.Projects()
     broker = Broker(cfg, projects)
@@ -65,14 +73,25 @@ def main() -> int:
         return next((b for b in bots if b.chat_for(project) is not None), None)
 
     from .account import AccountWatcher, TelethonAccount
-    accounts = {}
-    for p in projects.all():
-        if p.tg_account:
-            w = AccountWatcher(broker, assistants, p)
-            w.transport = TelethonAccount(p, w)
-            if w.transport.start():
-                accounts[p.name] = w
-                broker.listeners.append(w)
+    from .workaccounts import LaneTransport, WorkAccount, load_accounts
+    accounts = {}  # project name -> its lane (AccountWatcher) on a shared work account
+    for cfg_acc in load_accounts(projects):
+        wa = WorkAccount(cfg_acc)
+        wa.transport = TelethonAccount(wa)
+        for name in cfg_acc.projects:
+            if name in accounts:
+                log(f"account {wa.name}: project {name} already has a work account; its routes here are ignored")
+                continue
+            if projects.get(name).name != name:
+                log(f"account {wa.name}: routes to unknown project {name}")
+                continue
+            lane = AccountWatcher(broker, assistants, projects.get(name))
+            lane.transport = LaneTransport(wa.transport, lane)
+            wa.lanes[name] = lane
+        if wa.lanes and wa.transport.start():
+            for name, lane in wa.lanes.items():
+                accounts[name] = lane
+                broker.listeners.append(lane)
     from .watchcmd import WatchCommands
     watch_commands = WatchCommands(accounts)
     for bot in bots:

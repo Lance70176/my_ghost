@@ -380,8 +380,11 @@ def test_big_attachment_downloads_in_the_background(broker, manager):
     import asyncio
 
     from ghost_agentd import account
+    from ghost_agentd.workaccounts import AccountConfig, Route, WorkAccount
     w = watcher(broker, manager)
-    t = account.TelethonAccount(w.project, w)
+    wa = WorkAccount(AccountConfig("work", w.project.dir, "1", "h", "+1", [Route("all", "", "fq")]))
+    wa.lanes["fq"] = w
+    t = account.TelethonAccount(wa)
     t.client = FakeClient()
 
     async def run():

@@ -155,6 +155,9 @@ class Incoming:
     skip: str = ""  # why the attachment wasn't downloaded
     held: bool = False  # a private message from someone not let in: recorded only
     folders: list = field(default_factory=list)  # the account's Telegram folders the chat is in
+    # The account route that handed it to this project, when that route
+    # names the chat (folder / chat / group): {kind, value, trigger, window}.
+    via: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -222,6 +225,14 @@ class Watch:
         None if it shouldn't."""
         if m.chat in self.ignore or str(m.chat_id) in self.ignore:
             return None
+        via = m.via or {}
+        if via.get("kind") in ("folder", "chat", "group"):
+            # The account's route assigned this chat here: its rule applies.
+            rule = Rule(str(via.get("value", "")), via.get("trigger", "all"),
+                        Window.parse(via["window"]) if via.get("window") else None)
+            if m.private:
+                return rule.window or self.dms_window or self.window
+            return (rule.window or self.window) if self._hit(rule, m) else None
         if self.folders:
             # Only chats in a watched folder, whatever kind they are.
             rule = next((r for r in self.folders if r.group in (m.folders or [])), None)
@@ -344,22 +355,25 @@ class AccountWatcher:
             return w.match(m)
         if m.chat in w.ignore or str(m.chat_id) in w.ignore:
             return None
-        if w.folders:
-            # Putting a private chat in a watched folder lets it in, like a
-            # forward grant: it goes to the assistant, replies stay cards.
+        if w.folders or self._assigned(m):
+            # A private chat put in a watched folder (or routed here by name)
+            # is let in like a forward grant: it goes on, replies stay cards.
             return w.match(m)
         if self.dm_level(m.chat_id, m.chat) is None:
             return None
         return w.dms_window or w.window
 
-    def _in_folder(self, m: Incoming) -> bool:
-        """A private chat the owner put in a watched folder."""
+    def _assigned(self, m: Incoming) -> bool:
+        """A private chat the owner put in a watched folder, or that the
+        account's routes send here by folder or by name."""
+        if (m.via or {}).get("kind") in ("folder", "chat"):
+            return True
         w = self.watch()
         return bool(w.folders) and any(r.group in (m.folders or []) for r in w.folders)
 
     def _visible(self, m: Incoming) -> bool:
         """The assistant may look at this message (and its chat)."""
-        return not m.private or self.dm_level(m.chat_id, m.chat) is not None or self._in_folder(m)
+        return not m.private or self.dm_level(m.chat_id, m.chat) is not None or self._assigned(m)
 
     def wants(self, m: Incoming) -> bool:
         """Whether this message would go to the assistant (before downloading
@@ -485,7 +499,7 @@ class AccountWatcher:
             return "負責人在 watch.yaml 設為可自動回"
         g = self.grants.get(m.chat_id)
         if g is None:
-            return ("在監看的資料夾內：轉給助手，回覆一律出卡" if self._in_folder(m) else "未授權")
+            return ("在監看的資料夾內：轉給助手，回覆一律出卡" if self._assigned(m) else "未授權")
         note = g.describe()
         if g.risk == "mid":
             note += "｜曾有敏感資料，一律出回覆卡"
@@ -650,7 +664,7 @@ class AccountWatcher:
         try:
             self.transport.send(m.chat_id, text, m.msg_id)
         except Exception as e:
-            log(f"account {self.project.name}: send_reply failed {e!r}")
+            log(f"account {self.name}: send_reply failed {e!r}")
             return f"沒有送出：{e}"
         self._sent(m.chat_id, m.ts)
         # Cards still open for this message are moot now.
@@ -704,7 +718,7 @@ class AccountWatcher:
         try:
             self.transport.send(chat_id, text, None)
         except Exception as e:
-            log(f"account {self.project.name}: post_message failed {e!r}")
+            log(f"account {self.name}: post_message failed {e!r}")
             return f"沒有送出：{e}"
         with open(self.project.dir / "events.jsonl", "a", encoding="utf-8") as fh:
             fh.write(json.dumps({"ts": time.time(), "type": "account_post", "by": "assistant",
@@ -987,7 +1001,7 @@ class AccountWatcher:
             self._sending(r["chat_id"])
             self.transport.send(r["chat_id"], r["text"], r["msg_id"])
         except Exception as e:
-            log(f"account {self.project.name}: send failed {e!r}")
+            log(f"account {self.name}: send failed {e!r}")
             a.add("notice", f"⚠️ 回覆「{r['chat']}」沒有送出：{e}", source="system", choice_id=p.id)
             self.assistants.notify(self.project, f"⚠️ 用 {r['account']} 回覆「{r['chat']}」失敗：{e}")
             return
@@ -1008,17 +1022,14 @@ class AccountWatcher:
 
 # ------------------------------------------------------- the real account
 
-def session_file(project: Project) -> Path:
-    return project.dir / "account.session"
-
-
 class TelethonAccount:
-    """The account itself, over MTProto (Telethon), on its own thread and
-    event loop. Feeds an AccountWatcher."""
+    """A work account itself, over MTProto (Telethon), on its own thread and
+    event loop: one connection however many projects it serves. Each
+    message goes to the project lane its WorkAccount routes it to."""
 
-    def __init__(self, project: Project, watcher: AccountWatcher):
-        self.project = project
-        self.watcher = watcher
+    def __init__(self, account):
+        self.account = account  # WorkAccount
+        self.name = account.name
         self.loop: asyncio.AbstractEventLoop | None = None
         self.client = None
         # Background downloads of big attachments, by (chat_id, msg_id):
@@ -1028,11 +1039,11 @@ class TelethonAccount:
         self._folder_at = 0.0
 
     def start(self) -> bool:
-        if not session_file(self.project).exists():
-            log(f"account {self.project.name}: not logged in — run "
-                f"`python -m ghost_agentd account-login {self.project.name}`")
+        if not self.account.cfg.session_file.exists():
+            log(f"account {self.name}: not logged in — run "
+                f"`python -m ghost_agentd account-login {self.name}`")
             return False
-        threading.Thread(target=self._run, name=f"account-{self.project.name}", daemon=True).start()
+        threading.Thread(target=self._run, name=f"account-{self.name}", daemon=True).start()
         return True
 
     FOLDERS_TTL = 120  # seconds between re-reading the account's folders
@@ -1065,7 +1076,7 @@ class TelethonAccount:
                         "non_contacts": bool(getattr(f, "non_contacts", False)),
                         "groups": bool(getattr(f, "groups", False))})
         if [x["title"] for x in out] != [x["title"] for x in self._folder_cache or []]:
-            log(f"account {self.project.name}: folders {', '.join(x['title'] for x in out) or '(none)'}")
+            log(f"account {self.name}: folders {', '.join(x['title'] for x in out) or '(none)'}")
         self._folder_cache, self._folder_at = out, now
         return out
 
@@ -1074,51 +1085,52 @@ class TelethonAccount:
             try:
                 asyncio.run(self._main())
             except Exception as e:
-                log(f"account {self.project.name}: disconnected ({e!r}); retrying in 30s")
+                log(f"account {self.name}: disconnected ({e!r}); retrying in 30s")
             time.sleep(30)
 
     async def _main(self) -> None:
         from telethon import TelegramClient, events
         from telethon.sessions import StringSession
 
-        acc = self.project.tg_account
+        acc = self.account.cfg
         self.loop = asyncio.get_running_loop()
         self.client = client = TelegramClient(
-            StringSession(session_file(self.project).read_text().strip()),
-            int(acc["api_id"]), str(acc["api_hash"]),
+            StringSession(acc.session_file.read_text().strip()),
+            int(acc.api_id), str(acc.api_hash),
             device_model="MyGhost ghost-agentd", app_version="1")
         await client.connect()
         if not await client.is_user_authorized():
-            log(f"account {self.project.name}: session no longer valid — log in again")
+            log(f"account {self.name}: session no longer valid — log in again")
             await client.disconnect()
             await asyncio.sleep(3600)
             return
         me = await client.get_me()
-        self.watcher.me = "@" + me.username if me.username else (me.first_name or "工作帳號")
-        log(f"account {self.project.name}: watching as {self.watcher.me}")
-        wanted = [r.group for r in self.watcher.watch().folders]
+        handle = "@" + me.username if me.username else (me.first_name or "工作帳號")
+        self.account.set_me(handle)
+        log(f"account {self.name}: watching as {handle} for {', '.join(self.account.lanes) or 'no project'}")
+        wanted = self.account.folders_named()
         if wanted:  # say up front whether the folders named in watch.yaml exist
             try:
                 have = [f["title"] for f in await self._folders()]
                 missing = [x for x in wanted if x not in have]
                 if missing:
-                    log(f"account {self.project.name}: watch.yaml folders not in Telegram: {', '.join(missing)}")
+                    log(f"account {self.name}: watch.yaml folders not in Telegram: {', '.join(missing)}")
             except Exception as e:
-                log(f"account {self.project.name}: reading folders failed {e!r}")
+                log(f"account {self.name}: reading folders failed {e!r}")
 
         @client.on(events.NewMessage())
         async def on_new(ev):
             try:
                 await self._handle(ev, me.id)
             except Exception as e:
-                log(f"account {self.project.name}: message failed {e!r}")
+                log(f"account {self.name}: message failed {e!r}")
 
         await client.run_until_disconnected()
 
     async def _handle(self, ev, my_id: int) -> None:
         msg = ev.message
         if msg.out:
-            self.watcher.on_mine(ev.chat_id, msg.date.timestamp())
+            self.account.on_mine(ev.chat_id, msg.date.timestamp())
             return
         if ev.is_channel and not ev.is_group:
             return  # broadcast channels
@@ -1135,26 +1147,30 @@ class TelethonAccount:
             private=bool(ev.is_private), sender=name, sender_id=getattr(sender, "id", 0) or 0,
             msg_id=msg.id, text=msg.message or "", mentioned=bool(msg.mentioned),
             ts=msg.date.timestamp(), media=_media_kind(msg))
-        if self.watcher.watch().folders:
+        if self.account.needs_folders():
             try:
                 inc.folders = folders_of(await self._folders(), ev.chat_id, bool(ev.is_private),
                                          bool(getattr(sender, "contact", False)), bool(ev.is_group))
             except Exception as e:
-                log(f"account {self.project.name}: reading folders failed {e!r}")
+                log(f"account {self.name}: reading folders failed {e!r}")
+        lane = self.account.route(inc)
+        if lane is None:
+            self.account.unrouted(inc)
+            return
         big = None
-        if inc.media and self.watcher.wants(inc):
+        if inc.media and lane.wants(inc):
             if _size(msg) > MAX_MEDIA:
                 inc.skip = f"超過 {MAX_MEDIA // 1048576} MB"
             elif _size(msg) > INLINE_MEDIA:
                 inc.fetching = big = True
             else:
-                path, inc.skip = await self._download(msg)
+                path, inc.skip = await self._download(msg, lane.uploads)
                 if path:
                     inc.files = [str(path)]
-        if self.watcher.on_message(inc) and big:
-            self._fetch(msg, lambda path, why, ref=inc.ref: self.watcher.attach(ref, path, why))
+        if lane.on_message(inc) and big:
+            self._fetch(msg, lane.uploads, lambda path, why, ref=inc.ref: lane.attach(ref, path, why))
 
-    def _fetch(self, msg, done) -> None:
+    def _fetch(self, msg, folder: Path, done) -> None:
         """Download a big attachment in the background; done(path, why)."""
         key = (msg.chat_id, msg.id)
         if key in self._fetches:
@@ -1162,23 +1178,23 @@ class TelethonAccount:
 
         async def run():
             try:
-                path, why = await self._download(msg)
+                path, why = await self._download(msg, folder)
             except Exception as e:  # noqa: BLE001
                 path, why = None, f"下載失敗：{e}"
             if path:
                 self._fetches[key] = path
             else:
                 self._fetches.pop(key, None)  # may be tried again
-            log(f"account {self.project.name}: background download {key} → {path or why}")
+            log(f"account {self.name}: background download {key} → {path or why}")
             try:
                 done(path, why)
             except Exception as e:  # noqa: BLE001
-                log(f"account {self.project.name}: after download {e!r}")
+                log(f"account {self.name}: after download {e!r}")
 
         self._fetches[key] = asyncio.get_running_loop().create_task(run())
 
-    async def _download(self, msg) -> tuple[Path | None, str]:
-        """Save a message's attachment in the project's uploads (where the
+    async def _download(self, msg, folder: Path) -> tuple[Path | None, str]:
+        """Save a message's attachment in a project's uploads (where its
         assistant can Read it). (path, why not)."""
         f = getattr(msg, "file", None)
         if f is None:
@@ -1186,7 +1202,6 @@ class TelethonAccount:
         if _size(msg) > MAX_MEDIA:
             return None, f"超過 {MAX_MEDIA // 1048576} MB"
         name = f.name or f"{_media_kind(msg) or 'file'}-{msg.id}{f.ext or ''}"
-        folder = self.watcher.uploads
         folder.mkdir(parents=True, exist_ok=True)
         dest = folder / f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}-{uploads.safe_name(name)}"
         try:
@@ -1226,7 +1241,7 @@ class TelethonAccount:
             return e.id, name + (f" @{e.username}" if e.username else "")
         return self._call(fetch())
 
-    def history(self, chat_id: int, limit: int) -> list[dict]:
+    def history(self, chat_id: int, limit: int, lane) -> list[dict]:
         async def fetch():
             out = []
             async for m in self.client.iter_messages(chat_id, limit=limit):
@@ -1241,12 +1256,12 @@ class TelethonAccount:
                     elif _size(m) > MAX_MEDIA:
                         row["file"], row["skip"] = "", f"超過 {MAX_MEDIA // 1048576} MB"
                     elif _size(m) > INLINE_MEDIA:
-                        chat = self.watcher.inbox_chat(m.chat_id)
-                        self._fetch(m, lambda path, why, kind=row["media"], chat=chat:
-                                    self.watcher.fetched(chat, kind, path, why))
+                        chat = lane.inbox_chat(m.chat_id)
+                        self._fetch(m, lane.uploads, lambda path, why, kind=row["media"], chat=chat:
+                                    lane.fetched(chat, kind, path, why))
                         row["file"], row["skip"] = "", "檔案較大，背景下載中，好了會通知"
                     else:
-                        path, why = await self._download(m)
+                        path, why = await self._download(m, lane.uploads)
                         row["file"], row["skip"] = (str(path) if path else ""), why
                 out.append(row)
             return list(reversed(out))
@@ -1288,24 +1303,24 @@ def _media_kind(msg) -> str:
     return ""
 
 
-def login(project: Project) -> int:
-    """Interactive, run by the account's owner in a terminal."""
+def login(acc) -> int:
+    """Interactive, run by the account's owner in a terminal. `acc` is an
+    AccountConfig (~/.myghost/accounts/<name>/account.yaml)."""
     import getpass
 
     from telethon.sessions import StringSession
     from telethon.sync import TelegramClient
 
-    acc = project.tg_account
-    if not acc or not acc.get("api_id") or not acc.get("api_hash") or not acc.get("phone"):
-        print(f"{project.name}: project.yaml needs telegram.account: {{api_id, api_hash, phone}}")
+    if not acc.api_id or not acc.api_hash or not acc.phone:
+        print(f"{acc.dir / 'account.yaml'} needs api_id, api_hash and phone")
         return 1
-    client = TelegramClient(StringSession(), int(acc["api_id"]), str(acc["api_hash"]),
+    client = TelegramClient(StringSession(), int(acc.api_id), str(acc.api_hash),
                             device_model="MyGhost ghost-agentd", app_version="1")
-    client.start(phone=str(acc["phone"]),
+    client.start(phone=str(acc.phone),
                  code_callback=lambda: input("Telegram 傳來的登入碼："),
                  password=lambda: getpass.getpass("兩步驟驗證密碼（沒有就直接 Enter）："))
     me = client.get_me()
-    f = session_file(project)
+    f = acc.session_file
     f.write_text(client.session.save())
     f.chmod(0o600)
     client.disconnect()
