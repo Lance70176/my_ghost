@@ -1338,7 +1338,8 @@ private struct AgentHistoryList: View {
     @State private var showRules = false
     @State private var closed: Set<String> = []
     @State private var historyFailed = false
-    @State private var expanded: Set<String> = []
+    /// The card shown in full in its own sheet; the list itself stays compact.
+    @State private var opened: AgentDecisionRecord?
 
     private var shown: [AgentDecisionRecord] {
         showRules ? records : records.filter { !$0.byRule }
@@ -1370,17 +1371,9 @@ private struct AgentHistoryList: View {
                     AgentHistoryRow(
                         record: r, showProject: project == nil,
                         isClosed: closed.contains(r.id),
-                        isExpanded: expanded.contains(r.id) || closed.contains(r.id),
-                        onJump: {
-                            if AgentDecisionPanel.reveal(tmuxSession: r.tmuxSession ?? "") {
-                                closed.remove(r.id)
-                            } else {
-                                closed.insert(r.id)
-                            }
-                        },
-                        onToggle: {
-                            if expanded.contains(r.id) { expanded.remove(r.id) } else { expanded.insert(r.id) }
-                        })
+                        isExpanded: false,
+                        onJump: { jump(to: r) },
+                        onToggle: { opened = r })
                     // Each decision is its own card, with room between them.
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 5, leading: 2, bottom: 5, trailing: 2))
@@ -1406,8 +1399,57 @@ private struct AgentHistoryList: View {
         .onChange(of: project) { _ in
             records = []
             closed = []
-            expanded = []
+            opened = nil
         }
+        .sheet(item: $opened) { r in
+            AgentHistoryDetail(
+                record: r, showProject: project == nil,
+                isClosed: closed.contains(r.id),
+                onJump: {
+                    if jump(to: r) { opened = nil }
+                },
+                onClose: { opened = nil })
+        }
+    }
+
+    /// Shows the conversation a request came from, or marks it closed.
+    @discardableResult
+    private func jump(to r: AgentDecisionRecord) -> Bool {
+        if AgentDecisionPanel.reveal(tmuxSession: r.tmuxSession ?? "") {
+            closed.remove(r.id)
+            return true
+        }
+        closed.insert(r.id)
+        return false
+    }
+}
+
+/// One decision card in full: the whole original message and reply, why it
+/// was asked, and who decided it.
+private struct AgentHistoryDetail: View {
+    let record: AgentDecisionRecord
+    let showProject: Bool
+    let isClosed: Bool
+    let onJump: () -> Void
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ScrollView {
+                AgentHistoryRow(
+                    record: record, showProject: showProject,
+                    isClosed: isClosed, isExpanded: true,
+                    onJump: onJump, onToggle: {})
+            }
+            HStack {
+                Spacer()
+                Button(L("Close"), action: onClose)
+                    .keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(16)
+        .frame(width: 520)
+        .frame(minHeight: 240, maxHeight: 680)
     }
 }
 
@@ -1483,7 +1525,6 @@ private struct AgentHistoryRow: View {
                     .agentFont(.caption, design: .monospaced)
                     .lineLimit(isExpanded ? nil : 1)
                     .truncationMode(.middle)
-                    .onTapGesture(perform: onToggle)
                 if let chosen = record.chosen {
                     Text(L("Chose: %@", chosen)).agentFont(.caption, weight: .semibold)
                 }
@@ -1511,6 +1552,10 @@ private struct AgentHistoryRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.05)))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.secondary.opacity(0.22)))
+        // In the list the whole card opens it in full; the jump button above
+        // still takes its own clicks.
+        .contentShape(Rectangle())
+        .onTapGesture { if !isExpanded { onToggle() } }
         // A strip in the outcome's colour down the left edge.
         .overlay(alignment: .leading) {
             RoundedRectangle(cornerRadius: 2)
@@ -1564,8 +1609,6 @@ private struct AgentHistoryRow: View {
                 Label(note, systemImage: "lightbulb").agentFont(.caption).foregroundColor(.secondary)
             }
         }
-        .contentShape(Rectangle())
-        .onTapGesture(perform: onToggle)
     }
 }
 

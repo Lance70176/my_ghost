@@ -1,4 +1,4 @@
-/* MyGhost Web front-end: sidebar tabs + xterm.js terminal + file browser. */
+/* MyGhost Web front-end: sidebar tabs + xterm.js terminal + project assistants. */
 (() => {
   const $ = (id) => document.getElementById(id);
 
@@ -594,6 +594,7 @@
     agentStatus = next;
     if (changed) renderTabs();
     renderDecisions();
+    agentChanged();
   }
 
   async function decide(p, action, message) {
@@ -655,60 +656,85 @@
     box.innerHTML = `<button class="dec-head" type="button" title="收合／展開"></button>`;
     box.querySelector(".dec-head").onclick = () => foldDecisions(!box.classList.contains("folded"));
     paintFold();
-    for (const p of pending) {
-      const card = document.createElement("div");
-      card.className = "dec-card " + (LEVEL_CLASS[p.level_name] || "");
-      const head = document.createElement("div");
-      head.className = "dec-meta";
-      head.innerHTML = `<span class="lv"></span> <span class="who"></span>`;
-      head.querySelector(".lv").textContent = p.level_name;
-      head.querySelector(".who").textContent =
-        `${p.project} · ${p.tab_title || p.session_id.slice(0, 8)}`;
-      const cmd = document.createElement("pre");
-      cmd.className = "dec-cmd";
-      cmd.textContent = p.summary;
-      const why = document.createElement("div");
-      why.className = "dec-why";
-      why.textContent = p.reason + (p.level_name === "L3" ? " · 需要二次確認" : "");
-      const left = document.createElement("div");
-      left.className = "dec-left";
-      left.dataset.left = p.id;
-      left.textContent = leftText(p);
-      const btns = document.createElement("div");
-      btns.className = "dec-btns";
-      const b = (label, cls, fn) => {
-        const el = document.createElement("button");
-        el.className = cls;
-        el.textContent = label;
-        el.onclick = fn;
-        btns.appendChild(el);
-      };
-      if (p.kind === "choice") {
-        why.textContent = "助手的選擇題";
-        left.textContent = "";
-        (p.options || []).forEach((o, i) =>
-          b(o.label, o.action === "deny" ? "no" : "ok", () => decide(p, "o" + i)));
-        b("略過", "", () => decide(p, "deny"));
-        card.append(head, cmd, why, btns);
-        box.appendChild(card);
-        continue;
-      }
-      if (p.state === "confirming") {
-        b("⚠️ 確定同意", "ok", () => decide(p, "confirm"));
-        b("取消", "", () => decide(p, "cancel"));
-      } else {
-        b(p.level_name === "L3" ? "同意（需再確認）" : "同意", "ok", () => decide(p, "allow"));
-      }
-      b("拒絕", "no", () => decide(p, "deny"));
-      b("附理由拒絕…", "no", () => {
-        const why = prompt("拒絕理由（會轉給對話）");
-        if (why !== null) decide(p, "deny", why);
-      });
-      if (!p.discussing) b("💬 討論（不逾時）", "", () => decide(p, "discuss"));
-      if (p.can_always) b("此專案一律允許 " + p.always_pattern, "always", () => decide(p, "always"));
-      card.append(head, cmd, why, left, btns);
-      box.appendChild(card);
+    for (const p of pending) box.appendChild(buildPendingCard(p));
+  }
+
+  /// A waiting decision with its buttons. `full` shows a long request whole
+  /// instead of in a scrolling box — the decision's own page has the room.
+  function buildPendingCard(p, full) {
+    const card = document.createElement("div");
+    card.className = "dec-card " + (LEVEL_CLASS[p.level_name] || "");
+    const head = document.createElement("div");
+    head.className = "dec-meta";
+    head.innerHTML = `<span class="lv"></span> <span class="who"></span>`;
+    head.querySelector(".lv").textContent = p.level_name;
+    head.querySelector(".who").textContent =
+      `${p.project} · ${p.tab_title || (p.session_id || "").slice(0, 8)}`;
+    let cmd = document.createElement("pre");
+    cmd.className = "dec-cmd";
+    if (full) cmd.style.maxHeight = "none";
+    cmd.textContent = p.summary;
+    // A work-account reply reads as who wrote what and what would go back.
+    if (p.reply) cmd = replyBlock(p.reply, `將以 ${p.reply.account} 送出`, false);
+    const why = document.createElement("div");
+    why.className = "dec-why";
+    why.textContent = p.reason + (p.level_name === "L3" ? " · 需要二次確認" : "");
+    const left = document.createElement("div");
+    left.className = "dec-left";
+    left.dataset.left = p.id;
+    left.textContent = leftText(p);
+    const btns = document.createElement("div");
+    btns.className = "dec-btns";
+    const b = (label, cls, fn) => {
+      const el = document.createElement("button");
+      el.className = cls;
+      el.textContent = label;
+      el.onclick = fn;
+      btns.appendChild(el);
+    };
+    if (p.kind === "choice") {
+      why.textContent = p.reply ? p.reason || "回覆外部訊息" : "助手的選擇題";
+      left.textContent = "";
+      (p.options || []).forEach((o, i) =>
+        b(o.label, o.action === "deny" ? "no" : "ok", () => decide(p, "o" + i)));
+      b("略過", "", () => decide(p, "deny"));
+      card.append(head, cmd, why, btns);
+      return card;
     }
+    if (p.state === "confirming") {
+      b("⚠️ 確定同意", "ok", () => decide(p, "confirm"));
+      b("取消", "", () => decide(p, "cancel"));
+    } else {
+      b(p.level_name === "L3" ? "同意（需再確認）" : "同意", "ok", () => decide(p, "allow"));
+    }
+    b("拒絕", "no", () => decide(p, "deny"));
+    b("附理由拒絕…", "no", () => {
+      const why = prompt("拒絕理由（會轉給對話）");
+      if (why !== null) decide(p, "deny", why);
+    });
+    if (!p.discussing) b("💬 討論（不逾時）", "", () => decide(p, "discuss"));
+    if (p.can_always) b("此專案一律允許 " + p.always_pattern, "always", () => decide(p, "always"));
+    card.append(head, cmd, why, left, btns);
+    return card;
+  }
+
+  /// "X 說" with the original message, then the drafted reply under a line
+  /// saying what became of it.
+  function replyBlock(r, outcome, sent) {
+    const wrap = document.createElement("div");
+    const el = (cls, text) => {
+      const d = document.createElement("div");
+      d.className = cls;
+      d.textContent = text;
+      wrap.appendChild(d);
+      return d;
+    };
+    el("d-label", r.private === false ? `${r.sender} 在 ${r.chat} 說` : `${r.sender} 說`);
+    if (r.original) el("d-box", r.original);
+    el("d-out" + (sent ? " sent" : ""), (sent ? "➤ " : "") + outcome);
+    el("d-box" + (sent ? " sent" : ""), r.text || "");
+    if (r.note) el("d-label", "💡 " + r.note);
+    return wrap;
   }
 
   // ------------------------------------------------------------------ AI usage
@@ -771,64 +797,399 @@
     }
   }
 
-  // ------------------------------------------------------------------ files
+  // ------------------------------------------------------------------ AI agent
 
-  let cwd = null;
+  // The assistant whose conversation is open and how far it has been read.
+  let chatProject = null;
+  let chatSeq = 0;
+  let chatTimer = null;
+  let assistants = [];
+  let assistantsOffline = false;
+  // That assistant's decision history, and the agentd version it was read at.
+  let history = [];
+  let historyVersion = null;
+  // The decision open on its own page: {id, pending}.
+  let detail = null;
 
-  async function loadDir(p) {
-    const data = await api("/api/files?path=" + encodeURIComponent(p || ""));
-    cwd = data.path;
-    const crumbs = $("crumbs");
-    crumbs.innerHTML = "";
-    const home = state.home || "";
-    const rel = cwd.startsWith(home) ? cwd.slice(home.length) : cwd;
-    const parts = rel.split("/").filter(Boolean);
-    const rootLink = document.createElement("a");
-    rootLink.textContent = "~";
-    rootLink.onclick = () => loadDir(home);
-    crumbs.appendChild(rootLink);
-    let acc = home;
-    for (const part of parts) {
-      acc += "/" + part;
-      const sep = document.createElement("span");
-      sep.className = "sep";
-      sep.textContent = "/";
-      crumbs.appendChild(sep);
-      const a = document.createElement("a");
-      a.textContent = part;
-      const target = acc;
-      a.onclick = () => loadDir(target);
-      crumbs.appendChild(a);
+  const SOURCE = {
+    tg: "TG", myghost: "MyGhost", web: "手機網頁", timeout: "逾時",
+    superseded: "已改由新決策卡處理", answered: "用文字回答", self_reply: "你在 TG 自己回覆",
+    account: "工作帳號", clickup: "ClickUp", worker: "派工對話", system: "系統",
+  };
+
+  const ago = (ts) => {
+    if (!ts) return "";
+    const s = Date.now() / 1000 - ts;
+    if (s < 60) return "剛剛";
+    if (s < 3600) return Math.floor(s / 60) + " 分鐘前";
+    if (s < 86400) return Math.floor(s / 3600) + " 小時前";
+    return Math.floor(s / 86400) + " 天前";
+  };
+
+  const stamp = (ts) => {
+    if (!ts) return "";
+    const d = new Date(ts * 1000);
+    const two = (n) => String(n).padStart(2, "0");
+    return `${two(d.getMonth() + 1)}/${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
+  };
+
+  const pendingFor = (project) => (agent.pending || []).filter((p) => p.project === project);
+  const serialTag = (x) => (x.serial ? "#" + String(x.serial).replace(/^#/, "") : "");
+
+  async function loadAssistants() {
+    let data;
+    try {
+      data = await api("/api/agent/assistants");
+    } catch {
+      return;
     }
+    assistants = data.assistants || [];
+    assistantsOffline = !!data.offline;
+    renderAssistants();
+  }
 
-    const list = $("file-list");
+  function renderAssistants() {
+    const list = $("agent-list");
     list.innerHTML = "";
-    for (const e of data.entries) {
-      const el = document.createElement("div");
-      el.className = "file";
-      const size = e.dir ? "" : e.size > 1048576
-        ? (e.size / 1048576).toFixed(1) + " MB"
-        : e.size > 1024 ? (e.size / 1024).toFixed(0) + " KB" : e.size + " B";
-      el.innerHTML = `<span>${e.dir ? "📁" : "📄"}</span>` +
-        `<span class="title">${e.name}</span><span class="size">${size}</span>`;
-      el.onclick = () => {
-        if (e.dir) loadDir(cwd + "/" + e.name);
-        else window.open(`/api/download?path=${encodeURIComponent(cwd + "/" + e.name)}`, "_blank");
-      };
-      list.appendChild(el);
+    if (!assistants.length) {
+      const empty = document.createElement("div");
+      empty.className = "agent-empty";
+      empty.textContent = assistantsOffline ? "ghost-agentd 沒有在執行。" : "還沒有專案助手。";
+      list.appendChild(empty);
+      return;
+    }
+    for (const a of assistants) {
+      const st = a.status;
+      const row = document.createElement("div");
+      row.className = "agent-row" + (a.name === chatProject ? " active" : "");
+      const dot = st && st.busy ? "busy" : st && st.running ? "on" : "";
+      const pend = pendingFor(a.name).length;
+      row.innerHTML = `<span class="dot ${dot}"></span><span class="name"></span>` +
+        (pend ? `<span class="pend">${pend} 待決策</span>` : "") + `<span class="when"></span>`;
+      row.querySelector(".name").textContent = a.name + " 助手";
+      row.querySelector(".when").textContent = ago((st && st.last_activity) || a.last_activity);
+      row.onclick = () => openAssistant(a.name);
+      list.appendChild(row);
     }
   }
 
-  $("upload-input").onchange = async (ev) => {
-    for (const file of ev.target.files) {
-      await fetch(
-        `/api/upload?dir=${encodeURIComponent(cwd)}&name=${encodeURIComponent(file.name)}`,
-        { method: "POST", body: file }
-      );
+  function openAssistant(name) {
+    if (chatProject !== name) {
+      chatProject = name;
+      chatSeq = 0;
+      history = [];
+      historyVersion = null;
+      $("agent-chat").innerHTML = "";
+      $("agent-sub").textContent = "";
+      $("agent-wrap").classList.remove("drawer-open");
+      closeDetail();
     }
-    ev.target.value = "";
-    loadDir(cwd);
+    $("agent-title").textContent = name + " 助手";
+    showScreen("agent");
+    renderAssistants();
+    renderDrawer(true);
+    pollChat(true);
+  }
+
+  async function pollChat(toEnd) {
+    clearTimeout(chatTimer);
+    const project = chatProject;
+    if (!project) return;
+    try {
+      const data = await api(`/api/agent/assistants/${encodeURIComponent(project)}/chat?since=${chatSeq}`);
+      if (project === chatProject) appendChat(data, toEnd);
+    } catch {}
+    // Only while the conversation is on screen.
+    if (project === chatProject && $("app").classList.contains("nav-agent"))
+      chatTimer = setTimeout(() => pollChat(false), 2500);
+  }
+
+  function appendChat(data, toEnd) {
+    const box = $("agent-chat");
+    const nearEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+    const partial = box.querySelector(".msg.partial");
+    if (partial) partial.remove();
+    if (!chatSeq && data.truncated) {
+      const more = document.createElement("div");
+      more.className = "chat-more";
+      more.textContent = "較早的對話請到 App 查看";
+      box.appendChild(more);
+    }
+    for (const it of data.items || []) {
+      chatSeq = Math.max(chatSeq, it.seq);
+      box.appendChild(chatItem(it));
+    }
+    if (data.partial) {
+      const d = document.createElement("div");
+      d.className = "msg assistant partial";
+      d.textContent = data.partial + " …";
+      box.appendChild(d);
+    }
+    const st = data.status;
+    if (st) {
+      $("agent-sub").textContent =
+        st.compacting ? "整理記憶中…" : st.busy ? "處理中…" : st.running ? "待命中" : "未啟動";
+    }
+    if (toEnd || nearEnd) box.scrollTop = box.scrollHeight;
+  }
+
+  function chatItem(it) {
+    const d = document.createElement("div");
+    const role = ["user", "assistant", "tool", "choice"].includes(it.role) ? it.role : "notice";
+    d.className = "msg " + role;
+    if (role === "user") {
+      if (it.source && it.source !== "myghost") {
+        const src = document.createElement("span");
+        src.className = "msg src";
+        src.textContent = SOURCE[it.source] || it.source;
+        d.appendChild(src);
+      }
+      d.appendChild(document.createTextNode(it.text || ""));
+    } else if (role === "tool") {
+      d.textContent = "🔧 " + (it.tool ? it.tool + "：" : "") + (it.text || "");
+      d.onclick = () => d.classList.toggle("open");
+    } else if (role === "choice") {
+      const text = document.createElement("div");
+      text.textContent = (serialTag(it) ? serialTag(it) + " " : "") + (it.text || "");
+      d.appendChild(text);
+      if ((it.options || []).length) {
+        const opts = document.createElement("div");
+        opts.className = "opts";
+        for (const o of it.options) {
+          const label = typeof o === "string" ? o : o.label;
+          const chip = document.createElement("span");
+          chip.className = "opt" + (it.chosen && it.chosen === label ? " picked" : "");
+          chip.textContent = label;
+          opts.appendChild(chip);
+        }
+        d.appendChild(opts);
+      }
+      // The question is a decision card: open it, waiting or already decided.
+      if (it.choice_id) {
+        d.classList.add("linked");
+        d.onclick = () => openCard(it.choice_id);
+      }
+    } else {
+      d.textContent = it.text || "";
+    }
+    return d;
+  }
+
+  async function sendToAssistant() {
+    const input = $("agent-input");
+    const text = input.value.trim();
+    if (!text || !chatProject) return;
+    const btn = $("agent-send");
+    btn.disabled = true;
+    try {
+      await api(`/api/agent/assistants/${encodeURIComponent(chatProject)}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      input.value = "";
+      growInput();
+    } catch {
+      $("agent-sub").textContent = "送不出去，請再試一次";
+    }
+    btn.disabled = false;
+    pollChat(true);
+  }
+
+  function growInput() {
+    const input = $("agent-input");
+    input.style.height = "auto";
+    input.style.height = input.scrollHeight + "px";
+  }
+
+  $("agent-send").onclick = sendToAssistant;
+  $("agent-input").oninput = growInput;
+  // A desktop keyboard sends on Return; a phone's Return is a line break.
+  $("agent-input").onkeydown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing && !PHONE.matches) {
+      e.preventDefault();
+      sendToAssistant();
+    }
   };
+  $("agent-back").onclick = () => showScreen("list");
+
+  // ---------------------------------------------------- decisions drawer
+
+  $("drawer-handle").onclick = () => {
+    if ($("agent-wrap").classList.toggle("drawer-open")) loadHistory();
+  };
+  $("show-rules").onchange = () => renderDrawer(true);
+
+  async function loadHistory() {
+    const project = chatProject;
+    if (!project) return;
+    historyVersion = agent.version;
+    try {
+      const data = await api("/api/agent/decisions?project=" + encodeURIComponent(project));
+      if (project === chatProject) history = data.decisions || [];
+    } catch {}
+    renderDrawer(true);
+  }
+
+  function outcomeOf(r) {
+    if (r.reply) {
+      const sent = r.outcome === "send";
+      const text = {
+        send: `已用 ${r.reply.account} 送出`,
+        revise: "沒送出：要求修改",
+        self_reply: "沒送出：你已在 TG 自己回覆",
+        replaced: "沒送出：已有更新的草稿",
+        superseded: "沒送出：已改由新決策卡處理",
+        answered: "沒送出：已用文字回答",
+      }[r.outcome] || "沒送出：不用回覆";
+      return { cls: sent ? "ok" : "", sent, text };
+    }
+    if (r.by === "superseded") return { cls: "", text: "已改由新決策卡處理" };
+    if (r.by === "answered") return { cls: "ok", sent: true, text: "已用文字回答" };
+    if (r.state === "allowed") return { cls: "ok", sent: true, text: r.chosen ? "已選：" + r.chosen : "已同意" };
+    if (r.state === "expired") return { cls: "", text: "逾時" };
+    return { cls: "no", text: "已拒絕" };
+  }
+
+  const sourceOf = (r) =>
+    SOURCE[r.by] || (String(r.by || "").startsWith("rule:") ? `規則自動放行（${r.level}）` : r.by || "");
+
+  function firstLine(s) {
+    return String(s || "").split("\n").find((l) => l.trim()) || "";
+  }
+
+  function decisionRow(x, pending) {
+    const o = pending
+      ? { cls: "wait", text: x.kind === "choice" ? "等你選" : leftText(x) }
+      : outcomeOf(x);
+    const row = document.createElement("div");
+    row.className = "dec-row " + o.cls;
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const add = (cls, text) => {
+      if (!text) return;
+      const s = document.createElement("span");
+      s.className = cls;
+      s.textContent = text;
+      meta.appendChild(s);
+    };
+    add("", pending ? "" : stamp(x.ts));
+    add("tag", serialTag(x));
+    add("lv", pending ? x.level_name : x.level);
+    const line = document.createElement("div");
+    line.className = "line";
+    line.textContent = x.reply
+      ? `${x.reply.sender}：${x.reply.original || x.reply.text}`
+      : firstLine(x.summary);
+    const out = document.createElement("div");
+    out.className = "out" + (o.sent ? " sent" : "");
+    out.textContent = o.text;
+    row.append(meta, line, out);
+    row.onclick = () => openDetail(x, pending);
+    return row;
+  }
+
+  /// Rebuilds the drawer when what it lists changed — not on every poll, so a
+  /// row isn't swapped out from under a finger. `force` redraws regardless.
+  function renderDrawer(force) {
+    const pend = chatProject ? pendingFor(chatProject) : [];
+    $("drawer-count").textContent = pend.length ? String(pend.length) : "";
+    const showRules = $("show-rules").checked;
+    const shown = history.filter((r) => showRules || !String(r.by || "").startsWith("rule:"));
+    const drawer = $("agent-drawer");
+    const sig = [chatProject, showRules, pend.map((p) => p.id + p.state).join(), shown.map((r) => r.id).join()].join("|");
+    if (!force && drawer.dataset.sig === sig) return;
+    drawer.dataset.sig = sig;
+
+    const fill = (box, items, pending, emptyText) => {
+      box.innerHTML = "";
+      if (!items.length) {
+        const empty = document.createElement("div");
+        empty.className = "drawer-empty";
+        empty.textContent = emptyText;
+        box.appendChild(empty);
+      }
+      for (const x of items) box.appendChild(decisionRow(x, pending));
+    };
+    fill($("drawer-pending"), pend, true, "目前沒有等你決定的事。");
+    fill($("drawer-history"), shown, false, "還沒有決策紀錄。");
+  }
+
+  // ---------------------------------------------------- decision page
+
+  function openCard(id) {
+    const p = (agent.pending || []).find((x) => x.id === id);
+    if (p) return openDetail(p, true);
+    const r = history.find((x) => x.id === id);
+    if (r) return openDetail(r, false);
+    // Decided before the history was loaded: fetch it, then look again.
+    loadHistory().then(() => {
+      const again = history.find((x) => x.id === id);
+      if (again) openDetail(again, false);
+    });
+  }
+
+  function openDetail(x, pending) {
+    detail = { id: x.id, pending };
+    $("detail-title").textContent = [serialTag(x), pending ? "待決策" : "決策紀錄"].filter(Boolean).join(" ");
+    const body = $("detail-body");
+    body.innerHTML = "";
+    body.appendChild(pending ? buildPendingCard(x, true) : historyDetail(x));
+    body.scrollTop = 0;
+    $("agent-detail").classList.remove("hidden");
+  }
+
+  function closeDetail() {
+    detail = null;
+    $("agent-detail").classList.add("hidden");
+  }
+  $("detail-back").onclick = closeDetail;
+
+  function historyDetail(r) {
+    const wrap = document.createElement("div");
+    const meta = document.createElement("div");
+    meta.className = "d-meta";
+    meta.textContent = [stamp(r.ts), r.level, r.tab || r.project].filter(Boolean).join(" · ");
+    wrap.appendChild(meta);
+    const o = outcomeOf(r);
+    if (r.reply) {
+      wrap.appendChild(replyBlock(r.reply, o.text, o.sent));
+    } else {
+      const box = document.createElement("div");
+      box.className = "d-box mono";
+      box.textContent = r.summary || "";
+      const out = document.createElement("div");
+      out.className = "d-out" + (o.sent ? " sent" : "");
+      out.textContent = o.text;
+      wrap.append(box, out);
+    }
+    const facts = [];
+    if (r.reason) facts.push("原因：" + r.reason);
+    facts.push("決定者：" + sourceOf(r));
+    if (r.wait_seconds) facts.push(`等了 ${Math.round(r.wait_seconds)} 秒才決定`);
+    if (r.deny_message) facts.push("拒絕理由：" + r.deny_message);
+    if (r.always_added) facts.push("此專案一律允許：" + r.always_added);
+    if (r.discussed) facts.push("決定前有討論過");
+    const f = document.createElement("div");
+    f.className = "d-facts";
+    f.style.whiteSpace = "pre-wrap";
+    f.textContent = facts.join("\n");
+    wrap.appendChild(f);
+    return wrap;
+  }
+
+  /// Keeps the AI Agent screens in step with each agentd poll.
+  function agentChanged() {
+    if ($("mode-agent").classList.contains("active")) renderAssistants();
+    if (!chatProject) return;
+    renderDrawer(false);
+    if ($("agent-wrap").classList.contains("drawer-open") && agent.version !== historyVersion) loadHistory();
+    // A waiting card answered elsewhere — TG, the app — leaves its page.
+    if (detail && detail.pending && !(agent.pending || []).some((p) => p.id === detail.id)) {
+      closeDetail();
+      loadHistory();
+    }
+  }
 
   // ------------------------------------------------------------------ modes
 
@@ -845,7 +1206,10 @@
   function showScreen(which) {
     const app = $("app");
     app.classList.toggle("nav-term", which === "term");
-    app.classList.toggle("nav-list", which !== "term");
+    app.classList.toggle("nav-agent", which === "agent");
+    app.classList.toggle("nav-list", which === "list");
+    // The conversation polls only while it is the screen being looked at.
+    if (which !== "agent") clearTimeout(chatTimer);
     // The terminal changed width, so tmux needs the new size.
     if (term) setTimeout(() => {
       fit.fit();
@@ -874,13 +1238,13 @@
     setCollapsed(true);
 
   $("mode-term").onclick = () => setMode("term");
-  $("mode-files").onclick = () => setMode("files");
+  $("mode-agent").onclick = () => setMode("agent");
   function setMode(m) {
     $("mode-term").classList.toggle("active", m === "term");
-    $("mode-files").classList.toggle("active", m === "files");
+    $("mode-agent").classList.toggle("active", m === "agent");
     $("tab-pane").classList.toggle("hidden", m !== "term");
-    $("file-pane").classList.toggle("hidden", m !== "files");
-    if (m === "files" && cwd === null) loadDir("");
+    $("agent-pane").classList.toggle("hidden", m !== "agent");
+    if (m === "agent") loadAssistants();
   }
 
   // ------------------------------------------------------------------ boot
@@ -927,4 +1291,7 @@
   setInterval(refreshAgent, 3000);
   setInterval(refreshState, 5000);
   setInterval(refreshAI, 60000);
+  setInterval(() => {
+    if ($("mode-agent").classList.contains("active")) loadAssistants();
+  }, 15000);
 })();

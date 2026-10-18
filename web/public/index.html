@@ -34,7 +34,7 @@
 
     <div id="mode-bar">
       <button id="mode-term" class="mode active" title="Terminal tabs">Tabs</button>
-      <button id="mode-files" class="mode" title="File browser">Files</button>
+      <button id="mode-agent" class="mode" title="Project assistants">AI Agent</button>
     </div>
 
     <div id="tab-pane">
@@ -46,14 +46,47 @@
       <div id="tab-list"></div>
     </div>
 
-    <div id="file-pane" class="hidden">
-      <div id="crumbs"></div>
-      <div id="file-actions">
-        <label class="upload-btn">⬆ Upload<input type="file" id="upload-input" multiple></label>
-      </div>
-      <div id="file-list"></div>
+    <div id="agent-pane" class="hidden">
+      <div id="agent-list"></div>
     </div>
   </aside>
+
+  <!-- One assistant's conversation. Its decisions live in a drawer pulled
+       out from the right edge, and a decision opens on a page of its own. -->
+  <main id="agent-wrap">
+    <div id="agent-header">
+      <button id="agent-back" class="round-btn" title="Back to assistants">&#8249;</button>
+      <div id="agent-heading">
+        <div id="agent-title"></div>
+        <div id="agent-sub"></div>
+      </div>
+    </div>
+    <div id="agent-chat"></div>
+    <div id="agent-compose">
+      <textarea id="agent-input" rows="1" placeholder="跟助手說…"></textarea>
+      <button id="agent-send" title="Send">➤</button>
+    </div>
+    <button id="drawer-handle" title="決策清單"><span class="chev">&#8249;</span><span id="drawer-count"></span></button>
+    <aside id="agent-drawer">
+      <div class="drawer-section">
+        <div class="drawer-title">待決策</div>
+        <div id="drawer-pending"></div>
+      </div>
+      <div class="drawer-section">
+        <div class="drawer-title">決策紀錄
+          <label class="drawer-toggle"><input type="checkbox" id="show-rules"> 顯示自動放行</label>
+        </div>
+        <div id="drawer-history"></div>
+      </div>
+    </aside>
+    <div id="agent-detail" class="hidden">
+      <div id="detail-header">
+        <button id="detail-back" class="round-btn" title="Back">&#8249;</button>
+        <div id="detail-title"></div>
+      </div>
+      <div id="detail-body"></div>
+    </div>
+  </main>
 
   <main id="term-wrap">
     <!-- On a phone the list and the terminal are separate screens, so the

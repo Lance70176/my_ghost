@@ -653,6 +653,60 @@ const server = http.createServer(async (req, res) => {
       return send(res, r.code, r.body);
     }
 
+    // The AI Agent screen: assistants, their conversations, and the decisions
+    // each one asked for — the same data the app's assistant panel shows.
+    if (p === "/api/agent/assistants" && req.method === "GET") {
+      const [projects, assistants] = await Promise.all([
+        agentd("GET", "/api/projects"),
+        agentd("GET", "/api/assistants"),
+      ]);
+      const status = new Map(((assistants.body || {}).assistants || []).map((a) => [a.project, a]));
+      const list = ((projects.body || {}).projects || [])
+        // "_default" collects sessions no project claims; it has no assistant.
+        .filter((pr) => !pr.name.startsWith("_"))
+        .map((pr) => ({
+          name: pr.name,
+          resident: pr.resident,
+          pending: pr.pending || 0,
+          waiting: pr.waiting || 0,
+          running: pr.running || 0,
+          last_activity: pr.last_activity || 0,
+          status: status.get(pr.name) || null,
+        }));
+      return send(res, 200, { offline: !!projects.body.offline, assistants: list });
+    }
+    if (p === "/api/agent/decisions" && req.method === "GET") {
+      const project = url.searchParams.get("project") || "";
+      const q = new URLSearchParams({ limit: "150" });
+      if (project) q.set("project", project);
+      const r = await agentd("GET", "/api/decisions?" + q);
+      return send(res, r.code, { decisions: (r.body && r.body.decisions) || [] });
+    }
+    const chatMatch = p.match(/^\/api\/agent\/assistants\/([A-Za-z0-9_.-]+)\/(chat|messages)$/);
+    if (chatMatch && chatMatch[2] === "chat" && req.method === "GET") {
+      const since = parseInt(url.searchParams.get("since") || "0", 10) || 0;
+      const r = await agentd("GET", `/api/assistants/${chatMatch[1]}/chat?since=${since}`);
+      if (r.code !== 200 || !r.body.items) return send(res, r.code, r.body);
+      // A phone opening the conversation needs its recent end, not months of
+      // tool output: the whole history runs to hundreds of KB.
+      let items = r.body.items;
+      if (!since) items = items.slice(-150);
+      items = items.map((i) =>
+        i.role === "tool" && i.text && i.text.length > 600 ? { ...i, text: i.text.slice(0, 600) + "…" } : i);
+      return send(res, 200, { items, partial: r.body.partial, status: r.body.status,
+        truncated: !since && r.body.items.length > items.length });
+    }
+    if (chatMatch && chatMatch[2] === "messages" && req.method === "POST") {
+      let body = "";
+      for await (const c of req) body += c;
+      const b = JSON.parse(body || "{}");
+      const text = String(b.text || "").slice(0, 8000);
+      if (!text.trim()) return send(res, 400, { error: "empty message" });
+      const r = await agentd("POST", `/api/assistants/${chatMatch[1]}/messages`,
+        { text, files: [], source: "web" });
+      return send(res, r.code, r.body);
+    }
+
     if (p === "/api/ai-usage" && req.method === "GET") {
       return send(res, 200, await aiUsage());
     }
