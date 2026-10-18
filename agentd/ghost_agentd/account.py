@@ -230,6 +230,8 @@ class AccountWatcher:
         # minute, or for their window to open. Kept on disk so a restart
         # loses none, and judged against watch.yaml as it is when they go.
         self.queue: list[str] = []
+        # chat id -> when the daemon last sent there from the account.
+        self.own_sends: dict[int, float] = {}
         self.me = ""
         self._watch_at = 0.0
         self._watch: Watch | None = None
@@ -353,21 +355,44 @@ class AccountWatcher:
             self._save_queue()
         return True
 
+    # How long after the daemon sends to a chat the account's own copy of
+    # that message is taken as ours, not the owner writing by hand.
+    OWN_SEND_GRACE = 120
+
     def on_mine(self, chat_id: int, ts: float | None = None) -> None:
         """The owner wrote in a chat themselves: they're handling it."""
+        sent = self.own_sends.get(chat_id)
+        if sent and time.time() - sent < self.OWN_SEND_GRACE:
+            return  # the daemon's own send coming back: _sent() handled it
         ts = ts or time.time()
-        with self.lock:
-            # Waiting messages of that chat it answered are no longer news.
-            keep = [r for r in self.queue if not (self.inbox[r].chat_id == chat_id and self.inbox[r].ts <= ts)]
-            if keep != self.queue:
-                self.queue = keep
-                self._save_queue()
+        self._drop_answered(chat_id, ts)
         for p in list(self.broker.pending.values()):
             r = getattr(p, "reply", None)
             if p.project == self.project.name and r and r.get("chat_id") == chat_id:
                 self.broker.dismiss(p.id, "self_reply")
                 self.assistants.get(self.project.name).add(
                     "notice", f"你已經在 TG 上自己回了「{r.get('chat', '')}」，草擬的回覆卡已收掉。", source="system")
+
+    def _drop_answered(self, chat_id: int, upto: float) -> None:
+        """Waiting messages of a chat up to `upto` were answered: no longer news."""
+        with self.lock:
+            keep = [r for r in self.queue if not (self.inbox[r].chat_id == chat_id and self.inbox[r].ts <= upto)]
+            if keep != self.queue:
+                self.queue = keep
+                self._save_queue()
+
+    def _sending(self, chat_id: int) -> None:
+        """Before the daemon sends from the account: its copy coming back
+        through the account isn't the owner answering by hand."""
+        self.own_sends[chat_id] = time.time()
+
+    def _sent(self, chat_id: int, seen_upto: float) -> None:
+        """The daemon sent to a chat. What it answered was written when the
+        messages up to `seen_upto` were known; later ones nobody has seen
+        yet, so they still go to the assistant."""
+        self.own_sends[chat_id] = time.time()
+        if seen_upto:
+            self._drop_answered(chat_id, seen_upto)
 
     def tick(self) -> None:
         """Hand the assistant what's ready: messages whose window is open,
@@ -586,11 +611,13 @@ class AccountWatcher:
         if self.transport is None:
             return "帳號目前沒有連線，沒有送出。"
         who = self.me or "工作帳號"
+        self._sending(m.chat_id)
         try:
             self.transport.send(m.chat_id, text, m.msg_id)
         except Exception as e:
             log(f"account {self.project.name}: send_reply failed {e!r}")
             return f"沒有送出：{e}"
+        self._sent(m.chat_id, m.ts)
         # Cards still open for this message are moot now.
         for p in list(self.broker.pending.values()):
             r = getattr(p, "reply", None)
@@ -638,6 +665,7 @@ class AccountWatcher:
             return t
         chat_id, title = t
         who = self.me or "工作帳號"
+        self._sending(chat_id)
         try:
             self.transport.send(chat_id, text, None)
         except Exception as e:
@@ -921,13 +949,16 @@ class AccountWatcher:
         try:
             if self.transport is None:
                 raise RuntimeError("帳號沒有連線")
+            self._sending(r["chat_id"])
             self.transport.send(r["chat_id"], r["text"], r["msg_id"])
         except Exception as e:
             log(f"account {self.project.name}: send failed {e!r}")
             a.add("notice", f"⚠️ 回覆「{r['chat']}」沒有送出：{e}", source="system", choice_id=p.id)
             self.assistants.notify(self.project, f"⚠️ 用 {r['account']} 回覆「{r['chat']}」失敗：{e}")
             return
-        self.on_mine(r["chat_id"])
+        # Only what the draft was written against: a message that came in
+        # while the card waited for a press still goes to the assistant.
+        self._sent(r["chat_id"], p.created)
         with open(self.project.dir / "events.jsonl", "a", encoding="utf-8") as fh:
             fh.write(json.dumps({"ts": time.time(), "type": "account_dm" if r.get("dm") else "account_reply",
                                  "card": p.id, "chat": r["chat"], "chat_id": r["chat_id"], "by": p.decided_by,

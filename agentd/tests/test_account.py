@@ -206,6 +206,30 @@ def test_waiting_message_dropped_if_answered(broker, manager):
     assert not any(r == "user" for r, _ in roles(manager.get("fq")))
 
 
+def test_a_card_sent_later_keeps_what_came_after_it(broker, manager):
+    """A reply card waits for a press; messages that came in meanwhile were
+    never seen by the assistant, so sending the card mustn't swallow them
+    (nor its own copy coming back through the account)."""
+    w = watcher(broker, manager)
+    if not closed_window(w):
+        return
+    w.on_message(msg(private=True, chat="Candy", chat_id=5, msg_id=1, text="請 review", ts=time.time() - 60))
+    first = next(iter(w.inbox))
+    w.draft(first, "好，我看一下")
+    card = next(p for p in broker.pending.values() if p.reply)
+    time.sleep(0.02)
+    w.on_message(msg(private=True, chat="Candy", chat_id=5, msg_id=2, text="好，那我先補"))
+    later = next(r for r in w.inbox if r != first)
+    broker.decide(card.id, "o0", "tg")  # 送出
+    wait_for(lambda: w.transport.sent)
+    w.on_mine(5)  # the account's copy of what was just sent
+    assert w.queue == [later]
+    # The owner writing by hand later still counts as handling it.
+    w.own_sends.clear()
+    w.on_mine(5)
+    assert not w.queue
+
+
 def test_batch_gathers_a_burst(broker, manager):
     w = watcher(broker, manager)
     (w.project.dir / "watch.yaml").write_text("window: always\nbatch: 60\n")
