@@ -86,6 +86,7 @@ def main():
     if os.environ.get("GHOST_ASSISTANT"):
         # The project assistant itself (run by ghost-agentd, not in a tab).
         payload["tab_title"] = os.environ["GHOST_ASSISTANT"] + " 助手"
+        payload["assistant"] = os.environ["GHOST_ASSISTANT"]
     event = payload.get("hook_event_name", "")
 
     if event == "SessionStart":
@@ -110,6 +111,10 @@ def main():
         decision = {"behavior": result["behavior"]}
         if result["behavior"] == "deny":
             decision["message"] = result.get("message") or "使用者拒絕了這個操作。"
+        elif result.get("updatedInput"):
+            # A dispatched conversation's question answered on a card: the
+            # answers ride along, so it never waits in the terminal.
+            decision["updatedInput"] = result["updatedInput"]
         print(json.dumps({"hookSpecificOutput": {
             "hookEventName": "PermissionRequest", "decision": decision}}, ensure_ascii=False))
         return

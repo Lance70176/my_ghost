@@ -830,7 +830,7 @@
 
   const SOURCE = {
     tg: "TG", myghost: "MyGhost", web: "手機網頁", timeout: "逾時",
-    superseded: "已改由新決策卡處理", answered: "用文字回答", self_reply: "你在 TG 自己回覆",
+    superseded: "已改由新決策卡處理", answered: "用文字回答", self_reply: "你在 TG 自己回覆", terminal: "已在終端機處理",
     account: "工作帳號", clickup: "ClickUp", worker: "派工對話", system: "系統",
   };
 
@@ -1065,6 +1065,7 @@
       }[r.outcome] || "沒送出：不用回覆";
       return { cls: sent ? "ok" : "", sent, text };
     }
+    if (r.by === "terminal") return { cls: "", text: "已在終端機處理" };
     if (r.by === "superseded") return { cls: "", text: "已改由新決策卡處理" };
     if (r.by === "answered") return { cls: "ok", sent: true, text: "已用文字回答" };
     if (r.state === "allowed") return { cls: "ok", sent: true, text: r.chosen ? "已選：" + r.chosen : "已同意" };

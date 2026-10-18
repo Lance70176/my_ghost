@@ -19,7 +19,7 @@ def setup(tmp_path, monkeypatch):
     from ghost_agentd.broker import Broker
     from ghost_agentd.config import Config, Projects, TelegramConfig
     from ghost_agentd.telegram import build_bots
-    cfg = Config(decision_timeout=5,
+    cfg = Config(decision_timeout=5, hold_every_conversation=True,
                  telegram=TelegramConfig(token="TOKEN_FALLBACK", chat_id=COMMANDER,
                                          commander_user_ids=[COMMANDER]))
     broker = Broker(cfg, Projects())

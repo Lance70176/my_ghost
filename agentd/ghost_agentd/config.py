@@ -54,6 +54,11 @@ class Config:
     remote_token: str = ""
     # Mirror MyGhost-side chat into the project's TG group.
     sync_chat_to_tg: bool = True
+    # Hold every conversation's permission requests as cards. Off: only the
+    # assistants' own and the work they dispatched become cards; any other
+    # conversation's L2+ request goes back to its own prompt (L0/L1 the
+    # rules still allow by themselves).
+    hold_every_conversation: bool = False
 
 
 @dataclass
@@ -108,6 +113,7 @@ def load_config() -> Config:
         notify_idle=bool(raw.get("notify_idle", False)),
         remote_token=str((raw.get("remote") or {}).get("token") or ""),
         sync_chat_to_tg=bool(raw.get("sync_chat_to_tg", True)),
+        hold_every_conversation=bool(raw.get("hold_every_conversation", False)),
     )
 
 

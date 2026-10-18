@@ -43,7 +43,7 @@ STATE_TEXT = {
 }
 SOURCE_TEXT = {"tg": "TG", "myghost": "MyGhost", "web": "手機網頁", "timeout": "逾時",
                "self_reply": "你已在 TG 自己回覆", "replaced": "已改稿", "superseded": "已改由新決策卡處理",
-               "answered": "已依文字回覆結案"}
+               "answered": "已依文字回覆結案", "terminal": "已在終端機處理"}
 
 
 def esc(s: str) -> str:
@@ -247,7 +247,9 @@ class Bot:
     def card_text(self, p: Pending) -> str:
         if p.kind == "choice":
             head = ("✉️ <b>{} 助手草擬了回覆，問{}</b>" if p.reply else
-                    "🚀 <b>{} 助手提議開工，問{}</b>" if getattr(p, "dispatch", None) else "❓ <b>{} 助手問{}</b>")
+                    "🚀 <b>{} 助手提議開工，問{}</b>" if getattr(p, "dispatch", None) else
+                    "🙋 <b>{} 助手派出的工作對話問{}</b>" if getattr(p, "worker_ask", None) else
+                    "❓ <b>{} 助手問{}</b>")
             lines = [head.format(esc(p.project), asked(p)),
                      f"<blockquote>{esc(p.summary[:3000])}</blockquote>"]
             if not p.open:
@@ -260,7 +262,9 @@ class Bot:
                 # stands apart from the question quoted above it.
                 src = SOURCE_TEXT.get(p.decided_by, p.decided_by)
                 who = esc(p.decider or "負責人")
-                if p.superseded_by:
+                if p.decided_by == "terminal":
+                    lines.append("🖥 <b>已改在終端機回答</b>，這張不用再按")
+                elif p.superseded_by:
                     lines.append(f"⏭️ <b>已改由新決策卡</b> <code>{esc(p.superseded_by)}</code> <b>處理</b>，這張不用再按")
                 elif p.answered:
                     lines.append(f"💬 <b>已依文字回覆結案：</b><code>{esc(p.answered)}</code>，這張不用再按")
@@ -284,7 +288,9 @@ class Bot:
             src = SOURCE_TEXT.get(p.decided_by, p.decided_by)
             icon, text = STATE_TEXT.get(p.state, ("", p.state))
             # A timeout has nobody to name; a press names who pressed it.
-            if p.decided_by not in ("tg", "myghost", "web"):
+            if p.decided_by == "terminal":
+                lines.append("🖥 <code>已在終端機處理</code>，這張不用再按")
+            elif p.decided_by not in ("tg", "myghost", "web"):
                 lines.append(f"{icon} <code>{esc(text)}</code>（{esc(src)} · {time.strftime('%H:%M')}）")
             else:
                 lines.append(f"{icon} <code>{esc(text)}</code>{decided_by_line(p, src)}")

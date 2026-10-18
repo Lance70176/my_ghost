@@ -171,6 +171,7 @@ enum L10nStrings {
         "Project assistants that watch your Claude Code work, ask you to decide in cards, and talk to you in Telegram. Needs ghost-agentd running.": t("專案助手：盯著 Claude Code 的工作、用決策卡請你決定、在 Telegram 跟你對話。需要 ghost-agentd 在執行。", "项目助手：盯着 Claude Code 的工作、用决策卡请你决定、在 Telegram 跟你对话。需要 ghost-agentd 在运行。", "プロジェクトアシスタント：Claude Code の作業を見守り、カードで判断を求め、Telegram で会話します。ghost-agentd の実行が必要です。"),
         "Handled by a newer decision card": t("已改由新決策卡處理", "已改由新决策卡处理", "新しい決定カードで対応"),
         "Answered in words": t("已依文字回覆結案", "已依文字回复结案", "文章の返答で完了"),
+        "Handled in the terminal": t("已在終端機處理", "已在终端机处理", "ターミナルで対応済み"),
         "Rule %@": t("規則 %@", "规则 %@", "ルール %@"),
         "Conversation": t("對話", "对话", "会話"),
         "Show the conversation this request came from": t("跳到發出這個請求的對話", "跳到发出这个请求的对话", "この要求を出した会話を表示"),

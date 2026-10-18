@@ -35,6 +35,8 @@ from __future__ import annotations
 import json
 import mimetypes
 import re
+import select
+import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -110,6 +112,18 @@ def make_handler(broker: Broker, assistants=None, tools=None, remote_token: str 
 
         def _local(self) -> bool:
             return self.client_address[0] in LOOPBACK
+
+        def _client_connected(self) -> bool:
+            """Whether the hook that sent this request is still there. A hook
+            sends nothing more while it waits, so a readable socket means EOF:
+            Claude Code ended it, the request having been answered elsewhere."""
+            try:
+                readable, _, _ = select.select([self.connection], [], [], 0)
+                if not readable:
+                    return True
+                return self.connection.recv(1, socket.MSG_PEEK) != b""
+            except OSError:
+                return False
 
         def _allowed(self) -> bool:
             if self._local():
@@ -232,7 +246,7 @@ def make_handler(broker: Broker, assistants=None, tools=None, remote_token: str 
                 r = helpdesk.ask(body)
                 return self._send(200 if r.get("ok") else 400, r)
             if u.path == "/hook/permission":
-                return self._send(200, broker.request_permission(body))
+                return self._send(200, broker.request_permission(body, alive=self._client_connected))
             if u.path == "/hook/event":
                 broker.hook_event(body)
                 return self._send(200, {"ok": True})

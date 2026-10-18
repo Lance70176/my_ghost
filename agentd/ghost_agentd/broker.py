@@ -21,6 +21,15 @@ from . import config as cfgmod
 from .config import Config, Project, Projects
 from .policy import L0, L1, L2, L3, LEVEL_NAMES, Grade, describe_request, grade
 
+# How often a waiting request checks its hook is still connected.
+ALIVE_POLL = 5.0
+# How long a card nobody waits on any more stays open: room for a hook to
+# re-join after a dropped connection before it counts as answered elsewhere.
+ORPHAN_GRACE = 15.0
+# A dispatched conversation's question waits this long for a pick — under
+# the hook's own 7-day timeout, so it falls back to the terminal cleanly.
+ASK_WAIT = 6 * 86400
+
 
 class Listener(Protocol):
     def on_pending(self, p: "Pending") -> None: ...
@@ -98,6 +107,12 @@ class Pending:
     # Who pressed it: {"owner": True} or a member's {"id", "name"}; the
     # assistant's next turn runs with that person's scope.
     decided_actor: dict | None = None
+    # A dispatched conversation's AskUserQuestion, put to the owner as a
+    # choice: {"dispatch", "title", "from"} — the 開工 card it grew out of.
+    worker_ask: dict | None = None
+    # Hook connections waiting on this card. Back to 0 for good means the
+    # request was answered elsewhere (the terminal) and the card is moot.
+    waiters: int = 0
     event: threading.Event = field(default_factory=threading.Event, repr=False)
 
     @property
@@ -154,6 +169,8 @@ class Broker:
         self.lock = threading.RLock()
         self.pending: dict[str, Pending] = {}
         self.by_key: dict[str, Pending] = {}
+        # request_key -> the cards a dispatched conversation's question became
+        self.asks: dict[str, list[Pending]] = {}
         self.sessions: dict[str, Session] = {}
         self.listeners: list[Listener] = []
         self.paused_until = 0.0
@@ -244,6 +261,18 @@ class Broker:
         dispatched work. Replaced by the Dispatcher."""
         return None
 
+    def worker_of(self, payload: dict) -> dict | None:
+        """The dispatch this conversation runs, as {"id", "title", "card",
+        "requested_by", "label"}; None for any other. Replaced by the
+        Dispatcher."""
+        return None
+
+    def assistant_related(self, payload: dict) -> bool:
+        """An assistant itself, or work one dispatched: the conversations
+        whose requests become cards. Any other conversation asks in its own
+        terminal (unless config.hold_every_conversation)."""
+        return bool(payload.get("assistant")) or self.dispatched_to(payload) is not None
+
     def project_of(self, payload: dict) -> Project:
         """The project a conversation's cards and status belong to: for work
         an assistant dispatched, that assistant's (even in another project's
@@ -253,14 +282,21 @@ class Broker:
             return self.projects.get(name)
         return self.projects.match(payload.get("cwd", ""))
 
-    def request_permission(self, payload: dict) -> dict:
+    def request_permission(self, payload: dict, alive=None) -> dict:
         """Called from the hook. Blocks until decided; returns
-        {"behavior": "allow"} or {"behavior": "deny", "message": ...}."""
+        {"behavior": "allow"} or {"behavior": "deny", "message": ...}, or
+        "ask" to leave it to Claude Code's own prompt. `alive()` says whether
+        the hook is still connected; once it isn't, the request was answered
+        in the terminal and the card is closed."""
         self.projects.maybe_reload()
         project = self.project_of(payload)
         tool = payload.get("tool_name", "")
         tool_input = payload.get("tool_input") or {}
         key = str(payload.get("request_key") or secrets.token_hex(8))
+        if tool == "AskUserQuestion":
+            asked = self._worker_ask(project, payload, key, alive)
+            if asked is not None:
+                return asked
 
         with self.lock:
             existing = self.by_key.get(key)
@@ -274,6 +310,12 @@ class Broker:
                 return {"behavior": "ask", "message": "no decision surface online"}
             if existing is None:
                 g: Grade = grade(tool, tool_input, payload.get("cwd", ""), project.policy)
+                if g.level > L1 and not (self.cfg.hold_every_conversation
+                                         or self.assistant_related(payload)):
+                    # Not an assistant's conversation: the person at it answers
+                    # in its own prompt. Only what the rules allow by
+                    # themselves is still taken off their hands.
+                    return {"behavior": "ask", "message": "not an assistant's conversation"}
                 summary = describe_request(tool, tool_input)
                 now = time.time()
                 p = Pending(
@@ -305,18 +347,149 @@ class Broker:
             else:
                 p = existing
                 self._touch_session(payload, project)
+            p.waiters += 1
 
-        while not p.event.is_set():
-            # A request under discussion has no deadline; re-check hourly in
-            # case the discussion flag is ever cleared.
-            remaining = 3600.0 if p.discussing else p.deadline - time.time()
-            if p.event.wait(timeout=max(0.0, remaining)):
-                break
-            with self.lock:
-                if p.open and not p.discussing and time.time() >= p.deadline:
-                    p.deny_message = "逾時沒有人回應，預設拒絕。"
-                    self._resolve(p, "expired", "timeout")
+        self._wait(p, alive)
         return self.result(p)
+
+    def _wait(self, p: Pending, alive=None) -> bool:
+        """Block until p is decided. False when the hook went away first —
+        Claude Code ends it once the request is answered in the terminal."""
+        try:
+            while not p.event.is_set():
+                # A request under discussion has no deadline; re-check hourly in
+                # case the discussion flag is ever cleared.
+                remaining = 3600.0 if p.discussing else p.deadline - time.time()
+                step = min(remaining, ALIVE_POLL) if alive else remaining
+                if p.event.wait(timeout=max(0.0, step)):
+                    break
+                if alive is not None and not alive():
+                    return False
+                with self.lock:
+                    if p.open and not p.discussing and time.time() >= p.deadline:
+                        p.deny_message = "逾時沒有人回應，預設拒絕。"
+                        self._resolve(p, "expired", "timeout")
+            return True
+        finally:
+            self._leave(p)
+
+    def _leave(self, p: Pending) -> None:
+        """One hook connection stopped waiting on p. If none comes back (a
+        hook re-joins after a dropped connection within seconds), the request
+        was answered elsewhere and the card is closed."""
+        with self.lock:
+            p.waiters -= 1
+            if p.open and p.waiters <= 0:
+                t = threading.Timer(ORPHAN_GRACE, self._close_orphan, args=(p,))
+                t.daemon = True
+                t.start()
+
+    def _close_orphan(self, p: Pending) -> None:
+        with self.lock:
+            if not p.open or p.waiters > 0:
+                return
+            p.deny_message = ""
+            self._resolve(p, "expired", "terminal")
+
+    def _card_ref(self, project: Project, card_id: str | None) -> str:
+        """"#5（10/17）": a card's number, from the project's history once it
+        has been decided."""
+        if not card_id:
+            return ""
+        p = self.pending.get(card_id)
+        if p is not None:
+            return f"{p.tag}（{p.serial_day}）" if p.serial else ""
+        try:
+            lines = (project.dir / "decisions.jsonl").read_text().splitlines()
+        except OSError:
+            return ""
+        for line in reversed(lines):
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get("id") == card_id:
+                return f"#{r['serial']}（{r.get('serial_day', '')}）" if r.get("serial") else ""
+        return ""
+
+    def _worker_ask(self, project: Project, payload: dict, key: str, alive=None) -> dict | None:
+        """A dispatched conversation's multiple-choice question
+        (AskUserQuestion). Such work runs where nobody is watching, so each
+        question becomes a choice card saying which 開工 card the work grew
+        out of; once every one is picked the answers go straight back to the
+        conversation. A skip sends it back to the terminal. None: not
+        dispatched work — an ordinary permission request."""
+        w = self.worker_of(payload)
+        tool_input = payload.get("tool_input") or {}
+        questions = [q for q in tool_input.get("questions") or [] if q.get("options")]
+        if not w or not questions:
+            return None
+        with self.lock:
+            cards = self.asks.get(key)
+            if cards is None:
+                if not {"tg", "myghost"} & set(self.surfaces(project.name)):
+                    return {"behavior": "ask", "message": "no decision surface online"}
+                ref = self._card_ref(project, w.get("card"))
+                origin = (f"🔁 延伸自決策卡 {ref}「🚀 開工：{w['title']}」" if ref
+                          else f"🔁 延伸自派工「{w['title']}」")
+                now = time.time()
+                cards = []
+                for i, q in enumerate(questions):
+                    opts = q["options"][:8]
+                    lines = [origin, "", f"派工對話問：{q.get('question', '')}"]
+                    if len(questions) > 1:
+                        lines.insert(2, f"（第 {i + 1}／{len(questions)} 題）")
+                    lines += [f"・{o.get('label', '')}：{o['description']}" for o in opts
+                              if o.get("description") and o["description"] != o.get("label")]
+                    p = Pending(
+                        id=secrets.token_hex(4), key=f"{key}-{i}", project=project.name,
+                        session_id=payload.get("session_id", ""),
+                        tmux_session=payload.get("tmux_session", ""),
+                        tab_title=payload.get("tab_title") or w.get("label", ""),
+                        cwd=payload.get("cwd", ""), tool_name="AskUserQuestion",
+                        tool_input={"question": q.get("question", "")}, summary="\n".join(lines),
+                        level=L1, reason="派工對話的選擇題", always_pattern=None,
+                        created=now, deadline=now + ASK_WAIT, kind="choice",
+                        options=[{"label": str(o.get("label", ""))[:80], "action": None} for o in opts],
+                    )
+                    p.requested_by = w.get("requested_by")
+                    p.worker_ask = {"dispatch": w["id"], "title": w["title"], "from": ref}
+                    self._number(p)
+                    self.pending[p.id] = p
+                    self.by_key[p.key] = p
+                    cards.append(p)
+                self.asks[key] = cards
+                self._touch_session(payload, project, status="waiting",
+                                    message=f"等待回答：{questions[0].get('question', '')[:120]}")
+                self._bump()
+                for p in cards:
+                    self._emit("on_pending", p)
+            for p in cards:
+                p.waiters += 1
+
+        gone = False
+        for i, p in enumerate(cards):
+            if gone:
+                self._leave(p)
+            elif not self._wait(p, alive):
+                gone = True
+            elif p.chosen is None:
+                # Skipped (or never answered): the rest are moot, and the
+                # question goes back to the terminal for whoever is there.
+                with self.lock:
+                    for rest in cards[i + 1:]:
+                        if rest.open:
+                            self._resolve(rest, "expired", "terminal")
+                gone = True
+        with self.lock:
+            self.asks.pop(key, None)
+        if gone or any(p.chosen is None for p in cards):
+            return {"behavior": "ask", "message": "answer in the terminal"}
+        # Answered with the label exactly as the question had it (the card's
+        # copy may be cut short).
+        answers = {q.get("question", ""): q["options"][p.chosen].get("label", "")
+                   for q, p in zip(questions, cards)}
+        return {"behavior": "allow", "updatedInput": {**tool_input, "answers": answers}, "id": cards[0].id}
 
     @staticmethod
     def result(p: Pending) -> dict:

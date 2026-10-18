@@ -113,12 +113,25 @@ class Dispatcher:
         self.items: dict[str, Dispatch] = {}
         self._load()
         broker.dispatched_to = self.dispatched_to
+        broker.worker_of = self.worker_of
+
+    def _owning_payload(self, payload: dict) -> Dispatch | None:
+        return self.owning(str(payload.get("session_id") or ""), str(payload.get("tmux_session") or ""),
+                           "", str(payload.get("cwd") or ""))
 
     def dispatched_to(self, payload: dict) -> str | None:
         """For the broker: the project that dispatched this conversation."""
-        d = self.owning(str(payload.get("session_id") or ""), str(payload.get("tmux_session") or ""),
-                        "", str(payload.get("cwd") or ""))
+        d = self._owning_payload(payload)
         return d.project if d else None
+
+    def worker_of(self, payload: dict) -> dict | None:
+        """For the broker: the dispatch this conversation runs, so a question
+        it asks can say which 開工 card it came from."""
+        d = self._owning_payload(payload)
+        if d is None:
+            return None
+        return {"id": d.id, "title": d.title, "card": d.card, "requested_by": d.requested_by,
+                "label": d.label}
 
     # ------------------------------------------------------------ storage
 

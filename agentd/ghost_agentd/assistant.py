@@ -662,6 +662,12 @@ class AssistantManager:
                    1: f"他想修改你給「{p.reply['chat']}」的回覆（ref={p.reply['ref']}）。問他要怎麼改，改好再用 draft_reply 出新的回覆卡。",
                    2: f"他決定不回「{p.reply['chat']}」這則訊息（ref={p.reply['ref']}）。"}.get(
                 p.chosen, f"他略過了給「{p.reply['chat']}」的回覆卡。")
+        if getattr(p, "worker_ask", None):
+            w, q = p.worker_ask, p.tool_input.get("question", "")
+            msg = (f"你派出的工作對話「{w['title']}」問了：「{q[:200]}」，他選了「{label}」。"
+                   "答案已直接交給那個對話，你不需要再做什麼。" if label else
+                   f"你派出的工作對話「{w['title']}」問了：「{q[:200]}」，他略過了，"
+                   "改由在終端機的人回答。")
         if getattr(p, "db_query", None):
             q = p.db_query
             msg = (f"他同意查詢「{q['db']}」：daemon 正在執行，結果會另外傳給你。" if p.chosen == 0

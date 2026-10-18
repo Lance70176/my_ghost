@@ -19,7 +19,7 @@ def test_numbers_run_per_project_per_day(broker, home, monkeypatch):
     other = choice(broker, "_default")
     assert other.serial == 1  # each project counts its own
     # A restart goes on counting rather than starting again.
-    again = Broker(Config(decision_timeout=5, digest_seconds=0), Projects())
+    again = Broker(Config(decision_timeout=5, digest_seconds=0, hold_every_conversation=True), Projects())
     assert choice(again).serial == 3
     # A new day starts from 1.
     real = time.strftime

@@ -28,7 +28,7 @@ def home(tmp_path, monkeypatch):
 def broker(home):
     from ghost_agentd.broker import Broker
     from ghost_agentd.config import Config, Projects
-    cfg = Config(decision_timeout=5, digest_seconds=0)
+    cfg = Config(decision_timeout=5, digest_seconds=0, hold_every_conversation=True)
     b = Broker(cfg, Projects())
     b.tg_projects = {"fq", "_default"}
     b.events = []
@@ -193,7 +193,9 @@ def test_http_and_hook_end_to_end(home, tmp_path):
                                              "tool_name": "Bash", "tool_input": {"command": "rm y"}}))
         assert r.stdout == ""
         urllib.request.urlopen(base + "/api/state?client=myghost", timeout=2)
-        hook_env = dict(env, GHOST_AGENTD_URL=base)
+        # As an assistant's own conversation: only those (and dispatched work)
+        # are held as cards now.
+        hook_env = dict(env, GHOST_AGENTD_URL=base, GHOST_ASSISTANT="fq")
         hook_env.pop("TMUX", None)
         payload = {"hook_event_name": "PermissionRequest", "session_id": "e2e",
                    "cwd": f"{home}/code/fq", "tool_name": "Bash",

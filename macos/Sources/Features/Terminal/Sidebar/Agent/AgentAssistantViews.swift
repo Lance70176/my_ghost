@@ -1491,6 +1491,7 @@ private struct AgentHistoryRow: View {
         case "timeout": return L("Timed out")
         case "superseded": return L("Handled by a newer decision card")
         case "answered": return L("Answered in words")
+        case "terminal": return L("Handled in the terminal")
         default: return record.byRule ? L("Rule %@", record.level) : record.by
         }
     }
