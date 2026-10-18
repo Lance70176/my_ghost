@@ -419,7 +419,19 @@
     // groups sit between the tabs around them exactly as they do in the app —
     // bucketing by group instead pushed every group to the bottom.
     let openGroup = null;
+    // Each app's tabs sit under a heading naming it — labelled only when
+    // there's more than one, since a lone heading adds nothing.
+    let openSection = null;
+    const labelSections = new Set(state.sessions.map((s) => s.sectionKey)).size > 1;
     for (const s of state.sessions) {
+      if (labelSections && s.sectionKey !== openSection) {
+        openSection = s.sectionKey;
+        openGroup = null;
+        const head = document.createElement("div");
+        head.className = "section-label";
+        head.textContent = s.section;
+        list.appendChild(head);
+      }
       const group = s.group || "";
       if (group !== openGroup) {
         openGroup = group;
@@ -511,7 +523,9 @@
   // Move `s` one slot within its own group and persist the full order.
   async function move(s, delta) {
     const all = state.sessions;
-    const sameGroup = all.filter((x) => (x.group || "") === (s.group || ""));
+    // Tabs move among their own app's tabs; a section is never crossed.
+    const sameGroup = all.filter((x) =>
+      (x.group || "") === (s.group || "") && x.sectionKey === s.sectionKey);
     const at = sameGroup.findIndex((x) => x.name === s.name);
     const swapWith = sameGroup[at + delta];
     if (!swapWith) return;

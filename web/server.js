@@ -104,7 +104,7 @@ async function sessionsWithTitles() {
     // free-form title goes last and the bounded fields lead.
     const out = await tmux([
       "list-sessions", "-F",
-      "#{session_name}|#{@myghost_order}|#{session_attached}|#{@myghost_owner}|#{@myghost_group}|#{@myghost_title}",
+      "#{session_name}|#{@myghost_order}|#{session_attached}|#{@myghost_owner}|#{@myghost_owner_name}|#{@myghost_group}|#{@myghost_title}",
     ]);
     return out
       .split("\n")
@@ -114,6 +114,7 @@ async function sessionsWithTitles() {
         const order = parseInt((parts.shift() || "").trim(), 10);
         const attached = parseInt((parts.shift() || "").trim(), 10) || 0;
         const owner = (parts.shift() || "").trim();
+        const ownerName = (parts.shift() || "").trim();
         const group = (parts.shift() || "").trim();
         return {
           name,
@@ -122,6 +123,7 @@ async function sessionsWithTitles() {
           order: Number.isFinite(order) ? order : null,
           attached,
           owner: owner || null,
+          ownerName: ownerName || null,
         };
       })
       .filter((s) => /^myghost/.test(s.name))
@@ -256,6 +258,32 @@ async function sessionList() {
     const rb = rank.has(b.name) ? rank.get(b.name) : Number.MAX_SAFE_INTEGER;
     return ra !== rb ? ra - rb : a.name.localeCompare(b.name);
   });
+
+  // Sections: one per app the tabs belong to, so the list reads like each
+  // app's own sidebar instead of one mixed list. This Mac's app first, then
+  // each Mac driving tabs here over ssh, then whatever neither app holds.
+  const host = os.hostname().split(".")[0];
+  const byName = new Map(live.map((s) => [s.name, s]));
+  const sectionOf = (name) => {
+    if (meta.has(name)) return { key: "local", label: `${host}（本機 App）`, rank: 0 };
+    if (name.startsWith("myghostr_")) {
+      const s = byName.get(name) || {};
+      return { key: "owner:" + (s.owner || ""), label: s.ownerName || "另一台 Mac", rank: 1 };
+    }
+    return { key: "other", label: "其他", rank: 2 };
+  };
+  const pos = new Map(sessions.map((s, i) => [s.name, i]));
+  for (const s of sessions) {
+    const sec = sectionOf(s.name);
+    s.section = sec.label;
+    s.sectionKey = sec.key;
+    s.sectionRank = sec.rank;
+  }
+  sessions.sort((a, b) =>
+    a.sectionRank - b.sectionRank ||
+    (a.sectionRank === 1 ? a.section.localeCompare(b.section) || a.sectionKey.localeCompare(b.sectionKey) : 0) ||
+    pos.get(a.name) - pos.get(b.name));
+  for (const s of sessions) delete s.sectionRank;
   return sessions;
 }
 

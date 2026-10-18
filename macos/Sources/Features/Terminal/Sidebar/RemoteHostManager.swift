@@ -528,6 +528,9 @@ class RemoteHostManager {
         let owner = Data(Self.ownerID.utf8).base64EncodedString()
         assign += "; \"$T\" set-option -t \(sessionName) @myghost_owner "
             + "\"$(printf %s \(owner) | base64 -d)\""
+        // And this Mac's name, so MyGhost Web on the host can head this Mac's
+        // tabs with it rather than an id.
+        assign += "; " + setText("@myghost_owner_name", Self.ownerName)
         let script = "T=$(command -v tmux || echo /opt/homebrew/bin/tmux); \(assign)"
 
         DispatchQueue.global(qos: .utility).async {
@@ -606,6 +609,13 @@ class RemoteHostManager {
         let id = UUID().uuidString.lowercased()
         UserDefaults.standard.set(id, forKey: key)
         return id
+    }()
+
+    /// This Mac's name as the user set it in System Settings ("Rex MacBook
+    /// Pro M1 Max"). "|" is MyGhost Web's field separator, so it's dropped.
+    static let ownerName: String = {
+        let name = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+        return name.replacingOccurrences(of: "|", with: " ")
     }()
 
     /// Every owner id this Mac may have stamped a session with: the current
