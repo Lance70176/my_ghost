@@ -4,7 +4,6 @@ const WasmTarget = @import("../os/wasm/target.zig").Target;
 /// Possible implementations, used for build options.
 pub const Backend = enum {
     opengl,
-    opengl_es,
     metal,
     webgl,
 
@@ -19,10 +18,6 @@ pub const Backend = enum {
         }
 
         if (target.os.tag.isDarwin()) return .metal;
-
-        // Android uses OpenGL ES 3.x
-        if (target.abi == .android) return .opengl_es;
-
         return .opengl;
     }
 };

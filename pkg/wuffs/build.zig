@@ -16,10 +16,6 @@ pub fn build(b: *std.Build) !void {
         .root_module = module,
     });
     unit_tests.linkLibC();
-    if (target.result.abi.isAndroid()) {
-        const android_ndk = @import("android_ndk");
-        try android_ndk.addPaths(b, unit_tests);
-    }
 
     var flags: std.ArrayList([]const u8) = .empty;
     defer flags.deinit(b.allocator);
