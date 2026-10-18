@@ -135,6 +135,11 @@ class SidebarTerminalController: BaseTerminalController {
             selector: #selector(ghosttyConfigDidChange(_:)),
             name: .ghosttyConfigDidChange,
             object: nil)
+        center.addObserver(
+            self,
+            selector: #selector(backgroundSurfaceDidClose(_:)),
+            name: Ghostty.Notification.ghosttyCloseSurface,
+            object: nil)
 
         observeWindowTitle()
 
@@ -1829,6 +1834,72 @@ class SidebarTerminalController: BaseTerminalController {
     }
 
     // MARK: - Overrides
+
+    /// A shell ended in a tab that isn't on screen — its tmux session was
+    /// killed from outside, by MyGhost Web's close button or `tmux
+    /// kill-session`. The base controller only closes surfaces in the visible
+    /// tree, so such a tab used to linger in the sidebar as a dead pane, and
+    /// be saved that way, until the app restarted.
+    @objc private func backgroundSurfaceDidClose(_ notification: Notification) {
+        guard !isClosing, !isModifyingChildren else { return }
+        guard let surface = notification.object as? Ghostty.SurfaceView else { return }
+        // On screen: the base controller closes it and surfaceTreeDidChange
+        // does the rest.
+        guard !surfaceTree.contains(surface) else { return }
+        // Still running means a close was asked for, not that the shell ended.
+        guard (notification.userInfo?["process_alive"] as? Bool) != true else { return }
+
+        let leaf = SplitTree<Ghostty.SurfaceView>.Node.leaf(view: surface)
+        for tab in tabs {
+            if tab.isGroup && !tab.children.isEmpty {
+                // A member's pane — including a hidden one in the selected
+                // group while another member fills the view.
+                let closed = tab.children.filter { $0.originalSurface === surface }
+                guard !closed.isEmpty else { continue }
+                tab.children.removeAll { child in closed.contains { $0.id == child.id } }
+                if tab.children.isEmpty {
+                    tab.screenSessionName = nil
+                    closeTabImmediately(tab, killRemote: false)
+                    return
+                }
+                if tab.surfaceTree.contains(leaf) {
+                    tab.surfaceTree = tab.surfaceTree.removing(leaf)
+                }
+                if let saved = tab.savedSplitTree, saved.contains(leaf) {
+                    tab.savedSplitTree = saved.removing(leaf)
+                }
+                if tab.surfaceTree.isEmpty, let next = tab.children.first,
+                   let nextSurface = next.originalSurface {
+                    tab.surfaceTree = SplitTree<Ghostty.SurfaceView>(view: nextSurface)
+                    if tab.isFullMode { tab.fullModeActiveChildID = next.id }
+                }
+                if tab.children.count == 1 {
+                    tab.isFullMode = false
+                    tab.savedSplitTree = nil
+                    tab.fullModeActiveChildID = nil
+                }
+                // Force @Published tabs to fire
+                let snapshot = tabs
+                tabs = snapshot
+                saveScreenSessionState()
+                return
+            }
+
+            // The selected tab's panes are the visible tree, handled above.
+            guard tab.id != selectedTabID, tab.surfaceTree.contains(surface) else { continue }
+            let remaining = tab.surfaceTree.removing(leaf)
+            if remaining.isEmpty {
+                // Same as a visible tab whose process exited: the local session
+                // is already gone, and a remote one may only have detached.
+                tab.screenSessionName = nil
+                closeTabImmediately(tab, killRemote: false)
+            } else {
+                tab.surfaceTree = remaining
+                saveScreenSessionState()
+            }
+            return
+        }
+    }
 
     override func surfaceTreeDidChange(from: SplitTree<Ghostty.SurfaceView>, to: SplitTree<Ghostty.SurfaceView>) {
         super.surfaceTreeDidChange(from: from, to: to)

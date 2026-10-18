@@ -114,7 +114,8 @@ body {
 
 .tab .title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tab .badge { font-size: 9px; color: #8a8fa3; border: 1px solid #3a3e50;
-  border-radius: 3px; padding: 0 4px; }
+  border-radius: 3px; padding: 0 4px; flex: none; max-width: 92px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tab .close {
   visibility: hidden; border: none; background: none; color: #8a8fa3;
   cursor: pointer; font-size: 12px; padding: 0 2px;

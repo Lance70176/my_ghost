@@ -419,12 +419,12 @@
     // groups sit between the tabs around them exactly as they do in the app —
     // bucketing by group instead pushed every group to the bottom.
     let openGroup = null;
-    // Each app's tabs sit under a heading naming it — labelled only when
-    // there's more than one, since a lone heading adds nothing.
+    // This Mac's own tabs and the ones from elsewhere sit under their own
+    // heading, even when only one kind is present, so it's always clear which
+    // is which.
     let openSection = null;
-    const labelSections = new Set(state.sessions.map((s) => s.sectionKey)).size > 1;
     for (const s of state.sessions) {
-      if (labelSections && s.sectionKey !== openSection) {
+      if (s.sectionKey !== openSection) {
         openSection = s.sectionKey;
         openGroup = null;
         const head = document.createElement("div");
@@ -479,9 +479,12 @@
           el.appendChild(b);
         }
         if (s.name.startsWith("myghostr_")) {
+          // Other Macs' tabs share one section, so each names the Mac it
+          // came from.
           const b = document.createElement("span");
           b.className = "badge";
-          b.textContent = "app·ssh";
+          b.textContent = s.device || "app·ssh";
+          b.title = s.device ? `${s.device} 透過 ssh 開的分頁` : "另一台 Mac 透過 ssh 開的分頁";
           el.appendChild(b);
         }
 

@@ -259,31 +259,22 @@ async function sessionList() {
     return ra !== rb ? ra - rb : a.name.localeCompare(b.name);
   });
 
-  // Sections: one per app the tabs belong to, so the list reads like each
-  // app's own sidebar instead of one mixed list. This Mac's app first, then
-  // each Mac driving tabs here over ssh, then whatever neither app holds.
+  // Two sections: this Mac's own app, and everything else that runs here —
+  // ssh tabs from any other Mac, web tabs, leftovers. One heading per device
+  // would grow with every Mac added, so the others share one; each ssh tab
+  // still carries the name of the Mac that opened it.
   const host = os.hostname().split(".")[0];
   const byName = new Map(live.map((s) => [s.name, s]));
-  const sectionOf = (name) => {
-    if (meta.has(name)) return { key: "local", label: `${host}（本機 App）`, rank: 0 };
-    if (name.startsWith("myghostr_")) {
-      const s = byName.get(name) || {};
-      return { key: "owner:" + (s.owner || ""), label: s.ownerName || "另一台 Mac", rank: 1 };
-    }
-    return { key: "other", label: "其他", rank: 2 };
-  };
   const pos = new Map(sessions.map((s, i) => [s.name, i]));
   for (const s of sessions) {
-    const sec = sectionOf(s.name);
-    s.section = sec.label;
-    s.sectionKey = sec.key;
-    s.sectionRank = sec.rank;
+    const local = meta.has(s.name);
+    s.sectionKey = local ? "local" : "other";
+    s.section = local ? `本機 Local · ${host}` : "外來 Other";
+    s.device = (s.name.startsWith("myghostr_") && (byName.get(s.name) || {}).ownerName) || null;
   }
   sessions.sort((a, b) =>
-    a.sectionRank - b.sectionRank ||
-    (a.sectionRank === 1 ? a.section.localeCompare(b.section) || a.sectionKey.localeCompare(b.sectionKey) : 0) ||
+    (a.sectionKey === "local" ? 0 : 1) - (b.sectionKey === "local" ? 0 : 1) ||
     pos.get(a.name) - pos.get(b.name));
-  for (const s of sessions) delete s.sectionRank;
   return sessions;
 }
 
