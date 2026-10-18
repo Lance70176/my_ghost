@@ -338,6 +338,9 @@ class Tools:
         self.dispatcher = dispatcher  # Dispatcher, or None
         self.helpdesk = helpdesk  # HelpDesk, or None
         self.dbquery = dbquery  # DBQuery, or None
+        # close_cards waiting for the person's OK, by project:
+        # {ids, answer, who, seq, at}.
+        self.close_offers: dict[str, dict] = {}
 
     def call(self, project: str, name: str, args: dict) -> str:
         fn = getattr(self, "t_" + name, None)
@@ -362,26 +365,64 @@ class Tools:
         return (f"已把選擇題送給他（{c.tag}，id={c.id}），在 MyGhost 和 TG 都看得到。提到這張卡時用 {c.tag}。不要等待，先結束這一輪；"
                 "他選好後你會收到一則新訊息告訴你選了什麼。" + self._replace(p, args, c.id))
 
+    # How long a close_cards confirmation question stays answerable.
+    CLOSE_OFFER_TTL = 2 * 3600
+
     def t_close_cards(self, p, args) -> str:
+        """Two steps, so a misheard answer can't close a card: first it only
+        repeats back which card and what answer, for the person to confirm;
+        a later message of theirs saying OK lets confirmed=true close it."""
+        a = self.assistants.get(p.name)
+        if not getattr(a, "turn_person", False):
+            return "只有負責人或成員親自傳來的那一輪可以依文字回答關卡；排程、求助或系統訊息的輪不行。"
+        requester = self.broker.requester_of(p.name)
+        who = "owner" if getattr(a, "turn_owner", False) else str((requester or {}).get("id", ""))
+        if args.get("confirmed"):
+            offer = self.close_offers.get(p.name)
+            if not offer:
+                return "沒有等他確認的關卡。先不帶 confirmed 呼叫一次，把確認訊息傳給他。"
+            if time.time() - offer["at"] > self.CLOSE_OFFER_TTL:
+                self.close_offers.pop(p.name, None)
+                return "上次的確認已經超過 2 小時，重新登記一次並請他再確認。"
+            if getattr(a, "turn_seq", 0) <= offer["seq"]:
+                return "還不能關：要等他看過確認訊息、在下一則訊息回 OK 之後才可以。先結束這一輪。"
+            if who != "owner" and who != offer["who"]:
+                return "只有當初回答的人（或負責人）可以確認這次關卡。"
+            self.close_offers.pop(p.name, None)
+            answer = offer["answer"]
+            done, refused = self.broker.close_answered(p.name, offer["ids"], answer, requester)
+            for item in a.items:
+                if item.role == "choice" and item.choice_id in done:
+                    item.chosen = f"已依文字回覆結案：{answer}"
+            if self.dispatcher is not None:
+                self.dispatcher.drop_cards(done)
+            out = (f"已關卡：{'、'.join(self.broker.closed_tags.get(i, i) for i in done)}（標為已依文字回覆結案）。"
+                   "卡上的動作沒有執行，照他的答案自己往下做。") if done else "沒有關到任何卡。"
+            if refused:
+                out += "\n沒關掉：" + "；".join(refused)
+            return out
+
         cards = args.get("cards") or []
         if isinstance(cards, str):
             cards = [x for x in re.split(r"[,\s、]+", cards) if x]
-        answer = str(args.get("answer") or "").strip()
+        answer = str(args.get("answer") or "").strip()[:300]
         if not cards or not answer:
             return "需要 cards（卡的編號）和 answer（他的回答原話）。"
-        if not getattr(self.assistants.get(p.name), "turn_person", False):
-            return "只有負責人或成員親自傳來的那一輪可以依文字回答關卡；排程、求助或系統訊息的輪不行。"
-        done, refused = self.broker.close_answered(p.name, list(cards), answer, self.broker.requester_of(p.name))
-        a = self.assistants.get(p.name)
-        for item in a.items:
-            if item.role == "choice" and item.choice_id in done:
-                item.chosen = f"已依文字回覆結案：{answer[:300]}"
-        if self.dispatcher is not None:
-            self.dispatcher.drop_cards(done)
-        out = (f"已關卡：{'、'.join(self.broker.closed_tags.get(i, i) for i in done)}（標為已依文字回覆結案）。"
-               "卡上的動作沒有執行，照他的答案自己往下做。") if done else "沒有關到任何卡。"
+        found, refused = self.broker.closable(p.name, list(cards), requester)
+        if not found:
+            return "沒有可以關的卡：" + "；".join(refused)
+        self.close_offers[p.name] = {"ids": [c.id for c in found], "answer": answer, "who": who,
+                                     "seq": getattr(a, "turn_seq", 0), "at": time.time()}
+        lines = []
+        for c in found:
+            first = next((ln.strip() for ln in c.summary.splitlines() if ln.strip()), "")
+            title = first[:40] + ("…" if len(first) > 40 else "")
+            lines.append(f"• {c.tag}（{c.serial_day}）「{title}」")
+        msg = "請確認要結案：\n" + "\n".join(lines) + f"\n你的答案：{answer}\n沒問題請回「OK」，有誤直接告訴我。"
+        out = ("還沒關卡。把下面這段原樣傳給他，等他下一則訊息回 OK，再用 close_cards 帶 confirmed=true 關卡"
+               "（他更正的話就照更正重新登記）：\n\n" + msg)
         if refused:
-            out += "\n沒關掉：" + "；".join(refused)
+            out += "\n\n（這些不能關，不用列給他：" + "；".join(refused) + "）"
         return out
 
     def _replace(self, p, args, new_id: str) -> str:

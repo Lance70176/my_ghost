@@ -194,3 +194,37 @@ def test_others_cannot_dispatch_across(dispatching, manager):
     # Its own repos as before, in any turn.
     owner(manager, on=False)
     assert "開工卡" in t.t_propose_dispatch(fq, {"title": "本專案", "repo": "platform", "task": "x"})
+
+
+def test_dispatched_work_reports_to_who_asked(dispatching, manager, broker):
+    """Work fq's assistant dispatched into lts's repo: its permission requests
+    and help requests show up in fq, not where the repo happens to be."""
+    import threading
+
+    from ghost_agentd.helpdesk import HelpDesk
+    t, fq, d, home, loose = dispatching
+    broker.seen("myghost")  # a surface for lts's cards too
+    owner(manager)
+    t.t_propose_dispatch(fq, {"title": "後台改", "repo": str(home / "code/lts/admin"), "task": "x",
+                              "branch": "feature/x"})
+    card = next(p for p in broker.pending.values() if getattr(p, "dispatch", None))
+    broker.decide(card.id, "o0", "tg")
+    item = next(iter(d.items.values()))
+    wait_for(lambda: item.state == "started")
+
+    def ask(cwd, session):
+        payload = {"session_id": session, "cwd": cwd, "tool_name": "Bash",
+                   "tool_input": {"command": f"rm -rf build-{session}"}}
+        threading.Thread(target=broker.request_permission, args=(payload,), daemon=True).start()
+        wait_for(lambda: any(p.session_id == session for p in broker.pending.values()))
+        return next(p for p in broker.pending.values() if p.session_id == session)
+
+    mine = ask(item.worktree, "worker-1")
+    assert mine.project == "fq"
+    theirs = ask(str(home / "code/lts/admin"), "lts-own")  # lts's own conversation
+    assert theirs.project == "lts"
+    help_desk = HelpDesk(broker, manager, d)
+    assert help_desk.ask({"text": "可以發正式嗎？", "cwd": item.worktree, "session_id": "worker-1"})["project"] == "fq"
+    assert help_desk.ask({"text": "?", "cwd": str(home / "code/lts/admin"), "session_id": "x"})["project"] == "lts"
+    for p in (mine, theirs):
+        broker.decide(p.id, "deny", "myghost")

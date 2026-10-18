@@ -78,14 +78,14 @@ class HelpDesk:
     # -------------------------------------------------------------- asking
 
     def _project_for(self, cwd: str, session_id: str = "", tmux: str = "", job: str = ""):
-        """The project a conversation answers to: the one its folder is in,
-        or for work dispatched into a repo in no project, the dispatcher's."""
-        p = self.broker.projects.match(cwd or "")
-        if p.name == DEFAULT_PROJECT and self.dispatcher is not None:
+        """The project a conversation answers to: for dispatched work, the
+        assistant that dispatched it (whatever repo it runs in); otherwise
+        the one its folder is in."""
+        if self.dispatcher is not None:
             d = self.dispatcher.owning(session_id, tmux, job, cwd)
             if d is not None:
                 return self.broker.projects.get(d.project)
-        return p
+        return self.broker.projects.match(cwd or "")
 
     def context_for(self, cwd: str) -> str:
         """What a conversation starting in `cwd` is told (SessionStart)."""

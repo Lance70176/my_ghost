@@ -229,11 +229,25 @@ class Broker:
 
     # ------------------------------------------------------------ permission
 
+    def dispatched_to(self, payload: dict) -> str | None:
+        """The project whose assistant dispatched this conversation, if it is
+        dispatched work. Replaced by the Dispatcher."""
+        return None
+
+    def project_of(self, payload: dict) -> Project:
+        """The project a conversation's cards and status belong to: for work
+        an assistant dispatched, that assistant's (even in another project's
+        repo, or one in no project); otherwise the one its folder is in."""
+        name = self.dispatched_to(payload)
+        if name:
+            return self.projects.get(name)
+        return self.projects.match(payload.get("cwd", ""))
+
     def request_permission(self, payload: dict) -> dict:
         """Called from the hook. Blocks until decided; returns
         {"behavior": "allow"} or {"behavior": "deny", "message": ...}."""
         self.projects.maybe_reload()
-        project = self.projects.match(payload.get("cwd", ""))
+        project = self.project_of(payload)
         tool = payload.get("tool_name", "")
         tool_input = payload.get("tool_input") or {}
         key = str(payload.get("request_key") or secrets.token_hex(8))
@@ -466,32 +480,43 @@ class Broker:
             p.deny_message = f"已依文字回覆結案：{answer}"
         return self._close(project, ids, requester, "answered", mark)
 
-    def _close(self, project: str, ids: list[str], requester: dict | None, by: str,
-               mark, skip: str = "") -> tuple[list[str], list[str]]:
-        """Close open cards the assistant asked: only its own cards (choices,
+    def closable(self, project: str, ids: list[str], requester: dict | None,
+                 skip: str = "") -> tuple[list[Pending], list[str]]:
+        """The open cards the assistant may close: only its own cards (choices,
         dispatch and reply cards — never a conversation's permission request),
-        only in this project, and in a member's turn only that member's."""
-        done, refused = [], []
+        only in this project, and in a member's turn only that member's.
+        Returns (cards, why each other one can't be)."""
+        ok, refused = [], []
         for oid in dict.fromkeys(str(i).strip() for i in ids if str(i).strip()):
             found = self.find(project, oid)
             oid = found.id if found else oid
+            if oid == skip:
+                continue
             with self.lock:
                 p = self.pending.get(oid)
-                if oid == skip:
-                    continue
                 if p is None or not p.open or p.project != project:
                     refused.append(f"{oid}：已處理過或不是這個專案的卡")
-                    continue
-                if p.kind != "choice":
+                elif p.kind != "choice":
                     refused.append(f"{oid}：是工作對話的權限請求，不能由你關掉")
-                    continue
-                if requester and (p.requested_by or {}).get("id") != requester.get("id"):
+                elif requester and (p.requested_by or {}).get("id") != requester.get("id"):
                     refused.append(f"{oid}：不是這位成員交辦的卡")
+                else:
+                    ok.append(p)
+        return ok, refused
+
+    def _close(self, project: str, ids: list[str], requester: dict | None, by: str,
+               mark, skip: str = "") -> tuple[list[str], list[str]]:
+        cards, refused = self.closable(project, ids, requester, skip)
+        done = []
+        for p in cards:
+            with self.lock:
+                if not p.open:  # pressed meanwhile
+                    refused.append(f"{p.tag}：已處理過")
                     continue
                 mark(p)
                 self._resolve(p, "denied", by)
-            done.append(oid)
-            self.closed_tags[oid] = p.tag
+            done.append(p.id)
+            self.closed_tags[p.id] = p.tag
         return done, refused
 
     def dismiss(self, pid: str, by: str) -> bool:
@@ -674,7 +699,7 @@ class Broker:
     def hook_event(self, payload: dict) -> None:
         """Notification / Stop / UserPromptSubmit / SessionEnd from the hook."""
         self.projects.maybe_reload()
-        project = self.projects.match(payload.get("cwd", ""))
+        project = self.project_of(payload)
         ev = payload.get("hook_event_name", "")
         with self.lock:
             _append(project.dir / "events.jsonl", {

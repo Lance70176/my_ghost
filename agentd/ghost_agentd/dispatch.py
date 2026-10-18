@@ -112,6 +112,13 @@ class Dispatcher:
         self.lock = threading.RLock()
         self.items: dict[str, Dispatch] = {}
         self._load()
+        broker.dispatched_to = self.dispatched_to
+
+    def dispatched_to(self, payload: dict) -> str | None:
+        """For the broker: the project that dispatched this conversation."""
+        d = self.owning(str(payload.get("session_id") or ""), str(payload.get("tmux_session") or ""),
+                        "", str(payload.get("cwd") or ""))
+        return d.project if d else None
 
     # ------------------------------------------------------------ storage
 
