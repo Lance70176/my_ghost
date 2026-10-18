@@ -104,7 +104,7 @@ async function sessionsWithTitles() {
     // free-form title goes last and the bounded fields lead.
     const out = await tmux([
       "list-sessions", "-F",
-      "#{session_name}|#{@myghost_order}|#{@myghost_group}|#{@myghost_title}",
+      "#{session_name}|#{@myghost_order}|#{session_attached}|#{@myghost_owner}|#{@myghost_group}|#{@myghost_title}",
     ]);
     return out
       .split("\n")
@@ -112,15 +112,23 @@ async function sessionsWithTitles() {
         const parts = line.split("|");
         const name = (parts.shift() || "").trim();
         const order = parseInt((parts.shift() || "").trim(), 10);
+        const attached = parseInt((parts.shift() || "").trim(), 10) || 0;
+        const owner = (parts.shift() || "").trim();
         const group = (parts.shift() || "").trim();
         return {
           name,
           title: parts.join("|").trim(),
           group: group || null,
           order: Number.isFinite(order) ? order : null,
+          attached,
+          owner: owner || null,
         };
       })
-      .filter((s) => /^myghost/.test(s.name));
+      .filter((s) => /^myghost/.test(s.name))
+      // An ssh tab another Mac closed can leave its session behind: no app
+      // stamped it, nobody is attached, and no app will ever clean it up
+      // because remote cleanup only touches sessions stamped with its own id.
+      .filter((s) => !(s.name.startsWith("myghostr_") && !s.owner && !s.title && !s.attached));
   } catch {
     return []; // no tmux server running
   }
@@ -253,9 +261,10 @@ async function sessionList() {
 
 /// The app's tab order for sessions that are currently alive.
 ///
-/// The state file only describes tabs this Mac's own app drives. A host that
-/// just runs sessions another Mac opened over ssh has nothing in it, so fall
-/// back to the position that Mac stamped on each session.
+/// The state file only describes tabs this Mac's own app drives, so those come
+/// first, in its order. Sessions another Mac opened over ssh follow in the
+/// position that Mac stamped on each — a host running both kinds used to drop
+/// the stamps and sort the ssh tabs by session id.
 function appTabOrder(live) {
   const alive = live.map((s) => s.name);
   const state = readJSON(STATE_FILE, { sessions: [] });
@@ -268,11 +277,11 @@ function appTabOrder(live) {
   };
   walk(state.sessions);
   const local = names.filter((n) => alive.includes(n));
-  if (local.length) return local;
-  return live
-    .filter((s) => s.order !== null)
-    .sort((a, b) => a.order - b.order)
+  const stamped = live
+    .filter((s) => s.order !== null && !local.includes(s.name))
+    .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name))
     .map((s) => s.name);
+  return local.concat(stamped);
 }
 
 // ---------------------------------------------------------------------------
