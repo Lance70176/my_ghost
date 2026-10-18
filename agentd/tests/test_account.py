@@ -206,6 +206,49 @@ def test_waiting_message_dropped_if_answered(broker, manager):
     assert not any(r == "user" for r, _ in roles(manager.get("fq")))
 
 
+def test_folders_watch_only_their_chats(broker, manager):
+    """A folder listed: only chats in it go on, groups and private alike —
+    a private chat in it needs no grant, but its replies stay cards. None
+    listed: every chat as before."""
+    w = watcher(broker, manager, people=(42,))
+    (w.project.dir / "watch.yaml").write_text(
+        "window: always\nbatch: 0\nfolders:\n  - folder: LTS\n    trigger: all\n")
+    w._watch = None
+    assert w.match(msg(chat="LTS 開發群", chat_id=-1, folders=["LTS"], text="閒聊"))  # all, no @
+    assert w.match(msg(chat="別的群", chat_id=-2, folders=["其他"], mentioned=True)) is None
+    assert w.match(msg(chat="沒分類的群", chat_id=-3, mentioned=True)) is None  # @me outside: no
+    assert w.match(msg(private=True, chat="Candy", chat_id=42, folders=["LTS"]))
+    assert w.match(msg(private=True, chat="Candy", chat_id=42)) is None  # let in, not in the folder
+    # In the folder without a grant: it goes on, and the assistant sees it…
+    stranger = msg(private=True, chat="Jojo", chat_id=99, msg_id=7, folders=["LTS"], text="可以幫我看 MR 嗎")
+    assert w.on_message(stranger)
+    assert "在監看的資料夾內" in w._dm_note(stranger)
+    # …but it may only draft a reply for the owner to press, never send one.
+    assert "draft_reply" in w.send_now(stranger.ref, "好") and w.transport.sent == []
+    assert "回覆卡" in w.draft(stranger.ref, "好，我晚點看")
+    (w.project.dir / "watch.yaml").write_text("window: always\nbatch: 0\n")
+    w._watch = None
+    assert w.match(msg(chat="沒分類的群", chat_id=-3, mentioned=True))
+    assert w.match(msg(private=True, chat="Candy", chat_id=42))
+    assert w.match(msg(private=True, chat="Jojo", chat_id=99)) is None  # no folders: a grant again
+
+
+def test_which_folders_a_chat_is_in():
+    from ghost_agentd.account import folders_of
+    folders = [
+        {"title": "LTS", "include": {-100, 42}, "exclude": set(), "contacts": False,
+         "non_contacts": False, "groups": False},
+        {"title": "群組", "include": set(), "exclude": {-200}, "contacts": False,
+         "non_contacts": False, "groups": True},
+        {"title": "聯絡人", "include": set(), "exclude": set(), "contacts": True,
+         "non_contacts": False, "groups": False},
+    ]
+    assert folders_of(folders, -100, False, False, True) == ["LTS", "群組"]
+    assert folders_of(folders, -200, False, False, True) == []  # excluded from 群組
+    assert folders_of(folders, 42, True, True, False) == ["LTS", "聯絡人"]
+    assert folders_of(folders, 7, True, False, False) == []
+
+
 def test_a_card_sent_later_keeps_what_came_after_it(broker, manager):
     """A reply card waits for a press; messages that came in meanwhile were
     never seen by the assistant, so sending the card mustn't swallow them

@@ -54,6 +54,9 @@ def test_the_assistants_tool_checks_who_started_the_turn(broker, manager):
     assert "只有負責人本人" in t.call("fq", "grant_dm", args)
     manager.get("fq").turn_owner = True
     assert "已授權" in t.call("fq", "grant_dm", args)
+    # Agreeing to a task without saying how far: it may answer by itself.
+    t.call("fq", "grant_dm", {"person": "70", "scope": "時區 _UTC 任務", "days": 3})
+    assert w.grants.get(70).level == "auto"
 
 
 def test_more_than_three_days_needs_review(broker, manager):

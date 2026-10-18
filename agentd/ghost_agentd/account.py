@@ -69,6 +69,13 @@ dms: true            # when private messages from people you've let in (grant_dm
                      # the assistant: true (the window above) or a window of their own;
                      # everyone else's are only recorded
 mentions: true       # @me or replies to my messages, in any group
+folders: []          # Telegram chat folders: once any is listed, ONLY chats in them are
+                     # watched, groups and private chats alike (a private chat in a folder
+                     # goes to the assistant without grant_dm; replies stay cards).
+                     # Empty = every chat, by the rules here.
+#  - folder: LTS                 # the folder's name in Telegram
+#    trigger: all                # as for groups; private chats always count
+#    window: always
 groups: []
 #  - group: "FQ 研發群"          # title or chat id
 #    trigger: all                # all | mention | {keywords: [bug, 壞了]} | {from: [Amy]}
@@ -147,6 +154,7 @@ class Incoming:
     fetching: bool = False  # a big attachment still downloading in the background
     skip: str = ""  # why the attachment wasn't downloaded
     held: bool = False  # a private message from someone not let in: recorded only
+    folders: list = field(default_factory=list)  # the account's Telegram folders the chat is in
 
 
 @dataclass
@@ -163,6 +171,9 @@ class Watch:
     post_to: set[str] = field(default_factory=set)
     # Chats where the assistant may reply without a card (send_reply).
     auto_reply: set[str] = field(default_factory=set)
+    # Telegram chat folders to watch (Rule.group is the folder's name). Any
+    # listed: only chats in them, private or not.
+    folders: list[Rule] = field(default_factory=list)
 
     @classmethod
     def load(cls, path: Path) -> "Watch":
@@ -186,7 +197,19 @@ class Watch:
             if isinstance(g, dict) and g.get("group") not in (None, ""):
                 w.groups.append(Rule(str(g["group"]), g.get("trigger", "all"),
                                      Window.parse(g["window"]) if "window" in g else None))
+        for f in raw.get("folders") or []:
+            f = f if isinstance(f, dict) else {"folder": f}
+            if f.get("folder") not in (None, ""):
+                w.folders.append(Rule(str(f["folder"]), f.get("trigger", "all"),
+                                      Window.parse(f["window"]) if "window" in f else None))
         return w
+
+    def _hit(self, rule: Rule, m: Incoming) -> bool:
+        t = rule.trigger
+        return (t == "all" or (t == "mention" and m.mentioned)
+                or (isinstance(t, dict) and any(k.lower() in m.text.lower() for k in t.get("keywords") or []))
+                or (isinstance(t, dict) and any(n in m.sender for n in t.get("from") or []))
+                or (m.mentioned and self.mentions))
 
     def _rule(self, m: Incoming) -> Rule | None:
         for r in self.groups:
@@ -199,16 +222,19 @@ class Watch:
         None if it shouldn't."""
         if m.chat in self.ignore or str(m.chat_id) in self.ignore:
             return None
+        if self.folders:
+            # Only chats in a watched folder, whatever kind they are.
+            rule = next((r for r in self.folders if r.group in (m.folders or [])), None)
+            if rule is None:
+                return None
+            if m.private:
+                return rule.window or self.dms_window or self.window
+            return (rule.window or self.window) if self._hit(rule, m) else None
         if m.private:
             return (self.dms_window or self.window) if self.dms else None
         rule = self._rule(m)
         if rule is not None:
-            t = rule.trigger
-            hit = (t == "all" or (t == "mention" and m.mentioned)
-                   or (isinstance(t, dict) and any(k.lower() in m.text.lower() for k in t.get("keywords") or []))
-                   or (isinstance(t, dict) and any(n in m.sender for n in t.get("from") or []))
-                   or (m.mentioned and self.mentions))
-            return (rule.window or self.window) if hit else None
+            return (rule.window or self.window) if self._hit(rule, m) else None
         return self.window if (self.mentions and m.mentioned) else None
 
 
@@ -318,13 +344,22 @@ class AccountWatcher:
             return w.match(m)
         if m.chat in w.ignore or str(m.chat_id) in w.ignore:
             return None
+        if w.folders:
+            # Putting a private chat in a watched folder lets it in, like a
+            # forward grant: it goes to the assistant, replies stay cards.
+            return w.match(m)
         if self.dm_level(m.chat_id, m.chat) is None:
             return None
         return w.dms_window or w.window
 
+    def _in_folder(self, m: Incoming) -> bool:
+        """A private chat the owner put in a watched folder."""
+        w = self.watch()
+        return bool(w.folders) and any(r.group in (m.folders or []) for r in w.folders)
+
     def _visible(self, m: Incoming) -> bool:
         """The assistant may look at this message (and its chat)."""
-        return not m.private or self.dm_level(m.chat_id, m.chat) is not None
+        return not m.private or self.dm_level(m.chat_id, m.chat) is not None or self._in_folder(m)
 
     def wants(self, m: Incoming) -> bool:
         """Whether this message would go to the assistant (before downloading
@@ -450,7 +485,7 @@ class AccountWatcher:
             return "負責人在 watch.yaml 設為可自動回"
         g = self.grants.get(m.chat_id)
         if g is None:
-            return "未授權"
+            return ("在監看的資料夾內：轉給助手，回覆一律出卡" if self._in_folder(m) else "未授權")
         note = g.describe()
         if g.risk == "mid":
             note += "｜曾有敏感資料，一律出回覆卡"
@@ -989,6 +1024,8 @@ class TelethonAccount:
         # Background downloads of big attachments, by (chat_id, msg_id):
         # the task while it runs, then the saved path (None if it failed).
         self._fetches: dict[tuple[int, int], asyncio.Task | Path | None] = {}
+        self._folder_cache: list[dict] | None = None
+        self._folder_at = 0.0
 
     def start(self) -> bool:
         if not session_file(self.project).exists():
@@ -997,6 +1034,40 @@ class TelethonAccount:
             return False
         threading.Thread(target=self._run, name=f"account-{self.project.name}", daemon=True).start()
         return True
+
+    FOLDERS_TTL = 120  # seconds between re-reading the account's folders
+
+    async def _folders(self) -> list[dict]:
+        """The account's chat folders, re-read every couple of minutes so
+        moving a chat in or out in Telegram applies on its own."""
+        now = time.time()
+        if self._folder_cache is not None and now - self._folder_at < self.FOLDERS_TTL:
+            return self._folder_cache
+        from telethon import functions, utils
+        res = await self.client(functions.messages.GetDialogFiltersRequest())
+        out = []
+        for f in getattr(res, "filters", res):
+            if not hasattr(f, "include_peers"):
+                continue  # "All chats"
+            title = f.title if isinstance(f.title, str) else getattr(f.title, "text", "")
+
+            def ids(peers):
+                got = set()
+                for x in peers or []:
+                    try:
+                        got.add(utils.get_peer_id(x))
+                    except (TypeError, ValueError):
+                        pass
+                return got
+            out.append({"title": title, "include": ids(f.include_peers) | ids(f.pinned_peers),
+                        "exclude": ids(getattr(f, "exclude_peers", None)),
+                        "contacts": bool(getattr(f, "contacts", False)),
+                        "non_contacts": bool(getattr(f, "non_contacts", False)),
+                        "groups": bool(getattr(f, "groups", False))})
+        if [x["title"] for x in out] != [x["title"] for x in self._folder_cache or []]:
+            log(f"account {self.project.name}: folders {', '.join(x['title'] for x in out) or '(none)'}")
+        self._folder_cache, self._folder_at = out, now
+        return out
 
     def _run(self) -> None:
         while True:
@@ -1025,6 +1096,15 @@ class TelethonAccount:
         me = await client.get_me()
         self.watcher.me = "@" + me.username if me.username else (me.first_name or "工作帳號")
         log(f"account {self.project.name}: watching as {self.watcher.me}")
+        wanted = [r.group for r in self.watcher.watch().folders]
+        if wanted:  # say up front whether the folders named in watch.yaml exist
+            try:
+                have = [f["title"] for f in await self._folders()]
+                missing = [x for x in wanted if x not in have]
+                if missing:
+                    log(f"account {self.project.name}: watch.yaml folders not in Telegram: {', '.join(missing)}")
+            except Exception as e:
+                log(f"account {self.project.name}: reading folders failed {e!r}")
 
         @client.on(events.NewMessage())
         async def on_new(ev):
@@ -1055,6 +1135,12 @@ class TelethonAccount:
             private=bool(ev.is_private), sender=name, sender_id=getattr(sender, "id", 0) or 0,
             msg_id=msg.id, text=msg.message or "", mentioned=bool(msg.mentioned),
             ts=msg.date.timestamp(), media=_media_kind(msg))
+        if self.watcher.watch().folders:
+            try:
+                inc.folders = folders_of(await self._folders(), ev.chat_id, bool(ev.is_private),
+                                         bool(getattr(sender, "contact", False)), bool(ev.is_group))
+            except Exception as e:
+                log(f"account {self.project.name}: reading folders failed {e!r}")
         big = None
         if inc.media and self.watcher.wants(inc):
             if _size(msg) > MAX_MEDIA:
@@ -1165,6 +1251,22 @@ class TelethonAccount:
                 out.append(row)
             return list(reversed(out))
         return self._call(fetch(), timeout=180)
+
+
+def folders_of(folders: list[dict], chat_id: int, private: bool, contact: bool, group: bool) -> list[str]:
+    """The folders a chat is in: listed by hand, or taken in by the folder's
+    kind of chat (contacts, non-contacts, groups) and not excluded. Muted /
+    read / archived exclusions aren't applied."""
+    out = []
+    for f in folders:
+        if chat_id in f["exclude"] and chat_id not in f["include"]:
+            continue
+        if (chat_id in f["include"]
+                or (private and contact and f["contacts"])
+                or (private and not contact and f["non_contacts"])
+                or (group and f["groups"])):
+            out.append(f["title"])
+    return out
 
 
 def _size(msg) -> int:

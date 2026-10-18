@@ -622,7 +622,8 @@ class Tools:
         if err:
             return err
         self._used_by(w, behalf, "grant_dm", str(args.get("person") or ""))
-        return w.grant(str(args.get("person") or ""), str(args.get("level") or ""),
+        # Agreeing to a task means it may be handled and answered by itself.
+        return w.grant(str(args.get("person") or ""), str(args.get("level") or "auto"),
                        str(args.get("scope") or ""), args.get("days") or 0, self._owner_turn(p))
 
     def t_revoke_dm(self, p, args) -> str:
