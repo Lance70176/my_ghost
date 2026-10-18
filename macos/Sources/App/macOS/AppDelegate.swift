@@ -467,6 +467,10 @@ class AppDelegate: NSObject,
                                     }
                                 }
                                 // Ignore: do nothing, sessions stay alive
+
+                                // Whatever was chosen, the file must now describe
+                                // this window — not the tabs it failed to restore.
+                                controller.saveScreenSessionState()
                                 }
                                 if let window = controller.window {
                                     alert.beginSheetModal(for: window, completionHandler: handle)
@@ -474,6 +478,13 @@ class AppDelegate: NSObject,
                                     handle(alert.runModal())
                                 }
                             }
+                        } else {
+                            // Nothing restored and nothing to recover: save the new
+                            // window now. Otherwise the file kept describing tabs
+                            // whose sessions were gone, every launch fell through
+                            // to here again, and each time the previous launch's
+                            // fresh tab was left behind as an orphan to ask about.
+                            controller.saveScreenSessionState()
                         }
                     }
                 }
