@@ -29,6 +29,15 @@ TOOLS = [
                       "description": "這張新卡推翻／取代的舊卡 id（還沒人按的選擇題、開工卡、回覆卡）。"
                                      "舊卡會被撤掉並標「已改由新決策卡處理」，免得有人再按舊卡"}},
          "required": ["question", "options"]}},
+    {"name": "close_cards",
+     "description": "他（或交辦的成員）已經用文字回答了還沒按的卡，就把那些卡關掉，標「已依文字回覆結案」並記下他的答案，"
+                    "免得卡一直掛著等人按。只限負責人或成員親自傳來的那一輪。關卡不執行卡上的動作（不開工、不送出回覆），"
+                    "要照答案做的事你自己接著做；工作對話的權限請求不能關。",
+     "inputSchema": {"type": "object", "properties": {
+         "cards": {"type": "array", "items": {"type": "string"},
+                   "description": "要關的卡：今天的編號（#9）或 id"},
+         "answer": {"type": "string", "description": "他的回答（盡量用原話，例如「可以，全部刪掉」）"}},
+         "required": ["cards", "answer"]}},
     {"name": "read_state", "description": "讀你自己的記憶 state.md。",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "update_state",

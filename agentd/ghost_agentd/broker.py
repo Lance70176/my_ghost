@@ -83,6 +83,9 @@ class Pending:
     requested_by: dict | None = None
     # The newer card that took this one over (closed as "superseded").
     superseded_by: str | None = None
+    # Answered in words instead of a press (the answer, as the assistant
+    # heard it); closed as "answered".
+    answered: str | None = None
     # The day's running number in its project (#1, #2…), to tell cards apart
     # when talking about them; serial_day is the day it counts in (MM/DD).
     serial: int = 0
@@ -440,32 +443,53 @@ class Broker:
     def supersede(self, project: str, old_ids: list[str], new_id: str,
                   requester: dict | None = None) -> tuple[list[str], list[str]]:
         """The assistant's newer card takes over older ones: close them so a
-        late press can't send it down a decided path again. Only its own
-        cards (choices, dispatch and reply cards — never a conversation's
-        permission request), only in this project, and in a member's turn
-        only that member's. Returns (closed ids, why each other one wasn't)."""
-        done, refused = [], []
+        late press can't send it down a decided path again. Returns (closed
+        ids, why each other one wasn't)."""
         new = self.pending.get(new_id)
         new_tag = new.tag if new else new_id
-        for oid in dict.fromkeys(str(i).strip() for i in old_ids if str(i).strip()):
+
+        def mark(p: Pending) -> None:
+            p.superseded_by = new_tag
+            p.deny_message = f"已改由新決策卡 {new_tag} 處理"
+        return self._close(project, old_ids, requester, "superseded", mark, skip=new_id)
+
+    def close_answered(self, project: str, ids: list[str], answer: str,
+                       requester: dict | None = None) -> tuple[list[str], list[str]]:
+        """Cards whose question the person already answered in words: close
+        them with that answer so they stop waiting for a press. Closing does
+        nothing a pick would (no send, no 開工) — the assistant acts on the
+        answer itself."""
+        answer = answer.strip()[:300]
+
+        def mark(p: Pending) -> None:
+            p.answered = answer
+            p.deny_message = f"已依文字回覆結案：{answer}"
+        return self._close(project, ids, requester, "answered", mark)
+
+    def _close(self, project: str, ids: list[str], requester: dict | None, by: str,
+               mark, skip: str = "") -> tuple[list[str], list[str]]:
+        """Close open cards the assistant asked: only its own cards (choices,
+        dispatch and reply cards — never a conversation's permission request),
+        only in this project, and in a member's turn only that member's."""
+        done, refused = [], []
+        for oid in dict.fromkeys(str(i).strip() for i in ids if str(i).strip()):
             found = self.find(project, oid)
             oid = found.id if found else oid
             with self.lock:
                 p = self.pending.get(oid)
-                if oid == new_id:
+                if oid == skip:
                     continue
                 if p is None or not p.open or p.project != project:
                     refused.append(f"{oid}：已處理過或不是這個專案的卡")
                     continue
                 if p.kind != "choice":
-                    refused.append(f"{oid}：是工作對話的權限請求，不能由你撤掉")
+                    refused.append(f"{oid}：是工作對話的權限請求，不能由你關掉")
                     continue
                 if requester and (p.requested_by or {}).get("id") != requester.get("id"):
                     refused.append(f"{oid}：不是這位成員交辦的卡")
                     continue
-                p.superseded_by = new_tag
-                p.deny_message = f"已改由新決策卡 {new_tag} 處理"
-                self._resolve(p, "denied", "superseded")
+                mark(p)
+                self._resolve(p, "denied", by)
             done.append(oid)
             self.closed_tags[oid] = p.tag
         return done, refused
@@ -567,8 +591,9 @@ class Broker:
             if p.reply else None,
             # send | revise | skip | self_reply | replaced
             "superseded_by": p.superseded_by,
+            "answered": p.answered,
             "serial": p.serial, "serial_day": p.serial_day,
-            "outcome": (by if by in ("self_reply", "replaced", "superseded") else
+            "outcome": (by if by in ("self_reply", "replaced", "superseded", "answered") else
                         {0: "send", 1: "revise"}.get(p.chosen, "skip")) if p.reply else None,
             "wait_seconds": round(time.time() - p.created, 1),
         })

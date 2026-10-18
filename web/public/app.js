@@ -612,10 +612,36 @@
   const leftText = (p) =>
     p.discussing ? "💬 討論中，不會逾時" : Math.ceil(p.remaining / 60) + " 分鐘後逾時並拒絕";
 
+  // Cards folded away by tapping the heading, by id: folded while every
+  // waiting card is one of them, so a new card opens the list again.
+  let foldedCards = new Set();
+  try {
+    foldedCards = new Set(JSON.parse(localStorage.getItem("myghost_folded_decisions") || "[]"));
+  } catch {}
+
+  function foldDecisions(fold) {
+    const ids = fold ? (agent.pending || []).map((p) => p.id) : [];
+    foldedCards = new Set(ids);
+    try {
+      localStorage.setItem("myghost_folded_decisions", JSON.stringify(ids));
+    } catch {}
+    paintFold();
+  }
+
+  function paintFold() {
+    const box = $("decisions");
+    const pending = agent.pending || [];
+    const folded = pending.length > 0 && pending.every((p) => foldedCards.has(p.id));
+    box.classList.toggle("folded", folded);
+    const head = box.querySelector(".dec-head");
+    if (head) head.textContent = `${folded ? "▸" : "▾"} 🔐 待決策 ${pending.length}`;
+  }
+
   function renderDecisions() {
     const box = $("decisions");
     const pending = agent.pending || [];
     box.classList.toggle("hidden", pending.length === 0);
+    paintFold();
     // Don't rebuild under a finger: only re-render when the set changed.
     const sig = pending.map((p) => p.id + p.state + (p.discussing ? "d" : "")).join(",");
     if (box.dataset.sig === sig) {
@@ -626,7 +652,9 @@
       return;
     }
     box.dataset.sig = sig;
-    box.innerHTML = `<div class="dec-head">🔐 待決策 ${pending.length}</div>`;
+    box.innerHTML = `<button class="dec-head" type="button" title="收合／展開"></button>`;
+    box.querySelector(".dec-head").onclick = () => foldDecisions(!box.classList.contains("folded"));
+    paintFold();
     for (const p of pending) {
       const card = document.createElement("div");
       card.className = "dec-card " + (LEVEL_CLASS[p.level_name] || "");

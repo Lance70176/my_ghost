@@ -362,6 +362,28 @@ class Tools:
         return (f"已把選擇題送給他（{c.tag}，id={c.id}），在 MyGhost 和 TG 都看得到。提到這張卡時用 {c.tag}。不要等待，先結束這一輪；"
                 "他選好後你會收到一則新訊息告訴你選了什麼。" + self._replace(p, args, c.id))
 
+    def t_close_cards(self, p, args) -> str:
+        cards = args.get("cards") or []
+        if isinstance(cards, str):
+            cards = [x for x in re.split(r"[,\s、]+", cards) if x]
+        answer = str(args.get("answer") or "").strip()
+        if not cards or not answer:
+            return "需要 cards（卡的編號）和 answer（他的回答原話）。"
+        if not getattr(self.assistants.get(p.name), "turn_person", False):
+            return "只有負責人或成員親自傳來的那一輪可以依文字回答關卡；排程、求助或系統訊息的輪不行。"
+        done, refused = self.broker.close_answered(p.name, list(cards), answer, self.broker.requester_of(p.name))
+        a = self.assistants.get(p.name)
+        for item in a.items:
+            if item.role == "choice" and item.choice_id in done:
+                item.chosen = f"已依文字回覆結案：{answer[:300]}"
+        if self.dispatcher is not None:
+            self.dispatcher.drop_cards(done)
+        out = (f"已關卡：{'、'.join(self.broker.closed_tags.get(i, i) for i in done)}（標為已依文字回覆結案）。"
+               "卡上的動作沒有執行，照他的答案自己往下做。") if done else "沒有關到任何卡。"
+        if refused:
+            out += "\n沒關掉：" + "；".join(refused)
+        return out
+
     def _replace(self, p, args, new_id: str) -> str:
         """Close the older cards the new one takes over (args["replaces"])."""
         old = args.get("replaces") or []

@@ -1432,6 +1432,9 @@ private struct AgentHistoryRow: View {
         if record.by == "superseded" {
             return ("arrow.triangle.2.circlepath.circle.fill", .secondary)
         }
+        if record.by == "answered" {
+            return ("text.bubble.fill", .green)
+        }
         switch record.state {
         case "allowed": return ("checkmark.circle.fill", .green)
         case "expired": return ("clock.badge.xmark", .secondary)
@@ -1446,6 +1449,7 @@ private struct AgentHistoryRow: View {
         case "web": return L("Phone page")
         case "timeout": return L("Timed out")
         case "superseded": return L("Handled by a newer decision card")
+        case "answered": return L("Answered in words")
         default: return record.byRule ? L("Rule %@", record.level) : record.by
         }
     }
@@ -1528,6 +1532,7 @@ private struct AgentHistoryRow: View {
             case "self_reply": return L("Not sent: you replied in Telegram yourself")
             case "replaced": return L("Not sent: replaced by a newer draft")
             case "superseded": return L("Not sent: handled by a newer decision card")
+            case "answered": return L("Not sent: answered in words")
             default: return L("Not sent: no reply needed")
             }
         }()

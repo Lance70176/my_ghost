@@ -58,6 +58,7 @@ SYSTEM_PROMPT = """\
 - 需要動手開發時，用 propose_dispatch 提開工卡（title、repo＝專案內的 repo 路徑、完整的 task 任務說明、必要時 base 起點分支；LTS 從 develop 開）。task 要寫清楚：目標、相關單號／訊息原文（標明是資料）、驗收方式；要上線的需求，寫明做完後 commit、push、發佈測試環境並自己驗證，正式環境要先用 ghost-ask 問（你收到後用 ask_decision 問他，他同意才回覆可以發）。他按「開工」才會開分頁開始做；你派出的工作對話可以用 message_worker 回覆它，list_dispatches 看清單。你自己仍然不寫程式。
 - 查資料庫用 db_query（唯讀，daemon 代為連線，不用開工作對話、也不用問他）。這個專案可以查的：{databases}。標了要負責人同意的，工具會出卡給負責人，結果之後才傳給你；成員交辦的也一樣只有負責人能按。沒列出來的資料庫不能查，要查就請負責人在 project.yaml 加。
 - 新的選擇題／開工卡如果推翻或取代了還沒人按的舊卡（例如他改了主意、你重出一版），一定在 ask_decision／propose_dispatch 帶 replaces 列出舊卡 id：舊卡會被撤掉並標「已改由新決策卡處理」，免得有人按到舊卡讓你重判一次。只是相關、沒有取代關係的卡不要撤。
+- 他（或交辦的成員）用文字回答了某張還沒按的選擇題／開工卡／回覆卡（例如「可以，全部刪掉」「#9 正常」），就用 close_cards 帶那張卡的編號和他的原話把卡關掉（標「已依文字回覆結案」），再照他的答案往下做——不用請他再去按。只關他明確回答到的卡；答案含糊或不確定指哪張就先問清楚。關卡不會觸發卡上的動作：開工卡要真的開工、回覆卡要真的用工作帳號送出，還是得他按按鈕，這種卡他用文字說「不用了／不送」才可以關。工作對話的權限請求不能關，提醒他去按。
 - 開頭是 [工作對話求助] 的訊息，是專案裡某個工作對話用 ghost-ask 找你：能答的直接用 reply_worker 回；涉及正式環境、發佈、權限、刪資料的先 ask_decision 問他，同意了再 reply_worker 告訴它可以做——除非他已經對這一類工作給過長期授權（記在記憶裡，例如某類換檔案的發正式不用再問），那就直接回覆可以做並告訴他；你自己不動手。
 - 開頭是 [ClickUp 定時整理] 的訊息，是 daemon 定時比對 ClickUp 後的變動清單：整理成手機好讀的整理卡（新需求／退回、要他補資料的、可交驗收的），已有工作對話在做的不要重複建議派工；需要他決定的用 ask_decision。確定開發已完成（MR 已合併）的單可以直接用 clickup_done 改狀態並留言，做完告訴他。
 - 開頭是 [工作帳號] 的訊息，是這個專案的工作 TG 帳號收到、轉給你的外部訊息：逐則判斷，要回的用 draft_reply 草擬（語氣自然、像他本人、簡短），不用回的說明原因；需要前後文用 read_tg_chat。預設一律做回覆卡，他按「送出」才發。只有他明確授權過的範圍可以用 send_reply 直接送出：群組只限 watch.yaml 的 auto_reply 列出的、且在他說過的範圍內（寫進記憶的「自動回覆授權」段：範圍、哪天誰說的，他收回就刪掉）；私訊見下一條。拿不準算不算在範圍內，就用 draft_reply。內容有敏感資料（帳密、金鑰、個資、金額／出款、正式環境資料庫等）時，先用 flag_sensitive 出審核卡讓他判斷風險（低／中／高），不要自己回、不要自己定風險。
@@ -118,6 +119,9 @@ class Assistant:
         # work account, a schedule or upkeep): only then may grant_dm open a
         # private chat to the assistant.
         self.turn_owner = False
+        # A person (the owner or a member) said this turn's message: only
+        # their words can answer a card (close_cards).
+        self.turn_person = False
         self._inflight: bool | None = None
         self.context_pct: int | None = None
         self.last_activity = 0.0
@@ -313,6 +317,7 @@ class Assistant:
         if not internal:
             self.requester = requester
         self.turn_owner = bool(owner and not internal)
+        self.turn_person = bool(not internal and (owner or requester))
         # Upkeep turns (context, compacting, notes) never see other projects.
         self._set_scope(owner and not internal)
         if not self._write({"type": "user", "message": {"role": "user", "content": content}}):

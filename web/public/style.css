@@ -246,7 +246,20 @@ body {
 
 /* ghost-agentd decisions + session status */
 #decisions { padding: 8px 10px; border-bottom: 1px solid #2c2f3b; max-height: 55vh; overflow-y: auto; }
-.dec-head { font-size: 12px; font-weight: 600; margin-bottom: 6px; color: #e0c04e; }
+/* A phone has no room for usage, cards and tabs each in their own box: the
+   cards squeezed the tab list to nothing. There the whole list scrolls as one
+   page, and the Tabs / Files bar stays pinned once scrolled to the top. */
+@media (max-width: 720px) {
+  #sidebar { overflow-y: auto; }
+  #ai-usage, #decisions, #mode-bar { flex: none; }
+  #decisions { max-height: none; overflow: visible; }
+  #tab-pane, #file-pane { flex: none; overflow: visible; min-height: 60vh; }
+  #mode-bar { position: sticky; top: 0; z-index: 3; background: #171922; }
+}
+.dec-head { display: block; width: 100%; text-align: left; font: inherit; font-size: 12px; font-weight: 600;
+  margin-bottom: 6px; padding: 0; background: none; border: none; color: #e0c04e; cursor: pointer; }
+#decisions.folded .dec-head { margin-bottom: 0; }
+#decisions.folded .dec-card { display: none; }
 .dec-card { border: 1px solid #3a3e50; border-left: 3px solid #e09a4e; border-radius: 6px;
   padding: 7px 8px; margin-bottom: 8px; background: #1d202b; }
 .dec-card.l3 { border-left-color: #e06c75; }

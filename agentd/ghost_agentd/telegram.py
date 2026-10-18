@@ -42,7 +42,8 @@ STATE_TEXT = {
     "expired": ("⌛️", "逾時，已預設拒絕"),
 }
 SOURCE_TEXT = {"tg": "TG", "myghost": "MyGhost", "web": "手機網頁", "timeout": "逾時",
-               "self_reply": "你已在 TG 自己回覆", "replaced": "已改稿", "superseded": "已改由新決策卡處理"}
+               "self_reply": "你已在 TG 自己回覆", "replaced": "已改稿", "superseded": "已改由新決策卡處理",
+               "answered": "已依文字回覆結案"}
 
 
 def esc(s: str) -> str:
@@ -239,6 +240,8 @@ class Bot:
                 src = esc(SOURCE_TEXT.get(p.decided_by, p.decided_by))
                 if p.superseded_by:
                     lines.append(f"⏭️ <b>已改由新決策卡</b> <code>{esc(p.superseded_by)}</code> <b>處理</b>，這張不用再按")
+                elif p.answered:
+                    lines.append(f"💬 <b>已依文字回覆結案：</b><code>{esc(p.answered)}</code>，這張不用再按")
                 elif p.chosen is not None:
                     lines.append(f"✅ <b>你選了：</b><code>{esc(p.options[p.chosen]['label'])}</code>（{src}）")
                 else:
