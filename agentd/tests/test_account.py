@@ -126,7 +126,7 @@ def test_message_to_card_to_send(broker, manager):
     item = next(i for i in a.items if i.role == "choice" and i.choice_id == cards[0].id)
     assert item.reply["text"].startswith("您好") and "chat_id" not in item.reply
     linked = [i.text for i in a.items if i.role == "notice" and i.choice_id == cards[0].id]
-    assert any("你選了" in t for t in linked) and any("已用 @SnakeFQ 回覆" in t for t in linked)
+    assert any("負責人 選了" in t for t in linked) and any("已用 @SnakeFQ 回覆" in t for t in linked)
     import json
     recs = [json.loads(l) for l in (w.project.dir / "decisions.jsonl").read_text().splitlines()]
     assert recs[-1]["outcome"] == "send" and recs[-1]["reply"]["text"].startswith("您好")

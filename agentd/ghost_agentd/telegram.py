@@ -327,6 +327,8 @@ class Bot:
         msg = self.call("sendMessage", chat_id=self.chat_for(p.project), text=self.card_text(p),
                         parse_mode="HTML", reply_markup=self.keyboard(p))
         p.tg_message_id = msg["message_id"]
+        # Kept with the card, so it can still be edited after a restart.
+        self.broker.save_pending()
         if not p.open:  # decided elsewhere while we were sending
             self._edit_card(p)
 

@@ -29,6 +29,11 @@ ORPHAN_GRACE = 15.0
 # A dispatched conversation's question waits this long for a pick — under
 # the hook's own 7-day timeout, so it falls back to the terminal cleanly.
 ASK_WAIT = 6 * 86400
+# After a restart, how long a restored card waits for its hook to re-join
+# (hooks retry every 2s) before it counts as answered elsewhere.
+RESTORE_GRACE = 60.0
+# Pending fields that only make sense in this process.
+_RUNTIME_FIELDS = ("event", "waiters")
 
 
 class Listener(Protocol):
@@ -184,12 +189,64 @@ class Broker:
         self.version = 0  # bumped on every change; clients long-poll on it
         self._changed = threading.Condition(self.lock)
         self._load_sessions()
+        self._load_pending()
 
     # ------------------------------------------------------------------ util
 
     def _bump(self) -> None:
         self.version += 1
         self._changed.notify_all()
+        self.save_pending()
+
+    # Waiting cards survive a restart: a card someone hasn't answered yet —
+    # on Telegram, in MyGhost — must still be there, and still pressable,
+    # after the daemon is updated or crashes.
+
+    def _pending_file(self):
+        return cfgmod.HOME / "pending.json"
+
+    def save_pending(self) -> None:
+        with self.lock:
+            rows = [{f.name: getattr(p, f.name) for f in fields(p) if f.name not in _RUNTIME_FIELDS}
+                    for p in self.pending.values()]
+            try:
+                f = self._pending_file()
+                f.parent.mkdir(parents=True, exist_ok=True)
+                tmp = f.with_suffix(".tmp")
+                tmp.write_text(json.dumps(rows, ensure_ascii=False))
+                tmp.replace(f)
+            except (OSError, TypeError, ValueError) as e:
+                log(f"pending: couldn't save: {e!r}")
+
+    def _load_pending(self) -> None:
+        try:
+            rows = json.loads(self._pending_file().read_text())
+        except (OSError, ValueError):
+            return
+        names = {f.name for f in fields(Pending)} - set(_RUNTIME_FIELDS)
+        for row in rows if isinstance(rows, list) else []:
+            try:
+                p = Pending(**{k: v for k, v in row.items() if k in names})
+            except TypeError:
+                continue
+            if not p.open:
+                continue
+            self.pending[p.id] = p
+            self.by_key[p.key] = p
+            if p.worker_ask and p.worker_ask.get("key"):
+                self.asks.setdefault(p.worker_ask["key"], []).append(p)
+        for cards in self.asks.values():
+            cards.sort(key=lambda c: c.worker_ask.get("index", 0))
+        # A permission request or a dispatched question only matters while its
+        # hook still waits: the hook re-joins within seconds of the daemon
+        # being back. One that doesn't was answered or ended meanwhile.
+        for p in self.pending.values():
+            if p.kind == "permission" or p.worker_ask:
+                t = threading.Timer(RESTORE_GRACE, self._close_orphan, args=(p,))
+                t.daemon = True
+                t.start()
+        if self.pending:
+            log(f"pending: restored {len(self.pending)} waiting card(s)")
 
     def wait_change(self, since: int, timeout: float) -> int:
         with self._changed:
@@ -453,7 +510,9 @@ class Broker:
                         options=[{"label": str(o.get("label", ""))[:80], "action": None} for o in opts],
                     )
                     p.requested_by = w.get("requested_by")
-                    p.worker_ask = {"dispatch": w["id"], "title": w["title"], "from": ref}
+                    # key/index/count: to regroup the cards after a restart.
+                    p.worker_ask = {"dispatch": w["id"], "title": w["title"], "from": ref,
+                                    "key": key, "index": i, "count": len(questions)}
                     self._number(p)
                     self.pending[p.id] = p
                     self.by_key[p.key] = p
@@ -464,6 +523,14 @@ class Broker:
                 self._bump()
                 for p in cards:
                     self._emit("on_pending", p)
+            elif len(cards) != len(questions):
+                # Restored after a restart with some questions already answered
+                # (those cards are gone): the set can't be matched up any more.
+                for p in cards:
+                    if p.open:
+                        self._resolve(p, "expired", "terminal")
+                self.asks.pop(key, None)
+                return {"behavior": "ask", "message": "answer in the terminal"}
             for p in cards:
                 p.waiters += 1
 
