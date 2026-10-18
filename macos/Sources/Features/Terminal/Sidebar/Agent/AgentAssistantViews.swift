@@ -1536,7 +1536,7 @@ private struct AgentHistoryRow: View {
             if isExpanded {
                 VStack(alignment: .leading, spacing: 2) {
                     if let reason = record.reason { Text(reason) }
-                    Text(L("Decided by %@", source))
+                    Text(L("Decided by %@", record.decider.map { "\($0) · \(source)" } ?? source))
                     if let msg = record.denyMessage, !msg.isEmpty { Text(msg) }
                     if let rule = record.alwaysAdded { Text(L("Always allow in this project: %@", rule)) }
                     if record.discussed == true { Text(L("Was discussed before deciding")) }

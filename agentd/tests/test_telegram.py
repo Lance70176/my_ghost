@@ -174,15 +174,45 @@ def test_cards_stand_out_from_chat(broker):
     assert text.startswith(RULE) and text.endswith(RULE) and "待你決定" in text
     assert "<blockquote>要不要換影片？</blockquote>" in text
     broker.decide(p.id, "deny", "tg")
-    assert "已處理" in bot.card_text(p) and "<code>略過</code>（TG）" in bot.card_text(p)
+    assert "已處理" in bot.card_text(p) and "<b>負責人選了：</b><code>略過</code>（TG · " in bot.card_text(p)
 
 
 def test_answer_drawn_apart_from_question(broker):
     from ghost_agentd.telegram import Bot
     bot = Bot.__new__(Bot)
     p = broker.create_choice("fq", "上傳嗎？", [{"label": "OK <上傳>"}, {"label": "先不要"}])
+    assert "❓ <b>fq 助手問負責人</b>" in bot.card_text(p)
     broker.decide(p.id, "o0", "myghost")
-    assert "✅ <b>你選了：</b><code>OK &lt;上傳&gt;</code>（MyGhost）" in bot.card_text(p)
+    assert "✅ <b>負責人選了：</b><code>OK &lt;上傳&gt;</code>（MyGhost · " in bot.card_text(p)
+
+
+def test_decided_card_keeps_options_and_names_who(broker):
+    """A member's card says who it asks; once pressed it still lists every
+    option, ticks the picked one, and names who pressed it."""
+    import json
+    from ghost_agentd.telegram import Bot
+    bot = Bot.__new__(Bot)
+    p = broker.create_choice("fq", "影片放哪？", [{"label": "甲：上面"}, {"label": "乙：下面"}])
+    p.requested_by = {"id": 7, "name": "王爾莎"}
+    text = bot.card_text(p)
+    assert "❓ <b>fq 助手問王爾莎</b>" in text and "👤 王爾莎 交辦（王爾莎和負責人都可以按）" in text
+    broker.decide(p.id, "o1", "tg", actor={"owner": False, "id": 7, "name": "王爾莎"})
+    text = bot.card_text(p)
+    assert "<b>選項：</b>\n▫️ 甲：上面\n✅ 乙：下面" in text
+    assert "✅ <b>王爾莎選了：</b><code>乙：下面</code>（TG · " in text
+    rec = json.loads((broker.projects.get("fq").dir / "decisions.jsonl").read_text().splitlines()[-1])
+    assert rec["decider"] == "王爾莎" and rec["chosen"] == "乙：下面"
+
+
+def test_permission_card_names_who_decided(broker):
+    from ghost_agentd.telegram import Bot
+    bot = Bot.__new__(Bot)
+    p = broker.create_choice("fq", "x", [{"label": "a"}])  # any card works for the name
+    broker.decide(p.id, "o0", "tg", actor={"owner": True, "name": "Rex"})
+    assert p.decider == "Rex"
+    q = broker.create_choice("fq", "y", [{"label": "a"}])
+    broker.decide(q.id, "o0", "web")
+    assert q.decider == "負責人"
 
 
 from test_broker import broker, home  # noqa: E402,F401  (fixtures)

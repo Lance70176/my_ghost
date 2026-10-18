@@ -104,6 +104,16 @@ class Pending:
     def open(self) -> bool:
         return self.state in ("pending", "confirming")
 
+    @property
+    def decider(self) -> str | None:
+        """The name of whoever pressed it: their Telegram name, or "負責人"
+        when the owner did from MyGhost / the phone page, which carry no
+        name. None when nobody did (timed out, superseded)."""
+        a = self.decided_actor
+        if not a:
+            return None
+        return a.get("name") or ("負責人" if a.get("owner") else str(a.get("id") or ""))
+
     def public(self) -> dict:
         d = {f.name: getattr(self, f.name) for f in fields(self) if f.name != "event"}
         d["level_name"] = LEVEL_NAMES[self.level]
@@ -608,7 +618,11 @@ class Broker:
             "session_id": p.session_id, "tmux_session": p.tmux_session,
             "tab": p.tab_title, "tool": p.tool_name,
             "summary": p.summary, "level": LEVEL_NAMES[p.level], "reason": p.reason,
-            "state": state, "by": by, "always_added": p.always_added,
+            "state": state, "by": by,
+            # A person's name only when a person pressed it, not for a timeout
+            # or a card closed by something else.
+            "decider": p.decider if by in ("tg", "myghost", "web") else None,
+            "always_added": p.always_added,
             "discussed": p.discussing, "deny_message": p.deny_message if state != "allowed" else "",
             "kind": p.kind,
             "chosen": p.options[p.chosen]["label"] if p.kind == "choice" and p.chosen is not None else None,

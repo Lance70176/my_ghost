@@ -59,8 +59,24 @@ def framed(p: Pending, lines: list[str]) -> str:
     num = f" <code>{p.tag}</code>（{p.serial_day}）" if p.serial else ""
     tag = (f"📋 <b>待你決定</b>{num}" if p.open else f"📋 決策單・已處理{num}")
     if p.requested_by:  # a member's request: they (and the owner) may press it
-        tag += f"\n👤 {html.escape(str(p.requested_by.get('name') or p.requested_by.get('id')))} 交辦"
+        who = asked(p)
+        tag += f"\n👤 {who} 交辦（{who}和負責人都可以按）"
     return "\n".join([f"{RULE}\n{tag}", *lines, RULE])
+
+
+def asked(p: Pending) -> str:
+    """Who the card is for: the member whose request it came from, else the
+    project's owner."""
+    if p.requested_by:
+        return esc(str(p.requested_by.get("name") or p.requested_by.get("id")))
+    return "負責人"
+
+
+def decided_by_line(p: Pending, src: str, name: bool = True) -> str:
+    """"（王爾莎 · TG · 01:20）": who pressed it, where, and when. `name`
+    off where the line already says who."""
+    parts = [esc(p.decider)] if name and p.decider else []
+    return "（" + " · ".join(parts + [esc(src), time.strftime("%H:%M")]) + "）"
 
 
 def build_bots(cfg: Config, broker: Broker) -> list["Bot"]:
@@ -230,22 +246,29 @@ class Bot:
 
     def card_text(self, p: Pending) -> str:
         if p.kind == "choice":
-            head = ("✉️ <b>{} 助手草擬了回覆</b>" if p.reply else
-                    "🚀 <b>{} 助手提議開工</b>" if getattr(p, "dispatch", None) else "❓ <b>{} 助手問你</b>")
-            lines = [head.format(esc(p.project)), f"<blockquote>{esc(p.summary[:3000])}</blockquote>"]
+            head = ("✉️ <b>{} 助手草擬了回覆，問{}</b>" if p.reply else
+                    "🚀 <b>{} 助手提議開工，問{}</b>" if getattr(p, "dispatch", None) else "❓ <b>{} 助手問{}</b>")
+            lines = [head.format(esc(p.project), asked(p)),
+                     f"<blockquote>{esc(p.summary[:3000])}</blockquote>"]
             if not p.open:
+                # The buttons go once it's decided, so the options they offered
+                # are kept in the text, the picked one ticked.
+                lines.append("<b>選項：</b>")
+                lines += [f"{'✅' if i == p.chosen else '▫️'} {esc(o['label'])}" for i, o in enumerate(p.options)]
                 # Bot messages can't set a text colour; inline code is the one
                 # style every client draws in its own colour, so the answer
                 # stands apart from the question quoted above it.
-                src = esc(SOURCE_TEXT.get(p.decided_by, p.decided_by))
+                src = SOURCE_TEXT.get(p.decided_by, p.decided_by)
+                who = esc(p.decider or "負責人")
                 if p.superseded_by:
                     lines.append(f"⏭️ <b>已改由新決策卡</b> <code>{esc(p.superseded_by)}</code> <b>處理</b>，這張不用再按")
                 elif p.answered:
                     lines.append(f"💬 <b>已依文字回覆結案：</b><code>{esc(p.answered)}</code>，這張不用再按")
                 elif p.chosen is not None:
-                    lines.append(f"✅ <b>你選了：</b><code>{esc(p.options[p.chosen]['label'])}</code>（{src}）")
+                    lines.append(f"✅ <b>{who}選了：</b><code>{esc(p.options[p.chosen]['label'])}</code>"
+                                 f"{decided_by_line(p, src, name=False)}")
                 else:
-                    lines.append(f"⏭️ <b>你選了：</b><code>略過</code>（{src}）")
+                    lines.append(f"⏭️ <b>{who}選了：</b><code>略過</code>{decided_by_line(p, src, name=False)}")
             return framed(p, lines)
         who = esc(p.tab_title or p.session_id[:8] or "?")
         head = f"{LEVEL_ICON[p.level]} <b>{LEVEL_NAMES[p.level]}</b> · {esc(p.project)} · {who}"
@@ -258,10 +281,13 @@ class Bot:
             mins = max(0, int((p.deadline - time.time()) // 60))
             lines.append(f"⏳ {mins} 分鐘後逾時並拒絕 · 回覆這則訊息可附上拒絕理由")
         else:
-            when = time.strftime("%H:%M")
             src = SOURCE_TEXT.get(p.decided_by, p.decided_by)
             icon, text = STATE_TEXT.get(p.state, ("", p.state))
-            lines.append(f"{icon} <code>{esc(text)}</code>（{esc(src)} · {when}）")
+            # A timeout has nobody to name; a press names who pressed it.
+            if p.decided_by not in ("tg", "myghost", "web"):
+                lines.append(f"{icon} <code>{esc(text)}</code>（{esc(src)} · {time.strftime('%H:%M')}）")
+            else:
+                lines.append(f"{icon} <code>{esc(text)}</code>{decided_by_line(p, src)}")
             if p.always_added:
                 lines.append(f"♾ 之後此專案一律允許 <code>{esc(p.always_added)}</code>")
         return framed(p, lines)
@@ -333,9 +359,10 @@ class Bot:
     def _actor(self, user: dict) -> dict:
         """Who pressed a card, for the assistant's next turn (by user id,
         which Telegram vouches for — not the display name)."""
-        if self._is_owner(user.get("id")):
-            return {"owner": True}
         name = " ".join(x for x in (user.get("first_name"), user.get("last_name")) if x)
+        if self._is_owner(user.get("id")):
+            # The name only labels the card; the owner's scope never depends on it.
+            return {"owner": True, "name": name}
         return {"owner": False, "id": user.get("id"), "name": name or str(user.get("id"))}
 
     def _authorized(self, user: dict, chat: dict) -> bool:

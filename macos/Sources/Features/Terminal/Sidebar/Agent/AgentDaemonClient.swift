@@ -271,6 +271,9 @@ struct AgentDecisionRecord: Decodable, Identifiable, Equatable {
     /// "choice" for the assistant's own cards, "permission" (or nothing, in
     /// older records) for a conversation's permission request.
     let kind: String?
+    /// Who pressed it ("王爾莎", or "負責人" from MyGhost / the phone page);
+    /// nil for a timeout or older records.
+    let decider: String?
 
     var tag: String? { AgentCardTag.text(serial) }
     var date: Date { Date(timeIntervalSince1970: ts) }

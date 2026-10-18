@@ -1184,7 +1184,7 @@
     }
     const facts = [];
     if (r.reason) facts.push("原因：" + r.reason);
-    facts.push("決定者：" + sourceOf(r));
+    facts.push("決定者：" + (r.decider ? `${r.decider}（${sourceOf(r)}）` : sourceOf(r)));
     if (r.wait_seconds) facts.push(`等了 ${Math.round(r.wait_seconds)} 秒才決定`);
     if (r.deny_message) facts.push("拒絕理由：" + r.deny_message);
     if (r.always_added) facts.push("此專案一律允許：" + r.always_added);
