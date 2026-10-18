@@ -79,6 +79,34 @@ loopback for clients that can't use SSH; MyGhost doesn't need it.)
 
 指揮者是你的個人 TG 帳號；每個專案的助手是一個獨立 bot，各自一個群組。
 
+## Work accounts · 工作帳號
+
+A work Telegram account (a real person's account the assistants watch and
+answer from, after a press) is set up once in
+`~/.myghost/accounts/<name>/account.yaml` and keeps one connection however
+many assistants it serves. `routes` hand each message to exactly one
+project, first match wins:
+
+```yaml
+routes:
+  - folder: LTS          # a Telegram chat folder
+    project: lts
+    trigger: all
+  - group: "FQ 研發群"    # a group, by title or chat id
+    project: fq
+  - all: true            # everything else
+    project: fq
+```
+
+A chat routed in by folder or by name is assigned to that project: its
+private messages reach the assistant without a grant, replies stay cards.
+Whatever no route takes is only recorded (`unrouted.jsonl`: who and where).
+Each project's `watch.yaml` still sets its window, auto-reply and post-to
+lists; groups listed there (e.g. with `/watch`) claim their chats too.
+Log in with `python -m ghost_agentd account-login <name>`.
+
+工作帳號在 `~/.myghost/accounts/` 統一設定、只連一次線，用 `routes` 把每則訊息分給一個助手。
+
 ## Install · 安裝
 
 ```bash
