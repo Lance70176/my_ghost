@@ -157,8 +157,6 @@ enum L10nStrings {
         "Not set up": t("未設定", "未设置", "未設定"),
         "Nothing waiting for you.": t("目前沒有等你決定的事。", "目前没有等你决定的事。", "保留中の判断はありません。"),
         "Decision history": t("決策紀錄", "决策记录", "判断の履歴"),
-        "Show automatic": t("顯示自動放行", "显示自动放行", "自動許可も表示"),
-        "Also list the L0/L1 requests the rules allowed by themselves": t("也列出規則自動放行的 L0／L1 請求", "也列出规则自动放行的 L0／L1 请求", "ルールが自動で許可した L0／L1 も表示"),
         "No decisions yet.": t("還沒有決策紀錄。", "还没有决策记录。", "まだ判断の記録はありません。"),
         "Phone page": t("手機網頁", "手机网页", "スマホ用ページ"),
         "Timed out": t("逾時", "超时", "タイムアウト"),

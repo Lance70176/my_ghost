@@ -1020,8 +1020,11 @@ private struct AgentRightColumn: View {
     @ObservedObject var uiState: SidebarUIState
     @EnvironmentObject private var client: AgentDaemonClient
 
+    /// Only what the assistant itself asked in its conversation. Permission
+    /// requests from the project's Claude Code tabs are answered in the
+    /// bottom-right stack instead.
     private var pending: [AgentPending] {
-        client.pending.filter { project == nil || $0.project == project }
+        client.pending.filter { $0.isChoice && (project == nil || $0.project == project) }
     }
 
     /// The card opened from the bottom-right stack, lit up for a moment.
@@ -1335,25 +1338,21 @@ private struct AgentHistoryList: View {
     let project: String?
     @EnvironmentObject private var client: AgentDaemonClient
     @State private var records: [AgentDecisionRecord] = []
-    @State private var showRules = false
     @State private var closed: Set<String> = []
     @State private var historyFailed = false
     /// The card shown in full in its own sheet; the list itself stays compact.
     @State private var opened: AgentDecisionRecord?
 
+    /// The cards the assistant raised in its conversation. Permission
+    /// requests from Claude Code tabs — including the L0/L1 ones the rules
+    /// allowed by themselves — aren't the assistant's and stay out.
     private var shown: [AgentDecisionRecord] {
-        showRules ? records : records.filter { !$0.byRule }
+        records.filter(\.isChoice)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                SectionTitle(title: L("Decision history"))
-                Toggle(L("Show automatic"), isOn: $showRules)
-                    .toggleStyle(.checkbox)
-                    .agentFont(.caption)
-                    .help(L("Also list the L0/L1 requests the rules allowed by themselves"))
-            }
+            SectionTitle(title: L("Decision history"))
             if historyFailed {
                 Label(records.isEmpty ? L("Couldn't load the decision history.")
                                       : L("Couldn't refresh — showing what was loaded before. Retrying…"),

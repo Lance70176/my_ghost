@@ -268,10 +268,14 @@ struct AgentDecisionRecord: Decodable, Identifiable, Equatable {
     let outcome: String?
     let serial: Int?
     let serialDay: String?
+    /// "choice" for the assistant's own cards, "permission" (or nothing, in
+    /// older records) for a conversation's permission request.
+    let kind: String?
 
     var tag: String? { AgentCardTag.text(serial) }
     var date: Date { Date(timeIntervalSince1970: ts) }
     var allowed: Bool { state == "allowed" }
+    var isChoice: Bool { kind == "choice" }
     /// L0/L1 decisions made by the rules rather than a person.
     var byRule: Bool { by.hasPrefix("rule:") }
 }

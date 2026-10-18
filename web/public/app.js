@@ -833,7 +833,12 @@
     return `${two(d.getMonth() + 1)}/${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
   };
 
-  const pendingFor = (project) => (agent.pending || []).filter((p) => p.project === project);
+  // Only the cards an assistant raised in its own conversation belong on its
+  // screens; a Claude Code tab's permission request is answered from the
+  // sidebar's list of everything waiting.
+  const isAssistantCard = (x) => x.kind === "choice";
+  const pendingFor = (project) =>
+    (agent.pending || []).filter((p) => p.project === project && isAssistantCard(p));
   const serialTag = (x) => (x.serial ? "#" + String(x.serial).replace(/^#/, "") : "");
 
   async function loadAssistants() {
@@ -1018,7 +1023,6 @@
   $("drawer-handle").onclick = () => {
     if ($("agent-wrap").classList.toggle("drawer-open")) loadHistory();
   };
-  $("show-rules").onchange = () => renderDrawer(true);
 
   async function loadHistory() {
     const project = chatProject;
@@ -1051,8 +1055,7 @@
     return { cls: "no", text: "已拒絕" };
   }
 
-  const sourceOf = (r) =>
-    SOURCE[r.by] || (String(r.by || "").startsWith("rule:") ? `規則自動放行（${r.level}）` : r.by || "");
+  const sourceOf = (r) => SOURCE[r.by] || r.by || "";
 
   function firstLine(s) {
     return String(s || "").split("\n").find((l) => l.trim()) || "";
@@ -1094,10 +1097,9 @@
   function renderDrawer(force) {
     const pend = chatProject ? pendingFor(chatProject) : [];
     $("drawer-count").textContent = pend.length ? String(pend.length) : "";
-    const showRules = $("show-rules").checked;
-    const shown = history.filter((r) => showRules || !String(r.by || "").startsWith("rule:"));
+    const shown = history.filter(isAssistantCard);
     const drawer = $("agent-drawer");
-    const sig = [chatProject, showRules, pend.map((p) => p.id + p.state).join(), shown.map((r) => r.id).join()].join("|");
+    const sig = [chatProject, pend.map((p) => p.id + p.state).join(), shown.map((r) => r.id).join()].join("|");
     if (!force && drawer.dataset.sig === sig) return;
     drawer.dataset.sig = sig;
 

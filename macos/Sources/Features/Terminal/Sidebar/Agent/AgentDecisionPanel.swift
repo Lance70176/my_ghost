@@ -252,8 +252,18 @@ private struct AgentDecisionStack: View {
             ScrollView(.vertical) {
                 VStack(alignment: .trailing, spacing: 8) {
                     ForEach(shown.suffix(3)) { hp in
-                        AgentDecisionNotice(p: hp.pending, showHost: hub.clients.count > 1 || !hp.client.isLocal)
-                            .environmentObject(hp.client)
+                        let showHost = hub.clients.count > 1 || !hp.client.isLocal
+                        Group {
+                            if hp.pending.isChoice {
+                                AgentDecisionNotice(p: hp.pending, showHost: showHost)
+                            } else {
+                                // A Claude Code tab's permission request isn't one of
+                                // the assistant's cards and isn't listed on its page,
+                                // so it is answered right here.
+                                AgentDecisionCard(p: hp.pending, showHost: showHost)
+                            }
+                        }
+                        .environmentObject(hp.client)
                     }
                 }
                 .background(GeometryReader { g in
