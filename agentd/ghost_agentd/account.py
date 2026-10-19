@@ -489,6 +489,8 @@ class AccountWatcher:
             "超出範圍一律 draft_reply。內容有敏感資料（帳密、金鑰、個資、金額／出款、正式環境資料庫等）時，"
             "先用 flag_sensitive 請他判斷風險，不要自己回。"
             "不用回的簡短說明為什麼。需要前後文先用 read_tg_chat。"
+            "他看不到上面的原文：回報時每則（同一對話連續幾則可合併）先一行交代"
+            "「哪個群組／誰的私訊、誰說的、大意一兩句（不用貼全文）」，再講你的判斷和處理。"
             "看起來是開發需求或問題的，另外整理成待辦告訴他。附件已存在 uploads，需要時用 Read 開。")
         files = [uploads.Attached(Path(f)) for m in msgs for f in m.files if Path(f).exists()]
         self.assistants.get(self.project.name).send("\n".join(lines), "account", files=files[:10])
