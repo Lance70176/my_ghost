@@ -19,6 +19,7 @@ from __future__ import annotations
 import html
 import json
 import queue
+import re
 import threading
 import time
 import urllib.error
@@ -51,6 +52,72 @@ def esc(s: str) -> str:
 
 
 RULE = "━━━━━━━━━━━━━━"
+CHUNK = 3900  # under Telegram's 4096-character message limit
+FENCE = re.compile(r"^\s*```")
+INLINE = re.compile(r"`([^`\n]+)`|\*\*(?=\S)(.+?)(?<=\S)\*\*|\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
+HEADING = re.compile(r"^#{1,6}\s+(.*)$")
+
+
+def md_chunks(text: str) -> list[str]:
+    """The assistant's Markdown cut into message-sized pieces at line ends.
+    A code block split across two pieces is closed and reopened, so each
+    piece converts on its own."""
+    out, cur, fence = [], "", None
+    for line in text.split("\n"):
+        while len(line) > CHUNK:
+            line, rest = line[:CHUNK], line[CHUNK:]
+            out.append(cur + line + ("\n```" if fence is not None else ""))
+            cur, line = (fence + "\n" if fence is not None else ""), rest
+        if cur and len(cur) + len(line) + 5 > CHUNK:
+            out.append(cur.rstrip("\n") + ("\n```" if fence is not None else ""))
+            cur = fence + "\n" if fence is not None else ""
+        cur += line + "\n"
+        if FENCE.match(line):
+            fence = None if fence is not None else line.strip()
+    if cur.strip():
+        out.append(cur.rstrip("\n"))
+    return out
+
+
+def md_to_html(text: str) -> str:
+    """Telegram HTML for the Markdown Claude writes: fenced and inline code,
+    **bold**, headings and links. Anything else is escaped as it is — single
+    * and _ are left alone, they show up in names and arithmetic."""
+    out, code = [], None
+    for line in text.split("\n"):
+        if FENCE.match(line):
+            if code is None:
+                code = []
+            else:
+                out.append("<pre>" + esc("\n".join(code)) + "</pre>")
+                code = None
+            continue
+        if code is not None:
+            code.append(line)
+            continue
+        h = HEADING.match(line)
+        if h:
+            out.append(f"<b>{_inline(h.group(1))}</b>")
+        else:
+            out.append(_inline(line))
+    if code is not None:
+        out.append("<pre>" + esc("\n".join(code)) + "</pre>")
+    return "\n".join(out)
+
+
+def _inline(line: str) -> str:
+    parts, last = [], 0
+    for m in INLINE.finditer(line):
+        parts.append(esc(line[last:m.start()]))
+        if m.group(1) is not None:
+            parts.append(f"<code>{esc(m.group(1))}</code>")
+        elif m.group(2) is not None:
+            parts.append(f"<b>{_inline(m.group(2))}</b>")
+        else:
+            parts.append(f'<a href="{html.escape(m.group(4))}">{esc(m.group(3))}</a>')
+        last = m.end()
+    parts.append(esc(line[last:]))
+    return "".join(parts)
 
 
 def framed(p: Pending, lines: list[str]) -> str:
@@ -227,20 +294,31 @@ class Bot:
         if self.chat_for(project.name) is None:
             return
         if item.role == "assistant" and item.text.strip():
-            text = item.text
-        elif item.role == "user" and item.source in ("myghost", "web") and self.cfg.sync_chat_to_tg:
+            for chunk in md_chunks(item.text):
+                self.jobs.put((self._send_markdown, (project, chunk)))
+            return
+        if item.role == "user" and item.source in ("myghost", "web") and self.cfg.sync_chat_to_tg:
             text = f"🖥 你在 MyGhost：{item.text}"
             names = [f.get("name", "") for f in getattr(item, "files", None) or []]
             if names:
                 text += "\n📎 " + "、".join(names)
         else:
             return
-        for i in range(0, len(text), 3900):
-            self.jobs.put((self._send_plain, (project, text[i:i + 3900])))
+        for i in range(0, len(text), CHUNK):
+            self.jobs.put((self._send_plain, (project, text[i:i + CHUNK])))
 
     def _send_plain(self, project: Project, text: str) -> None:
         self.call("sendMessage", chat_id=self.chat_for(project.name), text=text,
                   disable_web_page_preview=True)
+
+    def _send_markdown(self, project: Project, text: str) -> None:
+        try:
+            self.call("sendMessage", chat_id=self.chat_for(project.name), text=md_to_html(text),
+                      parse_mode="HTML", disable_web_page_preview=True)
+        except RuntimeError as e:
+            # Markdown we didn't foresee must not cost the message itself.
+            log(f"telegram: {project.name} formatted reply refused ({e}); sent as plain text")
+            self._send_plain(project, text)
 
     # ---------------------------------------------------------------- render
 

@@ -216,3 +216,44 @@ def test_permission_card_names_who_decided(broker):
 
 
 from test_broker import broker, home  # noqa: E402,F401  (fixtures)
+
+
+def test_assistant_markdown_becomes_telegram_html():
+    from ghost_agentd.telegram import md_to_html
+    out = md_to_html("**真正要讓 PM 知道的**：a_b * 2 < 3\n"
+                     "## 標題\n"
+                     "看 `x<y` 和 [卡片](https://app.clickup.com/t/z8v0kmw7rx)\n"
+                     "```\n【LSC】前/後台 **不轉** <b>\n```")
+    assert out == ("<b>真正要讓 PM 知道的</b>：a_b * 2 &lt; 3\n"
+                   "<b>標題</b>\n"
+                   '看 <code>x&lt;y</code> 和 <a href="https://app.clickup.com/t/z8v0kmw7rx">卡片</a>\n'
+                   "<pre>【LSC】前/後台 **不轉** &lt;b&gt;</pre>")
+    # An unclosed fence still yields balanced tags.
+    assert md_to_html("```\nhalf") == "<pre>half</pre>"
+
+
+def test_code_block_split_across_messages_stays_a_block():
+    from ghost_agentd.telegram import CHUNK, md_chunks, md_to_html
+    text = "前言\n```\n" + "\n".join("x" * 80 for _ in range(100)) + "\n```\n結尾"
+    chunks = md_chunks(text)
+    assert len(chunks) == 3 and all(len(c) <= CHUNK + 4 for c in chunks)
+    for c in chunks:
+        h = md_to_html(c)
+        assert h.count("<pre>") == h.count("</pre>")
+    assert md_to_html(chunks[-1]).endswith("</pre>\n結尾")
+
+
+def test_reply_falls_back_to_plain_when_telegram_refuses(setup):
+    home, broker, bots, sent = setup
+    bot = bots["TOKEN_FQ"]
+
+    def call(method, **kw):
+        if kw.get("parse_mode"):
+            raise RuntimeError("sendMessage: Bad Request: can't parse entities")
+        sent.append((bot.token, method, kw))
+        return {"message_id": 1}
+    bot.call = call
+    item = type("Item", (), {"role": "assistant", "text": "**hi**", "source": ""})()
+    bot.on_chat(broker.projects.get("fq"), item)
+    drain(bot)
+    assert sent[-1][2]["text"] == "**hi**" and "parse_mode" not in sent[-1][2]
