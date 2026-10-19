@@ -27,6 +27,12 @@ from .policy import ProjectPolicy
 
 HOME = Path(os.environ.get("MYGHOST_HOME", Path.home() / ".myghost"))
 DEFAULT_PROJECT = "_default"
+# What the cards and the assistants call the owner (config.yaml `owner_name`).
+OWNER = "負責人"
+
+
+def owner() -> str:
+    return OWNER
 
 
 @dataclass
@@ -92,9 +98,11 @@ class Project:
 
 
 def load_config() -> Config:
+    global OWNER
     path = HOME / "config.yaml"
     raw = yaml.safe_load(path.read_text()) if path.exists() else {}
     raw = raw or {}
+    OWNER = str(raw.get("owner_name") or "").strip() or "負責人"
     tg = raw.get("telegram") or {}
     token = os.environ.get("GHOST_TG_TOKEN") or tg.get("token") or ""
     chat = os.environ.get("GHOST_TG_CHAT") or tg.get("chat_id")

@@ -232,6 +232,27 @@ def test_assistant_markdown_becomes_telegram_html():
     assert md_to_html("```\nhalf") == "<pre>half</pre>"
 
 
+def test_bullets_and_sub_bullets_are_drawn():
+    from ghost_agentd.telegram import md_to_html
+    out = md_to_html("1. **香港角色**：沒改\n  - 原始 216 個\n    * 更深\n- 頂層 **粗**\n---\n**只是粗體**")
+    assert out == ("1. <b>香港角色</b>：沒改\n"
+                   "\u2003◦ 原始 216 個\n"
+                   "\u2003\u2003◦ 更深\n"
+                   "• 頂層 <b>粗</b>\n"
+                   "---\n"
+                   "<b>只是粗體</b>")
+
+
+def test_owner_name_replaces_the_title(broker, monkeypatch):
+    from ghost_agentd import config as cfgmod
+    from ghost_agentd.telegram import asked, framed
+    monkeypatch.setattr(cfgmod, "OWNER", "Rex Lu")
+    p = broker.create_choice("fq", "要嗎", [{"label": "好"}, {"label": "不要"}])
+    assert asked(p) == "Rex Lu"
+    p.requested_by = {"id": 7, "name": "王爾莎"}
+    assert "👤 王爾莎 交辦（王爾莎和Rex Lu都可以按）" in framed(p, [])
+
+
 def test_code_block_split_across_messages_stays_a_block():
     from ghost_agentd.telegram import CHUNK, md_chunks, md_to_html
     text = "前言\n```\n" + "\n".join("x" * 80 for _ in range(100)) + "\n```\n結尾"

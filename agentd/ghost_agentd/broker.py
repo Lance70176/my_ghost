@@ -132,7 +132,7 @@ class Pending:
         a = self.decided_actor
         if not a:
             return None
-        return a.get("name") or ("負責人" if a.get("owner") else str(a.get("id") or ""))
+        return a.get("name") or (cfgmod.owner() if a.get("owner") else str(a.get("id") or ""))
 
     def public(self) -> dict:
         d = {f.name: getattr(self, f.name) for f in fields(self) if f.name != "event"}

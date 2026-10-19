@@ -56,6 +56,7 @@ CHUNK = 3900  # under Telegram's 4096-character message limit
 FENCE = re.compile(r"^\s*```")
 INLINE = re.compile(r"`([^`\n]+)`|\*\*(?=\S)(.+?)(?<=\S)\*\*|\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
 HEADING = re.compile(r"^#{1,6}\s+(.*)$")
+BULLET = re.compile(r"^([ \t]*)[-*+][ \t]+(.*)$")
 
 
 def md_chunks(text: str) -> list[str]:
@@ -81,8 +82,8 @@ def md_chunks(text: str) -> list[str]:
 
 def md_to_html(text: str) -> str:
     """Telegram HTML for the Markdown Claude writes: fenced and inline code,
-    **bold**, headings and links. Anything else is escaped as it is — single
-    * and _ are left alone, they show up in names and arithmetic."""
+    **bold**, headings, links and (nested) bullets. Anything else is escaped
+    as it is — single * and _ are left alone, they show up in names and arithmetic."""
     out, code = [], None
     for line in text.split("\n"):
         if FENCE.match(line):
@@ -96,8 +97,14 @@ def md_to_html(text: str) -> str:
             code.append(line)
             continue
         h = HEADING.match(line)
+        li = BULLET.match(line)
         if h:
             out.append(f"<b>{_inline(h.group(1))}</b>")
+        elif li:
+            # Telegram has no lists: a bullet sign, and em spaces for the
+            # nesting (plain leading spaces get eaten).
+            depth = len(li.group(1).expandtabs(4)) // 2
+            out.append(" " * depth + ("◦ " if depth else "• ") + _inline(li.group(2)))
         else:
             out.append(_inline(line))
     if code is not None:
@@ -127,7 +134,7 @@ def framed(p: Pending, lines: list[str]) -> str:
     tag = (f"📋 <b>待你決定</b>{num}" if p.open else f"📋 決策單・已處理{num}")
     if p.requested_by:  # a member's request: they (and the owner) may press it
         who = asked(p)
-        tag += f"\n👤 {who} 交辦（{who}和負責人都可以按）"
+        tag += f"\n👤 {who} 交辦（{who}和{esc(cfgmod.owner())}都可以按）"
     return "\n".join([f"{RULE}\n{tag}", *lines, RULE])
 
 
@@ -136,7 +143,7 @@ def asked(p: Pending) -> str:
     project's owner."""
     if p.requested_by:
         return esc(str(p.requested_by.get("name") or p.requested_by.get("id")))
-    return "負責人"
+    return esc(cfgmod.owner())
 
 
 def decided_by_line(p: Pending, src: str, name: bool = True) -> str:
@@ -339,7 +346,7 @@ class Bot:
                 # style every client draws in its own colour, so the answer
                 # stands apart from the question quoted above it.
                 src = SOURCE_TEXT.get(p.decided_by, p.decided_by)
-                who = esc(p.decider or "負責人")
+                who = esc(p.decider or cfgmod.owner())
                 if p.decided_by == "terminal":
                     lines.append("🖥 <b>已改在終端機回答</b>，這張不用再按")
                 elif p.superseded_by:
@@ -476,9 +483,9 @@ class Bot:
         members = cfgmod.member_names(p)
         cmd = text.split(" ")[0].split("@")[0]
         if cmd == "/members":
-            lines = [f"・{n or i}（{i}）" for i, n in members.items()] or ["（沒有，只有負責人）"]
+            lines = [f"・{n or i}（{i}）" for i, n in members.items()] or [f"（沒有，只有{cfgmod.owner()}）"]
             return say(f"「{p.name}」助手的成員（可以跟助手對話、交辦工作，處理自己交辦的決策卡；"
-                       "負責人看得到也能處理全部）：\n" + "\n".join(lines))
+                       f"{cfgmod.owner()}看得到也能處理全部）：\n" + "\n".join(lines))
         if not owner:
             return say("只有專案負責人可以加減成員。")
         target = (m.get("reply_to_message") or {}).get("from") or {}
@@ -507,14 +514,14 @@ class Bot:
         added = cmd == "/addmember"
         log(f"telegram: {p.name} member {'added' if added else 'removed'}: {who} ({uid})")
         if self.assistants is not None:
-            note = f"負責人{'新增' if added else '移除'}了 TG 成員 {who}（{uid}）。"
+            note = f"{cfgmod.owner()}{'新增' if added else '移除'}了 TG 成員 {who}（{uid}）。"
             a = self.assistants.get(p.name)
             a.add("notice", note, source="system")
             # The model must know too, or it keeps telling people the old list.
             a.send(note + "（已生效。只要記住，不用回覆。）", "system", show=False, internal=True)
         if added:
             return say(f"✅ 已把 {who} 加為「{p.name}」助手的成員：可以在這個群組跟助手對話、交辦工作，"
-                       "並處理自己交辦的決策卡；負責人看得到也能處理全部。監看規則與授權仍只有負責人能改。")
+                       f"並處理自己交辦的決策卡；{cfgmod.owner()}看得到也能處理全部。監看規則與授權仍只有{cfgmod.owner()}能改。")
         return say(f"已移除 {who}，之後他的訊息不會交給助手。")
 
     def _outsiders(self, m: dict, chat: dict) -> None:

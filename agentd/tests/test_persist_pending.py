@@ -69,3 +69,12 @@ def test_decider_named_not_pronoun():
     assert decider_label(SimpleNamespace(decided_actor=None), {"id": 7, "name": "王爾莎"}) == "王爾莎"
     assert decider_label(SimpleNamespace(decided_actor={"owner": True, "name": "Rex"}), None) == "負責人（Rex）"
     assert decider_label(SimpleNamespace(decided_actor={"owner": True}), None) == "負責人"
+
+
+def test_decider_uses_owner_name_when_set(monkeypatch):
+    from types import SimpleNamespace
+    from ghost_agentd import config as cfgmod
+    from ghost_agentd.assistant import decider_label
+    monkeypatch.setattr(cfgmod, "OWNER", "Rex Lu")
+    assert decider_label(SimpleNamespace(decided_actor={"owner": True, "name": "RexLu"}), None) == "Rex Lu"
+    assert decider_label(SimpleNamespace(decided_actor=None), {"id": 7, "name": "王爾莎"}) == "王爾莎"
