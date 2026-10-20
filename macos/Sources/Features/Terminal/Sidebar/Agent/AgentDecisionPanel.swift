@@ -4,8 +4,9 @@ import SwiftUI
 
 /// The bottom-right decision cards: one per permission request ghost-agentd
 /// is holding. A non-activating panel, so a card appearing never steals focus
-/// from the terminal being typed in, and it stays up while another app is in
-/// front — the request is blocked until someone answers it somewhere.
+/// from the terminal being typed in. It lives inside MyGhost: switching to
+/// another app (or a Space without a MyGhost window) puts it away, and it
+/// comes back on return — the Dock bounce and Telegram cover the meantime.
 extension Notification.Name {
     /// A window's sidebar switched mode (terminal / files / editor / assistant).
     static let sidebarModeChanged = Notification.Name("MyGhostSidebarModeChanged")
@@ -36,6 +37,7 @@ final class AgentDecisionPanel {
         let names: [Notification.Name] = [
             .sidebarModeChanged, NSApplication.didBecomeActiveNotification,
             NSApplication.didResignActiveNotification, NSWindow.didBecomeMainNotification,
+            NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification,
         ]
         for name in names {
             center.publisher(for: name)
@@ -46,6 +48,14 @@ final class AgentDecisionPanel {
                 }
                 .store(in: &cancellables)
         }
+        NSWorkspace.shared.notificationCenter
+            .publisher(for: NSWorkspace.activeSpaceDidChangeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.update(self.pending)
+            }
+            .store(in: &cancellables)
         // Follow a MyGhost window that is moved or resized: the cards sit at
         // its bottom-right, and stayed behind where it used to be.
         for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification] {
@@ -71,12 +81,18 @@ final class AgentDecisionPanel {
     /// MyGhost is in front showing the ✦ assistant page, whose chat already
     /// carries these cards — the floating copy would only cover the screen.
     private var assistantInFront: Bool {
-        guard NSApp.isActive,
-              let win = NSApp.orderedWindows.first(where: {
-                  $0.isVisible && !$0.isMiniaturized && $0.windowController is SidebarTerminalController
-              }),
-              let controller = win.windowController as? SidebarTerminalController else { return false }
+        guard let controller = frontWindow?.windowController as? SidebarTerminalController else { return false }
         return controller.sidebarUIState.sidebarMode == .assistant
+    }
+
+    /// The MyGhost window the cards belong to: frontmost, on screen in the
+    /// current Space, while MyGhost is the active app. None → no cards.
+    private var frontWindow: NSWindow? {
+        guard NSApp.isActive else { return nil }
+        return NSApp.orderedWindows.first(where: {
+            $0.isVisible && !$0.isMiniaturized && $0.isOnActiveSpace
+                && $0.windowController is SidebarTerminalController
+        })
     }
 
     private func update(_ pending: [AgentHostPending]) {
@@ -92,6 +108,13 @@ final class AgentDecisionPanel {
         }
         let fresh = pending.contains { !seenIDs.contains($0.id) }
         seenIDs = Set(pending.map(\.id))
+        // Cards that arrive while MyGhost is in the background wait for it
+        // to come back; just bounce the Dock icon so they're not missed.
+        guard frontWindow != nil else {
+            panel?.orderOut(nil)
+            if fresh { NSApp.requestUserAttention(.informationalRequest) }
+            return
+        }
         // Cards that arrive while the chat is in front count as seen there.
         guard !assistantInFront else {
             panel?.orderOut(nil)
@@ -101,9 +124,9 @@ final class AgentDecisionPanel {
         self.panel = panel
         // Let SwiftUI settle the new card count before measuring.
         DispatchQueue.main.async { [weak self] in
-            self?.layout(panel)
+            guard let self, self.frontWindow != nil else { return }
+            self.layout(panel)
             panel.orderFrontRegardless()
-            if fresh { NSApp.requestUserAttention(.informationalRequest) }
         }
     }
 
@@ -114,11 +137,11 @@ final class AgentDecisionPanel {
             backing: .buffered, defer: false)
         panel.isFloatingPanel = true
         panel.level = .floating
-        panel.hidesOnDeactivate = false
+        panel.hidesOnDeactivate = true
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         let host = NSHostingView(rootView: AgentDecisionStack())
         host.translatesAutoresizingMaskIntoConstraints = true
         panel.contentView = host
@@ -150,7 +173,7 @@ final class AgentDecisionPanel {
     /// Bottom-right of the frontmost MyGhost window, else of the screen.
     private func layout(_ panel: NSPanel) {
         let anchor: NSRect
-        if let win = NSApp.orderedWindows.first(where: { $0.isVisible && $0.windowController is SidebarTerminalController }) {
+        if let win = frontWindow {
             anchor = win.frame
         } else {
             anchor = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? .zero
