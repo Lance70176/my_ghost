@@ -102,7 +102,7 @@ def test_turn_person_follows_who_spoke(manager, monkeypatch):
     seq = a.turn_seq
     for internal, requester, owner, expect in [(False, None, True, True), (False, {"id": 7}, False, True),
                                                (False, None, False, False), (True, None, True, False)]:
-        a._outbox.append(("hi", internal, requester, owner))
+        a._outbox.append(("hi", internal, requester, owner, None))
         a._inflight = None
         a._pump()
         assert a.turn_person is expect

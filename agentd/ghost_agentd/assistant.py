@@ -113,6 +113,8 @@ class ChatItem:
     reply: dict | None = None
     dispatch: dict | None = None
     serial: str = ""  # a card's number for the day ("#3"), to talk about it
+    # A reply to a TG group message: that message's id, so TG can quote it.
+    tg_reply_to: int | None = None
 
 
 class Assistant:
@@ -133,7 +135,7 @@ class Assistant:
         # /context probe as a reply and hides the real one.)
         # _inflight: None = idle, True = an internal message (the /context
         # probe, compaction steps), False = a real one.
-        self._outbox: list[tuple[object, bool, dict | None, bool]] = []
+        self._outbox: list[tuple[object, bool, dict | None, bool, int | None]] = []
         self.requester: dict | None = None  # the member this turn works for; None = owner
         # This turn was started by the owner themselves (not a member, the
         # work account, a schedule or upkeep): only then may grant_dm open a
@@ -145,6 +147,8 @@ class Assistant:
         # Counts the turns people started: a close_cards confirmation must
         # come in a later one than the question it confirms.
         self.turn_seq = 0
+        # The TG group message this turn answers: its replies quote it.
+        self.turn_tg_message: int | None = None
         self._inflight: bool | None = None
         self.context_pct: int | None = None
         self.last_activity = 0.0
@@ -335,10 +339,11 @@ class Assistant:
         """Send the next waiting message if no turn is in progress (lock held)."""
         if self._inflight is not None or not self._outbox or not self.running:
             return
-        content, internal, requester, owner = self._outbox.pop(0)
+        content, internal, requester, owner, tg_message = self._outbox.pop(0)
         self._inflight = internal
         if not internal:
             self.requester = requester
+            self.turn_tg_message = tg_message
         self.turn_owner = bool(owner and not internal)
         self.turn_person = bool(not internal and (owner or requester))
         if self.turn_person:
@@ -366,9 +371,10 @@ class Assistant:
 
     def send(self, text: str, source: str, show: bool = True, internal: bool = False,
              files: "list[uploads.Attached] | None" = None, requester: dict | None = None,
-             owner: bool | None = None) -> None:
+             owner: bool | None = None, tg_message: int | None = None) -> None:
         """Hand the assistant a message. `show` adds it to the visible chat;
-        `files` are attachments already saved in `uploads`."""
+        `files` are attachments already saved in `uploads`; `tg_message` is
+        the TG group message it came from, for the replies to quote."""
         files = files or []
         if not self.running:
             self.start()
@@ -385,7 +391,7 @@ class Assistant:
             if owner is None:
                 owner = requester is None and source in ("myghost", "web", "tg")
             self._outbox.append((uploads.content_blocks(prefix + text if text else "", files), internal,
-                                 requester, owner))
+                                 requester, owner, tg_message))
             self._pump()
         self._touch()
 
@@ -436,7 +442,7 @@ class Assistant:
                 return
             for block in msg.get("content") or []:
                 if block.get("type") == "text" and block.get("text", "").strip():
-                    self.add("assistant", block["text"])
+                    self.add("assistant", block["text"], tg_reply_to=self.turn_tg_message)
                 elif block.get("type") == "tool_use":
                     self.add("tool", _tool_line(block), tool=block.get("name", ""))
             with self.lock:
@@ -462,6 +468,8 @@ class Assistant:
                 else:
                     internal, spontaneous = bool(self._inflight), False
                     self._inflight = None
+                    if not internal:  # what comes later answers no TG message
+                        self.turn_tg_message = None
                 self.partial = ""
                 self.last_activity = time.time()
             if ev.get("is_error") and not internal:

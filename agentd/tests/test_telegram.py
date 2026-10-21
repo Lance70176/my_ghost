@@ -278,3 +278,46 @@ def test_reply_falls_back_to_plain_when_telegram_refuses(setup):
     bot.on_chat(broker.projects.get("fq"), item)
     drain(bot)
     assert sent[-1][2]["text"] == "**hi**" and "parse_mode" not in sent[-1][2]
+
+
+def test_assistant_reply_quotes_the_tg_message(setup):
+    """TG messages reach the assistant with their id, and the reply quotes
+    it — only its first piece, when a long reply is split."""
+    home, broker, bots, sent = setup
+    fq = bots["TOKEN_FQ"]
+    got = []
+
+    class FakeAssistant:
+        uploads = home / "uploads"
+
+        def send(self, text, source, **kw):
+            got.append(kw.get("tg_message"))
+
+    fq.assistants = type("M", (), {"get": lambda self, name: FakeAssistant()})()
+    fq._handle({"message": {"message_id": 77, "chat": {"id": -1001, "type": "supergroup"},
+                            "from": {"id": COMMANDER}, "text": "#8 收了嗎"}})
+    assert got == [77]
+
+    from ghost_agentd.telegram import CHUNK
+    item = type("Item", (), {"role": "assistant", "text": "結論\n\n" + "細節\n" * CHUNK, "source": "",
+                             "tg_reply_to": 77})()
+    fq.on_chat(broker.projects.get("fq"), item)
+    drain(fq)
+    replies = [kw.get("reply_parameters") for _, m, kw in sent if m == "sendMessage"]
+    assert len(replies) >= 2
+    assert replies[0] == {"message_id": 77, "allow_sending_without_reply": True}
+    assert all(r is None for r in replies[1:])
+
+
+def test_long_reply_folds_its_details():
+    from ghost_agentd.telegram import tg_html
+    assert "blockquote" not in tg_html("#8 已經收掉了。\n\n細節一句。")
+    long = "**結論**：#8 已收掉。\n\n" + "\n".join(f"- 第 {i} 點細節說明比較長一點的內容" for i in range(20))
+    h = tg_html(long)
+    assert h.startswith("<b>結論</b>：#8 已收掉。\n<blockquote expandable>• 第 0 點")
+    assert h.endswith("</blockquote>")
+    # A heading alone keeps its paragraph out of the fold.
+    h = tg_html("## 盤點\n\n兩件進行中。\n\n" + "x" * 400)
+    assert h.startswith("<b>盤點</b>\n\n兩件進行中。\n<blockquote expandable>")
+    # Code is never folded.
+    assert "blockquote" not in tg_html("結論\n\n" + "x" * 400 + "\n```\ncode\n```")

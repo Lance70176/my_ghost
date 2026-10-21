@@ -71,6 +71,20 @@ def test_a_background_turn_during_the_probe(manager):
     assert a._inflight is None and not a._outbox
 
 
+def test_replies_remember_the_tg_message_they_answer(manager):
+    """A reply carries the id of the TG message that started its turn (TG
+    quotes it); later turns from elsewhere, and background turns, carry none."""
+    a = manager.get("fq")
+    a.send("跑健檢BG", "tg", tg_message=42)
+    wait_for(lambda: ("assistant", "背景工作完成") in roles(a))
+    wait_for(lambda: a._inflight is None and not a._outbox)
+    a.send("你好", "myghost")
+    wait_for(lambda: ("assistant", "回覆：你好") in roles(a))
+    replies = {i.text: i.tg_reply_to for i in a.items if i.role == "assistant"}
+    assert replies.pop("回覆：你好") is None and replies.pop("背景工作完成") is None
+    assert list(replies.values()) == [42]
+
+
 def test_compaction_when_context_is_high(manager, monkeypatch):
     monkeypatch.setenv("FAKE_CTX", "85")
     a = manager.get("fq")

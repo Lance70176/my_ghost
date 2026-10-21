@@ -112,6 +112,24 @@ def md_to_html(text: str) -> str:
     return "\n".join(out)
 
 
+FOLD_AT = 300  # characters after the opening paragraph that get folded away
+
+
+def tg_html(text: str) -> str:
+    """A reply as TG shows it: the opening paragraph (the conclusion) in
+    full, a long rest folded into an expandable quote — a long scroll of
+    replies otherwise blurs which is which. Code stays unfolded."""
+    text = text.strip("\n")
+    lead, sep, rest = text.partition("\n\n")
+    if sep and HEADING.match(lead) and "\n" not in lead:  # a title alone: take its paragraph too
+        more, sep, rest = rest.partition("\n\n")
+        lead += "\n\n" + more
+    rest = rest.strip("\n")
+    if len(rest) < FOLD_AT or any(FENCE.match(l) for l in rest.split("\n")):
+        return md_to_html(text)
+    return md_to_html(lead) + "\n<blockquote expandable>" + md_to_html(rest) + "</blockquote>"
+
+
 def _inline(line: str) -> str:
     parts, last = [], 0
     for m in INLINE.finditer(line):
@@ -301,8 +319,11 @@ class Bot:
         if self.chat_for(project.name) is None:
             return
         if item.role == "assistant" and item.text.strip():
-            for chunk in md_chunks(item.text):
-                self.jobs.put((self._send_markdown, (project, chunk)))
+            # Quote the TG message it answers, so a reply stays tied to its
+            # question however much else was said in between.
+            reply_to = getattr(item, "tg_reply_to", None)
+            for i, chunk in enumerate(md_chunks(item.text)):
+                self.jobs.put((self._send_markdown, (project, chunk, reply_to if i == 0 else None)))
             return
         if item.role == "user" and item.source in ("myghost", "web") and self.cfg.sync_chat_to_tg:
             text = f"🖥 你在 MyGhost：{item.text}"
@@ -314,18 +335,18 @@ class Bot:
         for i in range(0, len(text), CHUNK):
             self.jobs.put((self._send_plain, (project, text[i:i + CHUNK])))
 
-    def _send_plain(self, project: Project, text: str) -> None:
+    def _send_plain(self, project: Project, text: str, reply_to: int | None = None) -> None:
         self.call("sendMessage", chat_id=self.chat_for(project.name), text=text,
-                  disable_web_page_preview=True)
+                  disable_web_page_preview=True, reply_parameters=quoting(reply_to))
 
-    def _send_markdown(self, project: Project, text: str) -> None:
+    def _send_markdown(self, project: Project, text: str, reply_to: int | None = None) -> None:
         try:
-            self.call("sendMessage", chat_id=self.chat_for(project.name), text=md_to_html(text),
-                      parse_mode="HTML", disable_web_page_preview=True)
+            self.call("sendMessage", chat_id=self.chat_for(project.name), text=tg_html(text),
+                      parse_mode="HTML", disable_web_page_preview=True, reply_parameters=quoting(reply_to))
         except RuntimeError as e:
             # Markdown we didn't foresee must not cost the message itself.
             log(f"telegram: {project.name} formatted reply refused ({e}); sent as plain text")
-            self._send_plain(project, text)
+            self._send_plain(project, text, reply_to)
 
     # ---------------------------------------------------------------- render
 
@@ -669,9 +690,10 @@ class Bot:
                 who = " ".join(x for x in (user.get("first_name"), user.get("last_name")) if x) \
                     or str(user.get("id"))
                 text = f"[TG 成員・{who}] {text}"
-                a.send(text, "tg", files=files, requester={"id": user.get("id"), "name": who})
+                a.send(text, "tg", files=files, requester={"id": user.get("id"), "name": who},
+                       tg_message=m.get("message_id"))
                 return
-            a.send(text, "tg", files=files)
+            a.send(text, "tg", files=files, tg_message=m.get("message_id"))
             return
         if text.startswith("/status"):
             rows = [s for s in self.broker.list_sessions() if s["project"] in mine][:20]
@@ -680,6 +702,14 @@ class Bot:
                      for s in rows] or ["沒有進行中的對話"]
             self.call("sendMessage", chat_id=chat["id"],
                       text="\n".join(lines))
+
+
+def quoting(message_id: int | None) -> dict | None:
+    """reply_parameters for a reply to `message_id`; still sent if that
+    message was deleted meanwhile."""
+    if message_id is None:
+        return None
+    return {"message_id": message_id, "allow_sending_without_reply": True}
 
 
 def attachment(m: dict) -> tuple[str, str, int] | None:
