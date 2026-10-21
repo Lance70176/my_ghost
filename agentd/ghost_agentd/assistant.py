@@ -135,6 +135,9 @@ class Assistant:
         # /context probe as a reply and hides the real one.)
         # _inflight: None = idle, True = an internal message (the /context
         # probe, compaction steps), False = a real one.
+        # The internal message in flight is the /context probe: only then can
+        # a result that isn't the probe's be a turn of its own (see _event).
+        self._probing = False
         self._outbox: list[tuple[object, bool, dict | None, bool, int | None]] = []
         self.requester: dict | None = None  # the member this turn works for; None = owner
         # This turn was started by the owner themselves (not a member, the
@@ -341,6 +344,7 @@ class Assistant:
             return
         content, internal, requester, owner, tg_message = self._outbox.pop(0)
         self._inflight = internal
+        self._probing = internal and content == "/context"
         if not internal:
             self.requester = requester
             self.turn_tg_message = tg_message
@@ -460,10 +464,13 @@ class Assistant:
                     internal, spontaneous = True, False
                     if self._inflight is True:
                         self._inflight = None
-                elif self._inflight is True and not self.compact_stage:
+                elif self._inflight is True and self._probing and not self.compact_stage:
                     # A turn of its own (a background task finished) ended
                     # while the probe still waits: a real reply, and the
-                    # probe already pending measures after it.
+                    # probe already pending measures after it. (Any other
+                    # internal message — a member note, the restart note —
+                    # ends with this result: treating it as a turn of its
+                    # own left _inflight set and every later message queued.)
                     internal, spontaneous = False, True
                 else:
                     internal, spontaneous = bool(self._inflight), False

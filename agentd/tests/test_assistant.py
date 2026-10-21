@@ -85,6 +85,19 @@ def test_replies_remember_the_tg_message_they_answer(manager):
     assert list(replies.values()) == [42]
 
 
+def test_an_internal_note_does_not_block_the_next_message(manager):
+    """A member note (internal, not the probe) ends with an ordinary result:
+    it must free the assistant, or every message after it waits forever."""
+    a = manager.get("fq")
+    a.send("你好", "myghost")
+    wait_for(lambda: a.context_pct == 10 and a._inflight is None and not a._outbox)
+    a.send("新增了 TG 成員（只要記住，不用回覆。）", "system", show=False, internal=True)
+    wait_for(lambda: a._inflight is None and not a._outbox)
+    a.send("再來", "myghost")
+    wait_for(lambda: ("assistant", "回覆：再來") in roles(a))
+    wait_for(lambda: not a.busy and not a._outbox and a._inflight is None)
+
+
 def test_compaction_when_context_is_high(manager, monkeypatch):
     monkeypatch.setenv("FAKE_CTX", "85")
     a = manager.get("fq")
