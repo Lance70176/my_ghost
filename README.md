@@ -201,6 +201,13 @@ Requires [Zig](https://ziglang.org/) 0.15.2 and Xcode (with the Metal Toolchain:
 > `xcrun` wrapper on `PATH` that answers `--sdk macosx --show-sdk-path` with that copy.
 > 在 macOS 27／新版 CLT 上，SDK 的 `.tbd` 只列 `arm64e-macos`，Zig 0.15.2 會連結失敗；
 > 請複製一份 SDK、在 `.tbd` 的 targets 補上 `arm64-macos`，再用放在 `PATH` 前面的 `xcrun` 包裝回傳這份 SDK 路徑。
+>
+> Xcode 27's `libtool` also drops archive members that aren't 8-byte aligned (`64-bit mach-o not 8-byte aligned`),
+> which Zig writes — the xcframework then builds but lacks the whole C API (`_ghostty_app_new` undefined when
+> linking the app). Put a `libtool` wrapper first on `PATH` that unpacks each input `.a` into object files before
+> calling `/usr/bin/libtool`, and check the result with `nm -arch x86_64 … | grep _ghostty_init`.
+> Xcode 27 的 `libtool` 會丟掉沒有 8-byte 對齊的 archive 成員（Zig 產的就是），xcframework 看似編好卻少了整組 C API；
+> 請用 `libtool` 包裝先把 `.a` 拆成 `.o` 再合併，並用 `nm` 確認兩個架構都有 `_ghostty_init`。
 
 ```bash
 # Debug build
