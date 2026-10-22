@@ -352,8 +352,12 @@ class Assistant:
         self.turn_person = bool(not internal and (owner or requester))
         if self.turn_person:
             self.turn_seq += 1
-        # Upkeep turns (context, compacting, notes) never see other projects.
-        self._set_scope(owner and not internal)
+        # Upkeep turns (notes, saving memory) never see other projects.
+        # /context and /compact run no tools: they keep the last turn's
+        # scope, so work the owner started in the background (an Agent
+        # still running after his turn ended) isn't cut down to the project.
+        if not (internal and content in ("/context", "/compact")):
+            self._set_scope(owner and not internal)
         if not self._write({"type": "user", "message": {"role": "user", "content": content}}):
             self._inflight = None
 
@@ -431,22 +435,26 @@ class Assistant:
 
     def _event(self, ev: dict) -> None:
         t, sub = ev.get("type"), ev.get("subtype", "")
+        # A subagent's own words (its report back to the assistant, often in
+        # English) carry the Agent call's id: they aren't the assistant's reply.
+        sub_agent = bool(ev.get("parent_tool_use_id"))
         if t == "stream_event":
             delta = (ev.get("event") or {}).get("delta") or {}
-            if delta.get("type") == "text_delta" and not self._hiding:
+            if delta.get("type") == "text_delta" and not self._hiding and not sub_agent:
                 with self.lock:
                     self.partial += delta.get("text", "")
                 self._touch()
             return
         if t == "assistant":
             msg = ev.get("message") or {}
-            if "context_usage" in ev:
+            if "context_usage" in ev and not sub_agent:
                 self.context_pct = (ev["context_usage"] or {}).get("percentage")
             if self._hiding or is_probe_output(msg):
                 return
             for block in msg.get("content") or []:
                 if block.get("type") == "text" and block.get("text", "").strip():
-                    self.add("assistant", block["text"], tg_reply_to=self.turn_tg_message)
+                    if not sub_agent:
+                        self.add("assistant", block["text"], tg_reply_to=self.turn_tg_message)
                 elif block.get("type") == "tool_use":
                     self.add("tool", _tool_line(block), tool=block.get("name", ""))
             with self.lock:

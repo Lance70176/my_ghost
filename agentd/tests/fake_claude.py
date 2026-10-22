@@ -73,6 +73,12 @@ for line in sys.stdin:
     else:
         if text.endswith("BG"):
             pending_bg = True
+        if text.endswith("SUB"):  # a subagent's own report, inside the turn
+            out({"type": "stream_event", "parent_tool_use_id": "toolu_sub",
+                 "event": {"delta": {"type": "text_delta", "text": "I couldn't"}}})
+            out({"type": "assistant", "parent_tool_use_id": "toolu_sub", "context_usage": {"percentage": 99},
+                 "message": {"content": [{"type": "tool_use", "name": "Bash", "input": {"command": "ls"}},
+                                         {"type": "text", "text": "I couldn't run the review."}]}})
         reply = "回覆：" + text
         out({"type": "stream_event", "event": {"delta": {"type": "text_delta", "text": reply[:3]}}})
         out({"type": "assistant", "message": {"content": [

@@ -187,3 +187,29 @@ def test_one_message_at_a_time(manager):
     wait_for(lambda: ("assistant", "回覆：第二則") in roles(a), timeout=12)
     wait_for(lambda: not a.busy and not a._outbox and a._inflight is None)
     assert all("Context" not in t for _, t in roles(a))
+
+
+def test_a_subagents_report_is_not_the_reply(manager):
+    a = manager.get("fq")
+    a.send("請檢查 SUB", "myghost")
+    wait_for(lambda: any(r == "assistant" and "請檢查 SUB" in t for r, t in roles(a)))
+    wait_for(lambda: not a.busy and a._inflight is None)
+    texts = [t for r, t in roles(a) if r == "assistant"]
+    assert not any("couldn't" in t for t in texts) and "couldn't" not in a.partial
+    assert any(r == "tool" and "ls" in t for r, t in roles(a))  # its tool calls still show
+    assert a.context_pct != 99
+
+
+def test_the_probe_keeps_the_owners_scope(manager):
+    a = manager.get("fq")
+
+    def scope():
+        return json.loads((a.dir / "scope.json").read_text())["mode"]
+    a.send("派背景工作", "tg", owner=True)
+    wait_for(lambda: any(r == "assistant" and "派背景工作" in t for r, t in roles(a)))
+    wait_for(lambda: not a.busy and a._inflight is None)
+    time.sleep(0.2)  # the /context probe after the turn has gone through
+    assert scope() == "owner"  # a background Agent he started may still be working
+    a.send("成員的話", "tg", owner=False, requester={"id": 7, "name": "Elsa"})
+    wait_for(lambda: any(r == "assistant" and "成員的話" in t for r, t in roles(a)))
+    assert scope() == "project"
