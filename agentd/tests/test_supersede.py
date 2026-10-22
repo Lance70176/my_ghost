@@ -66,3 +66,30 @@ def test_marked_in_the_assistants_chat(broker, manager):
     item = next(i for i in a.items if i.choice_id == old.id)
     assert item.chosen == f"已改由新決策卡 {new_tag} 處理"
     time.sleep(0.05)
+
+
+def test_the_same_reply_hung_on_another_message_takes_over(broker, manager):
+    from test_account import msg, watcher
+    w = watcher(broker, manager)
+    t = tools.Tools(broker, manager, lambda name: None, {"fq": w})
+    for i, text in ((9, "這是預發布嗎"), (10, "[圖片]"), (11, "另一件事")):
+        w.on_message(msg(msg_id=i, text=text, mentioned=True))
+    w.on_message(msg(chat_id=-200, chat="別群", msg_id=12, text="這是預發布嗎", mentioned=True))
+    first, shot, other, elsewhere = list(w.inbox)
+    t.call("fq", "draft_reply", {"ref": first, "text": "收到，FPM 也是 Off"})
+    old = next(x for x in broker.pending.values() if x.reply)
+    t.call("fq", "draft_reply", {"ref": elsewhere, "text": "收到，FPM 也是 Off"})  # another chat
+    keep = t.call("fq", "draft_reply", {"ref": other, "text": "另一段回覆"})
+    kept = next(x for x in broker.pending.values() if x.reply and x.reply["text"] == "另一段回覆")
+
+    # Same text, same chat, another message: the old card goes without asking.
+    out = t.call("fq", "draft_reply", {"ref": shot, "text": "收到，FPM  也是 Off"})
+    assert f"已撤掉舊卡：{old.tag}" in out and not old.open and old.superseded_by
+    assert kept.open and "撤" not in keep
+    assert sum(1 for x in broker.pending.values() if x.open and x.reply) == 3
+
+    # A rewrite on another message closes the old one when it says so.
+    out = t.call("fq", "draft_reply", {"ref": first, "text": "改寫的一版", "replaces": [kept.tag]})
+    assert not kept.open and f"已撤掉舊卡：{kept.tag}" in out
+    assert broker.decide(old.id, "o0", "tg")[0] is False
+    assert w.transport.sent == []

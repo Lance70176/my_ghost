@@ -598,15 +598,37 @@ class Tools:
         w, behalf, err = self._account(p, args)
         if err:
             return err
-        return w.draft(str(args.get("ref") or ""), str(args.get("text") or ""), str(args.get("note") or ""),
-                       on_behalf=behalf)
+        out = w.draft(str(args.get("ref") or ""), str(args.get("text") or ""), str(args.get("note") or ""),
+                      on_behalf=behalf)
+        return out + self._replace_drafts(p, args, out, r"回覆卡（id=([0-9a-f]+)")
 
     def t_draft_dm(self, p, args) -> str:
         w, behalf, err = self._account(p, args)
         if err:
             return err
-        return w.draft_dm(str(args.get("to") or ""), str(args.get("text") or ""), str(args.get("note") or ""),
-                          on_behalf=behalf)
+        out = w.draft_dm(str(args.get("to") or ""), str(args.get("text") or ""), str(args.get("note") or ""),
+                         on_behalf=behalf)
+        return out + self._replace_drafts(p, args, out, r"私訊卡（id=([0-9a-f]+)")
+
+    def _replace_drafts(self, p, args, out: str, pattern: str) -> str:
+        """A new reply card takes over the ones in args["replaces"], and on its
+        own over any open card with the same text to the same chat: re-hanging
+        the same reply on another message left the old card pressable."""
+        m = re.search(pattern, out)
+        new = self.broker.get(m.group(1)) if m else None
+        if new is None:
+            return ""
+        old = args.get("replaces") or []
+        if isinstance(old, str):
+            old = [x for x in re.split(r"[,\s]+", old) if x]
+        r = new.reply or {}
+        same = " ".join(str(r.get("text") or "").split())
+        with self.broker.lock:
+            dup = [x.id for x in self.broker.pending.values()
+                   if x.id != new.id and x.open and x.project == new.project and x.reply
+                   and x.reply.get("chat_id") == r.get("chat_id")
+                   and " ".join(str(x.reply.get("text") or "").split()) == same]
+        return self._replace(p, {"replaces": list(old) + dup}, new.id)
 
     def t_send_reply(self, p, args) -> str:
         w, behalf, err = self._account(p, args)

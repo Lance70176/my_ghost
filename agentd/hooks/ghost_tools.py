@@ -66,15 +66,21 @@ TOOLS = [
                     "沒有直接送出的版本。to 填 @username、user id，或最近私訊過的人的名字。對方回覆後照現有私訊規則處理。",
      "inputSchema": {"type": "object", "properties": {"account_project": {"type": "string", "description": "用另一個專案的工作帳號（填專案名稱）。只限負責人本人親自交辦的那一輪，其他輪會被拒絕；沒填＝本專案"}, 
          "to": {"type": "string", "description": "@username、user id，或最近私訊過的人"},
-         "text": {"type": "string"}, "note": {"type": "string", "description": "給負責人看的說明（可省略）"}},
+         "text": {"type": "string"}, "note": {"type": "string", "description": "給負責人看的說明（可省略）"},
+         "replaces": {"type": "array", "items": {"type": "string"},
+                      "description": "這張私訊卡取代的舊卡 id 或編號。同一人內容完全相同的舊卡會自動撤，不用列"}},
          "required": ["to", "text"]}},
     {"name": "draft_reply",
      "description": "替工作帳號收到的一則訊息（用它的 ref）草擬回覆，做成回覆卡給負責人決定。"
-                    "只有他按「送出」才會用工作帳號發到那則訊息所在的對話；同一則再呼叫會取代舊卡。",
+                    "只有他按「送出」才會用工作帳號發到那則訊息所在的對話；同一則再呼叫會取代舊卡，"
+                    "改掛到別則訊息（或改寫另一版）時用 replaces 撤掉舊卡，不要留兩張讓他擇一。",
      "inputSchema": {"type": "object", "properties": {"account_project": {"type": "string", "description": "用另一個專案的工作帳號（填專案名稱）。只限負責人本人親自交辦的那一輪，其他輪會被拒絕；沒填＝本專案"}, 
          "ref": {"type": "string", "description": "訊息的 ref（轉給你的訊息裡有）"},
          "text": {"type": "string", "description": "要送出的回覆全文"},
-         "note": {"type": "string", "description": "給負責人的一句說明（為什麼這樣回，可省略）"}},
+         "note": {"type": "string", "description": "給負責人的一句說明（為什麼這樣回，可省略）"},
+         "replaces": {"type": "array", "items": {"type": "string"},
+                      "description": "這張回覆卡取代的舊卡 id 或編號（例如同一段回覆改掛到另一則訊息）。"
+                                     "同一個對話裡內容完全相同的舊回覆卡會自動撤，不用列"}},
          "required": ["ref", "text"]}},
     {"name": "send_reply",
      "description": "不做回覆卡，直接用工作帳號回覆一則訊息（用它的 ref；只會回到那則訊息所在的對話）。"
