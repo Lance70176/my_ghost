@@ -1,7 +1,8 @@
 #!/bin/bash
 # Install ghost-agentd for the current user:
 #   - copies the daemon to ~/.myghost/agentd (outside the git checkout, like web/)
-#   - creates its venv, a config template and the two resident projects (fq, lts)
+#   - creates its venv and a config template (assistants are added from
+#     MyGhost's ✦ sidebar, "+ New assistant")
 #   - registers a launchd agent (com.myghost.agentd) that keeps it running
 #   - adds the hooks to ~/.claude/settings.json (every Claude Code session)
 #
@@ -61,7 +62,7 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   exit 0
 fi
 
-mkdir -p "$DEST" "$HOME_DIR/projects/fq" "$HOME_DIR/projects/lts" "$HOME/Library/LaunchAgents"
+mkdir -p "$DEST" "$HOME_DIR/projects" "$HOME/Library/LaunchAgents"
 rsync -a --delete --exclude .venv --exclude __pycache__ --exclude .pytest_cache \
   --exclude tests --exclude uv.lock "$SRC/" "$DEST/"
 (cd "$DEST" && uv sync -q --no-dev)
@@ -73,7 +74,7 @@ if [[ ! -f "$HOME_DIR/config.yaml" ]]; then
 #   launchctl kickstart -k gui/$(id -u)/com.myghost.agentd
 telegram:
   # Your personal TG account(s): the only ones any assistant bot obeys.
-  # Send /chatid to a bot to see your user_id.
+  # Ask @userinfobot on Telegram for your user id.
   commander_user_ids: []
   # Optional fallback bot for sessions outside every project (NOT ccgram's).
   token: ""
@@ -85,52 +86,6 @@ digest_l0: true
 notify_idle: false
 YAML
   chmod 600 "$HOME_DIR/config.yaml"
-fi
-
-for NAME in fq lts; do
-  [[ -f "$HOME_DIR/projects/$NAME/project.yaml" ]] && continue
-  cat > "$HOME_DIR/projects/$NAME/project.yaml" <<YAML
-name: $NAME
-paths:
-  - $HOME/projects/$NAME  # every repo below this folder belongs to $NAME
-resident: true            # assistant kept running (P2); others wake on events
-telegram:
-  token: ""               # this project's own assistant bot (@BotFather)
-  chat_id:                # this project's group: add the bot, send /chatid
-policy:
-  # Globs on the whole command. allow = L2 -> L1, deny = always ask,
-  # l0 / l1 = extra silent / notify-after rules, l3 = regex, double confirm.
-  allow: []
-  deny: []
-  l0: []
-  l1:
-    - "walle 發 *-test*"
-  l3:
-    - 'bc-pay.*\b(INSERT|UPDATE|DELETE)\b'
-YAML
-  chmod 600 "$HOME_DIR/projects/$NAME/project.yaml"
-done
-
-# Requirement sources are read from P3 on; written now so the decisions made
-# in the plan are on file.
-if [[ ! -f "$HOME_DIR/projects/lts/sources.yaml" ]]; then
-  cat > "$HOME_DIR/projects/lts/sources.yaml" <<'YAML'
-- type: clickup
-  name: "LTS 後台需求"
-  list: ["LSC 後台", "LSA 後台"]
-  filter: { status: ["待開發", "開發中", "待補資料"], assignee: me }
-  schedule: "weekday 09:00,14:00"
-  on_new: plan-then-ask        # new ticket: plan HTML first, you press 開工
-  on_done: writeback           # the assistant updates the ticket itself (L1, tells you after)
-  done_status: "已驗收"
-  match_workers: "【LS[AC]】|#\\d+"
-- type: gitlab
-  name: "LTS MR"
-  projects: [base, platform, scheduler, admin]
-  watch: [mr_review_requested, pipeline_failed]
-  schedule: every 30m
-  on_new: notify
-YAML
 fi
 
 cat > "$PLIST" <<PLIST

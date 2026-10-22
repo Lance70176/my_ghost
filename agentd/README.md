@@ -1,16 +1,26 @@
 # ghost-agentd
 
-The always-on, no-LLM service behind MyGhost's project assistants. Phase 1
-(this directory today) is the **permission relay**: every Claude Code session
-on the Mac sends its permission prompts here, the rules grade them L0–L3, and
-the ones that need a person become decision cards on Telegram, in MyGhost
-(bottom-right) and on the phone page — answer on any one and the others mark
-the card handled.
+The always-on service behind MyGhost's project assistants. It does three
+things:
 
-MyGhost 專案助手背後的常駐服務（不呼叫 LLM）。目前完成的是 **P1 權限中繼**：
-這台 Mac 上所有 Claude Code 對話的授權請求都送到這裡，先用規則分成 L0–L3，
-需要人決定的就變成決策卡，同時出現在 Telegram、MyGhost 右下角和手機網頁；
-任一邊按下後，其他地方的卡片會同步變成「已處理」。
+1. **Permission relay** — every Claude Code session on the Mac sends its
+   permission prompts here; rules grade them L0–L3 and the ones that need a
+   person become decision cards on Telegram, in MyGhost (bottom-right) and on
+   the phone page. Answer on any one and the others mark the card handled.
+2. **Project assistants** — one long-lived Claude per project that chats with
+   you in its Telegram group and in MyGhost, keeps notes, and asks you in
+   cards before anything is done: starting work, replying from a work account,
+   querying a production database.
+3. **Sources** — work Telegram accounts, ClickUp lists and schedules that wake
+   the assistant with what changed.
+
+Setting it up step by step: see the main [README](../README.md#ai-project-assistants--ai-專案助手).
+
+MyGhost 專案助手背後的常駐服務，負責三件事：**權限中繼**（Claude Code 的授權請求依規則分 L0–L3，
+需要人決定的變成決策卡，同時出現在 Telegram、MyGhost 右下角和手機網頁，任一邊按下其他地方同步）、
+**專案助手**（每個專案一位常駐 Claude，在 TG 群組與 MyGhost 跟你對話，要動手前一律出卡問你），
+以及**資料來源**（工作 TG 帳號、ClickUp、排程，有變動時叫醒助手）。
+一步步的設定教學在主 [README](../README.md#ai-project-assistants--ai-專案助手)。
 
 ## Levels · 決策分級
 
@@ -45,13 +55,25 @@ its memory (`state.md`) and then sends `/compact`.
   「💬 討論」 on any card switches there and hands the card to the assistant.
 - **Telegram**: the commander's messages in a project group go to that
   project's assistant; its replies (and what you type in MyGhost) go back.
-- **Tools** (`hooks/ghost_tools.py`, MCP over stdio): `ask_decision`,
-  `read_state`, `update_state`, `list_workers`, `read_worker_log`,
-  `share_report`, `tg_send`. Read-only by design in P2: no code changes, no
-  dispatch.
+- **Tools** (`hooks/ghost_tools.py`, MCP over stdio): cards
+  (`ask_decision`, `close_cards`; a new card can `replaces` older ones),
+  memory (`read_state`, `update_state`), the project's conversations
+  (`list_workers`, `read_worker_log`, `message_worker`, `reply_worker`),
+  dispatch (`propose_dispatch`, `list_dispatches`), work accounts
+  (`draft_reply`, `draft_dm`, `send_reply`, `read_tg_chat`, `grant_dm`…),
+  `db_query` (read-only), ClickUp (`clickup_task`, `clickup_done`),
+  `share_report`, `tg_send`. The assistant never edits code itself: work is
+  proposed with `propose_dispatch` and starts as a new Claude Code
+  conversation (in a git worktree) only when you press 開工.
 - **It can't decide for you**: `ask_decision` options may carry an
   `allow`/`deny` action for the card under discussion; only your click applies
-  it (L3 still needs the second confirmation).
+  it (L3 still needs the second confirmation). Cards are numbered per project
+  and day (#1, #2…) and can be referred to by number.
+- **Each assistant stays in its project**: a PreToolUse hook
+  (`hooks/ghost_scope.py`) keeps file and shell access inside the project's
+  folders, except in turns you started yourself (and the background work you
+  started in them). Members added with `/addmember` may talk to it and press
+  the cards from their own requests.
 
 The assistant follows the host: MyGhost keeps one ghost-agentd client per
 host tab. The local Mac's daemon is reached at `127.0.0.1:7788`; a remote
