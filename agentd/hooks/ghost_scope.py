@@ -24,6 +24,9 @@ SYSTEM = ("/usr", "/bin", "/sbin", "/opt/homebrew", "/dev/null", "/dev/stdin", "
           "/dev/stderr", "/dev/tty", "/tmp", "/private/tmp", "/var/folders", "/private/var/folders",
           "/System", "/Applications/Xcode.app", "/Library/Developer")
 FILE_KEYS = ("file_path", "notebook_path", "path")
+# Tools every assistant may run (they live next to this hook).
+TOOLS = tuple(os.path.join(os.path.dirname(os.path.realpath(__file__)), t)
+              for t in ("ghost-browse", "ghost_browse.mjs"))
 
 
 def roots() -> list[str]:
@@ -32,6 +35,8 @@ def roots() -> list[str]:
 
 def inside(path: str, allowed: list[str]) -> bool:
     real = os.path.realpath(path)
+    if real in TOOLS:
+        return True
     for r in allowed + [os.path.realpath(s) for s in SYSTEM]:
         if real == r or real.startswith(r.rstrip("/") + "/"):
             return True

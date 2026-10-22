@@ -1,0 +1,5 @@
+#!/bin/sh
+# ghost-browse <url> [--wait 秒] [--shot 圖檔.png] [--js 表達式] [--html]
+# Opens a page in a real Chrome window (passes Cloudflare checks that stop
+# curl / WebFetch / headless Chrome) and prints its text. See ghost_browse.mjs.
+exec node "$(dirname "$0")/ghost_browse.mjs" "$@"

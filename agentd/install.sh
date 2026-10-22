@@ -65,7 +65,7 @@ mkdir -p "$DEST" "$HOME_DIR/projects/fq" "$HOME_DIR/projects/lts" "$HOME/Library
 rsync -a --delete --exclude .venv --exclude __pycache__ --exclude .pytest_cache \
   --exclude tests --exclude uv.lock "$SRC/" "$DEST/"
 (cd "$DEST" && uv sync -q --no-dev)
-chmod +x "$HOOK" "$DEST/hooks/ghost-ask"
+chmod +x "$HOOK" "$DEST/hooks/ghost-ask" "$DEST/hooks/ghost-browse"
 
 if [[ ! -f "$HOME_DIR/config.yaml" ]]; then
   cat > "$HOME_DIR/config.yaml" <<'YAML'
