@@ -295,6 +295,7 @@ class Assistant:
         threading.Thread(target=self._read_err, args=(proc,), daemon=True).start()
         log(f"assistant {self.project.name}: started ({'resume' if resume else 'new'} {sid[:8]})")
         with self.lock:
+            self._resume_cut_turn()
             self._pump()  # anything that waited for the restart
         self._touch()
 
@@ -362,8 +363,33 @@ class Assistant:
         # still running after his turn ended) isn't cut down to the project.
         if not (internal and content in ("/context", "/compact")):
             self._set_scope(owner and not internal)
+        if not internal:
+            prev = self.meta.get("open_turn") or {}
+            self.meta["open_turn"] = {"owner": bool(owner), "requester": requester, "tg": tg_message,
+                                      "tries": prev.get("tries", 0) if prev.get("tg") == tg_message else 0}
+            self._save_meta()
         if not self._write({"type": "user", "message": {"role": "user", "content": content}}):
             self._inflight = None
+
+    def _resume_cut_turn(self) -> None:
+        """A turn for a person that the last process never finished (the
+        daemon was redeployed or the assistant died mid-reply) is picked up
+        again, for the same person and TG message; twice at most (lock held)."""
+        cut = self.meta.get("open_turn")
+        if not cut:
+            return
+        tries = cut.get("tries", 0) + 1
+        if tries > 2:
+            self.meta.pop("open_turn", None)
+            self._save_meta()
+            log(f"assistant {self.project.name}: gave up on a turn cut short twice")
+            return
+        cut["tries"] = tries
+        self._save_meta()
+        log(f"assistant {self.project.name}: resuming a turn cut short")
+        note = ("[系統] 助手剛重新啟動，打斷了你上一輪回覆（還沒回完）。請接著把上一則訊息處理完，"
+                "照常回覆；已經做完的步驟不用重做。")
+        self._outbox.insert(0, (note, False, cut.get("requester"), bool(cut.get("owner")), cut.get("tg")))
 
     def _set_scope(self, owner: bool) -> None:
         """What ghost_scope.py lets this turn touch: the owner's own requests
@@ -489,6 +515,8 @@ class Assistant:
                     self._inflight = None
                     if not internal:  # what comes later answers no TG message
                         self.turn_tg_message = None
+                        if self.meta.pop("open_turn", None) is not None:
+                            self._save_meta()
                 self.partial = ""
                 self.last_activity = time.time()
             if ev.get("is_error") and not internal:

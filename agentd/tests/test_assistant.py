@@ -213,3 +213,25 @@ def test_the_probe_keeps_the_owners_scope(manager):
     a.send("成員的話", "tg", owner=False, requester={"id": 7, "name": "Elsa"})
     wait_for(lambda: any(r == "assistant" and "成員的話" in t for r, t in roles(a)))
     assert scope() == "project"
+
+
+def test_a_turn_cut_short_is_picked_up_after_a_restart(manager):
+    """Redeploying the daemon mid-reply used to drop the owner's question;
+    the restarted assistant now finishes it, answering the same TG message."""
+    a = manager.get("fq")
+    a.send("看第7步SLOW", "tg", tg_message=42)
+    wait_for(lambda: a.busy)
+    assert a.meta["open_turn"]["tg"] == 42 and a.meta["open_turn"]["owner"]
+    a.proc.kill()  # the daemon going away, not a finished turn
+    a.proc.wait()
+    a.stop()
+    a.start()
+    wait_for(lambda: any(r == "assistant" and "打斷了你上一輪" in t for r, t in roles(a)))
+    reply = next(i for i in a.items if i.role == "assistant" and "打斷了你上一輪" in i.text)
+    assert reply.tg_reply_to == 42
+    wait_for(lambda: "open_turn" not in a.meta)
+    # A clean restart afterwards has nothing to pick up.
+    a.stop()
+    a.start()
+    time.sleep(0.5)
+    assert sum("打斷了你上一輪" in t for r, t in roles(a) if r == "assistant") == 1
