@@ -662,6 +662,17 @@ class Tools:
         self._used_by(w, behalf, "list_dm_grants")
         return w.list_grants(self._owner_turn(p))
 
+    def t_watch_group(self, p, args) -> str:
+        w, behalf, err = self._account(p, args)
+        if err:
+            return err
+        if not self._owner_turn(p):
+            return "監看規則只有負責人本人說話的那一輪能改（成員、工作帳號訊息、排程觸發的輪次不行）。"
+        from .watchcmd import set_group
+        self._used_by(w, behalf, "watch_group", str(args.get("chat") or ""))
+        return set_group(w, str(args.get("chat") or ""), args.get("keywords") or args.get("trigger") or "all",
+                         args.get("window") or "always", args.get("action") == "remove")
+
     def t_flag_sensitive(self, p, args) -> str:
         w, behalf, err = self._account(p, args)
         if err:

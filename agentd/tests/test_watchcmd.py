@@ -72,6 +72,27 @@ def test_watch_flow_writes_watch_yaml(broker, manager):
     assert "沒有設定工作帳號" in c.command("lts", "/watches")[0]
 
 
+def test_the_assistant_watches_a_group_for_the_owner(broker, manager):
+    from ghost_agentd.tools import Tools
+    p, w, _ = setup(broker, manager)
+    t = Tools(broker, manager, lambda _: None, {"fq": w})
+    a = manager.get("fq")
+    a.turn_owner = False  # a member or the work account started this turn
+    assert "只有負責人本人" in t.call("fq", "watch_group", {"chat": "研發"})
+    assert not Watch.load(p.dir / "watch.yaml").groups
+    a.turn_owner = True
+    assert "開始監看「FQ 研發群」：全部訊息，一直" in t.call("fq", "watch_group", {"chat": "研發"})
+    # By chat id, even one the account's dialog list didn't return.
+    assert "開始監看「-5267128764」" in t.call("fq", "watch_group", {"chat": "-5267128764", "window": "office"})
+    assert "不只一個" in t.call("fq", "watch_group", {"chat": "群"})
+    groups = Watch.load(p.dir / "watch.yaml").groups
+    assert [g.group for g in groups] == ["-1002", "-5267128764"] and groups[0].trigger == "all"
+    raw = (p.dir / "watch.yaml").read_text()
+    assert "auto_reply" not in raw and "post_to" not in raw
+    assert "已停止監看「FQ 研發群」" in t.call("fq", "watch_group", {"chat": "-1002", "action": "remove"})
+    assert [g.group for g in Watch.load(p.dir / "watch.yaml").groups] == ["-5267128764"]
+
+
 def test_pause_holds_messages(broker, manager):
     p, w, c = setup(broker, manager)
     assert "先不轉給助手" in c.command("fq", "/pause 2h")[0]

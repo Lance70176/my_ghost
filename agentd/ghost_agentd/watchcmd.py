@@ -67,6 +67,65 @@ def describe_trigger(t) -> str:
     return str(t)
 
 
+def window_spec(choice) -> str:
+    """always | office | N (days) → a watch.yaml window."""
+    choice = str(choice or "always").strip()
+    if choice == "office":
+        return OFFICE
+    if choice.isdigit():
+        return "until " + (datetime.now() + timedelta(days=int(choice))).strftime("%Y-%m-%d")
+    return "always"
+
+
+def set_group(w: AccountWatcher, chat: str, trigger="all", window="always", remove: bool = False) -> str:
+    """The assistant's watch_group: what /watch and /unwatch do, by name or
+    chat id. Only watch.yaml groups — never auto_reply or post_to."""
+    chat = str(chat or "").strip()
+    if not chat:
+        return "要指定群組名稱或 chat id。"
+    raw = load_raw(w)
+    if remove:
+        gone = [g for g in raw["groups"] if chat in (str(g.get("group")), str(g.get("title") or ""))]
+        if not gone:
+            return f"監看規則裡沒有「{chat}」。"
+        raw["groups"] = [g for g in raw["groups"] if g not in gone]
+        save_raw(w, raw)
+        return f"已停止監看「{gone[0].get('title') or gone[0].get('group')}」。"
+    by_id = bool(re.fullmatch(r"-?\d+", chat))
+    found: list = []
+    transport = w.transport
+    if transport is not None and hasattr(transport, "groups"):
+        try:
+            found = transport.groups("" if by_id else chat, limit=300 if by_id else 8)
+        except Exception as e:
+            if not by_id:  # an id can be watched before the account is back
+                return f"讀不到工作帳號的群組：{e}"
+    elif not by_id:
+        return "工作帳號目前沒有連線，等它連上再試，或直接給 chat id。"
+    if by_id:
+        title = next((t for gid, t in found if str(gid) == chat), "")
+        gid = chat
+    else:
+        exact = [g for g in found if g[1] == chat]
+        found = exact or found
+        if not found:
+            return f"{w.me or '工作帳號'} 的群組裡找不到「{chat}」。"
+        if len(found) > 1:
+            return "符合的群組不只一個，請用 chat id 指定：\n" + "\n".join(f"- {t}（{gid}）" for gid, t in found)
+        gid, title = str(found[0][0]), found[0][1]
+    if isinstance(trigger, list):
+        trigger = {"keywords": [str(k) for k in trigger if str(k).strip()]} if trigger else "all"
+    elif trigger not in ("all", "mention"):
+        trigger = "all"
+    spec = window_spec(window)
+    rule = {"group": gid, "title": title} if title else {"group": gid}
+    rule.update(trigger=trigger, window=spec)
+    raw["groups"] = [g for g in raw["groups"] if str(g.get("group")) != gid] + [rule]
+    save_raw(w, raw)
+    return (f"開始監看「{title or gid}」：{describe_trigger(trigger)}，{describe_window(spec)}。"
+            "watch.yaml 已更新，馬上生效。")
+
+
 def parse_duration(text: str) -> int:
     m = re.match(r"^\s*(\d+)\s*(m|min|h|d)?\s*$", text or "")
     if not m:
@@ -188,13 +247,7 @@ class WatchCommands:
             pick["trigger"] = parts[3] if parts[3] in ("all", "mention") else "all"
             return self._ask_window(token, pick["title"])
         if parts[1] == "w":
-            choice = parts[3]
-            if choice == "office":
-                window = OFFICE
-            elif choice.isdigit():
-                window = "until " + (datetime.now() + timedelta(days=int(choice))).strftime("%Y-%m-%d")
-            else:
-                window = "always"
+            window = window_spec(parts[3])
             w = self.accounts[pick["project"]]
             raw = load_raw(w)
             raw["groups"] = [g for g in raw["groups"] if str(g.get("group")) != str(pick["gid"])]
