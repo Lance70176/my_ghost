@@ -1055,46 +1055,89 @@ private struct AgentRightColumn: View {
         }
     }
 
+    private enum Tab { case pending, history }
+
+    /// Pending and history share the column; one is shown at a time.
+    @State private var tab: Tab = .pending
+
     private var decisions: some View {
-        VSplitView {
-            VStack(alignment: .leading, spacing: 6) {
-                SectionTitle(title: L("Pending decisions"), count: pending.count)
-                if pending.isEmpty {
-                    Text(L("Nothing waiting for you."))
-                        .agentFont(.callout)
-                        .foregroundColor(.secondary)
-                        .padding(.vertical, 6)
-                    Spacer(minLength: 0)
-                } else {
-                    ScrollViewReader { proxy in
-                        ScrollView {
-                            VStack(spacing: 8) {
-                                ForEach(pending) { p in
-                                    AgentDecisionCard(p: p, width: nil)
-                                        .id(p.id)
-                                        .background(
-                                            RoundedRectangle(cornerRadius: 12)
-                                                .fill(Color.accentColor.opacity(highlighted == p.id ? 0.22 : 0))
-                                                .padding(-4)
-                                                .animation(.easeOut(duration: 0.4), value: highlighted)
-                                        )
-                                }
+        VStack(spacing: 0) {
+            HStack(spacing: 4) {
+                tabButton(.pending, title: L("Pending decisions"), count: pending.count)
+                tabButton(.history, title: L("Decision history"), count: nil)
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
+            Divider()
+
+            switch tab {
+            case .pending: pendingList
+            case .history: AgentHistoryList(project: project, showsTitle: false)
+            }
+        }
+        // A card opened from the bottom-right stack lives on the pending tab.
+        .onAppear { if uiState.assistantFocusDecision != nil { tab = .pending } }
+        .onChange(of: uiState.assistantFocusDecision) { id in
+            if id != nil { tab = .pending }
+        }
+    }
+
+    private func tabButton(_ t: Tab, title: String, count: Int?) -> some View {
+        let selected = tab == t
+        return Button { tab = t } label: {
+            HStack(spacing: 5) {
+                Text(title)
+                    .agentFont(.headline)
+                    .foregroundColor(selected ? .primary : .secondary)
+                if let count, count > 0 { CountBadge(count: count) }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(selected ? Color.accentColor : Color.clear)
+                    .frame(height: 2)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var pendingList: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if pending.isEmpty {
+                Text(L("Nothing waiting for you."))
+                    .agentFont(.callout)
+                    .foregroundColor(.secondary)
+                    .padding(.vertical, 6)
+                Spacer(minLength: 0)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: 8) {
+                            ForEach(pending) { p in
+                                AgentDecisionCard(p: p, width: nil)
+                                    .id(p.id)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 12)
+                                            .fill(Color.accentColor.opacity(highlighted == p.id ? 0.22 : 0))
+                                            .padding(-4)
+                                            .animation(.easeOut(duration: 0.4), value: highlighted)
+                                    )
                             }
-                            .padding(4)
-                            .padding(.bottom, 2)
                         }
-                        .onAppear { landOnFocus(proxy) }
-                        .onChange(of: uiState.assistantFocusDecision) { _ in landOnFocus(proxy) }
-                        .onChange(of: pending.map(\.id)) { _ in landOnFocus(proxy) }
+                        .padding(4)
+                        .padding(.bottom, 2)
                     }
+                    .onAppear { landOnFocus(proxy) }
+                    .onChange(of: uiState.assistantFocusDecision) { _ in landOnFocus(proxy) }
+                    .onChange(of: pending.map(\.id)) { _ in landOnFocus(proxy) }
                 }
             }
-            .padding(10)
-            .frame(minHeight: 120)
-
-            AgentHistoryList(project: project)
-                .frame(minHeight: 140)
         }
+        .padding(10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
@@ -1336,6 +1379,8 @@ private struct SectionTitle: View {
 /// request came from — or a note that it has been closed.
 private struct AgentHistoryList: View {
     let project: String?
+    /// Off when a tab above already names the list.
+    var showsTitle = true
     @EnvironmentObject private var client: AgentDaemonClient
     @State private var records: [AgentDecisionRecord] = []
     @State private var closed: Set<String> = []
@@ -1352,7 +1397,7 @@ private struct AgentHistoryList: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            SectionTitle(title: L("Decision history"))
+            if showsTitle { SectionTitle(title: L("Decision history")) }
             if historyFailed {
                 Label(records.isEmpty ? L("Couldn't load the decision history.")
                                       : L("Couldn't refresh — showing what was loaded before. Retrying…"),
