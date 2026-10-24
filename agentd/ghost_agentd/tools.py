@@ -761,6 +761,11 @@ class Tools:
         p, err = self._project_arg(p, args, "project")
         return err or self.dispatcher.list_for(p)
 
+    def t_close_worker(self, p, args) -> str:
+        if self.dispatcher is None:
+            return "派工沒有啟用。"
+        return self.dispatcher.close(p, str(args.get("dispatch_id") or ""), owner_turn=self._owner_turn(p))
+
     def t_reply_worker(self, p, args) -> str:
         if self.helpdesk is None:
             return "求助沒有啟用。"

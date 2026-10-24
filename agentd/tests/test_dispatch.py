@@ -213,3 +213,46 @@ def test_trust_keeps_the_rest_of_the_config(tmp_path):
     assert [x.name for x in tmp_path.iterdir()] == ["c.json"]  # no temp file left
     dispatch.trust(tmp_path, tmp_path / "missing.json")  # no config: nothing happens
     assert not (tmp_path / "missing.json").exists()
+
+
+def test_daily_tidy_up_deletes_only_stale_ai_conversations(broker, manager, tmp_path, monkeypatch):
+    """The daily tidy-up offers the assistant its own "FQ AI - …"
+    conversations quiet over 7 days with nothing waiting; only those it was
+    offered can go, and never with unpushed work."""
+    p, root, d, tm = setup(broker, manager, tmp_path, monkeypatch)
+    d.propose(p, "舊工作", "platform", "x", branch="feature/old")
+    card = next(x for x in broker.pending.values() if getattr(x, "dispatch", None))
+    broker.decide(card.id, "o0", "tg")
+    item = next(iter(d.items.values()))
+    wait_for(lambda: item.state == "started")
+    assert d.stale(p) == [] and d.tidy_note(p) == ""  # fresh: not offered
+    assert "沒有刪" in d.close(p, item.id, owner_turn=True)
+
+    item.started -= 8 * 86400
+    d.on_stop(item.tmux, "s-old", "做完了")
+    assert d.stale(p) == []  # it just stopped: activity counts, not the start
+    item.last_active -= 8 * 86400
+    note = d.tidy_note(p)
+    assert f"id={item.id}" in note and "FQ AI - 舊工作" in note and "close_worker" in note
+
+    # A card it's waiting on keeps it.
+    c = broker.create_choice("fq", "要發正式嗎？", ["發", "不發"], session_id="s-old")
+    assert d.stale(p) == [] and "等人按" in d.close(p, item.id)
+    broker.decide(c.id, "o1", "tg")
+    assert d.stale(p) == [item]
+
+    # Only what the tidy-up offered (or the owner asks for in person).
+    d.offered["fq"] = set()
+    assert "每日整理列出" in d.close(p, item.id)
+    d.tidy_note(p)
+    wt = root / ".worktrees" / "platform-old"
+    (wt / "b.txt").write_text("b")
+    subprocess.run(["git", "-C", str(wt), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(wt), "commit", "-qm", "b"], check=True)
+    assert "還沒 push" in d.close(p, item.id) and item.state == "started"
+    subprocess.run(["git", "-C", str(wt), "reset", "-q", "--hard", "develop"], check=True)
+
+    assert "已刪除" in d.close(p, item.id)
+    assert item.state == "closed" and not wt.exists()
+    assert ("kill-session", "-t", item.tmux) in tm.calls
+    assert d.stale(p) == [] and d.list_for(p) == "目前沒有派工中的工作。"

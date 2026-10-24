@@ -59,7 +59,9 @@ its memory (`state.md`) and then sends `/compact`.
   (`ask_decision`, `close_cards`; a new card can `replaces` older ones),
   memory (`read_state`, `update_state`), the project's conversations
   (`list_workers`, `read_worker_log`, `message_worker`, `reply_worker`),
-  dispatch (`propose_dispatch`, `list_dispatches`), work accounts
+  dispatch (`propose_dispatch`, `list_dispatches`, `close_worker` — the
+  daily tidy-up deletes its own "XX AI - …" conversations quiet over 7 days
+  once they are in its memory and not needed again), work accounts
   (`draft_reply`, `draft_dm`, `send_reply`, `read_tg_chat`, `grant_dm`…),
   `db_query` (read-only), ClickUp (`clickup_task`, `clickup_done`),
   `share_report`, `tg_send`. The assistant never edits code itself: work is

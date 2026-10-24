@@ -51,6 +51,11 @@ CLAUDE = os.environ.get("GHOST_CLAUDE_BIN") or next(
 # ones listed in /api/state "dispatched" as tabs (see AgentHub).
 TMUX_PREFIX = "myghost_"
 CLAUDE_CONFIG = Path.home() / ".claude.json"
+# The daily tidy-up offers the assistant its own conversations ("FQ AI - …")
+# quiet this long with nothing waiting; it deletes the ones already in its
+# memory and not needed again (his rule, 2026-10-24).
+STALE_DAYS = 7
+LABEL_RE = re.compile(r"^\S+ AI - ")
 
 
 def slug(text: str, n: int = 40) -> str:
@@ -74,7 +79,7 @@ class Dispatch:
     card: str = ""
     worktree: str = ""
     tmux: str = ""
-    state: str = "proposed"  # proposed | started | dropped | failed
+    state: str = "proposed"  # proposed | started | dropped | failed | closed
     created: float = 0.0
     started: float = 0.0
     error: str = ""
@@ -95,6 +100,7 @@ class Dispatch:
     root: str = ""
     # The project the repo belongs to when it isn't this one ("" = none).
     target_project: str = ""
+    last_active: float = 0.0  # its last stop
 
     @property
     def label(self) -> str:
@@ -114,6 +120,9 @@ class Dispatcher:
         self._load()
         broker.dispatched_to = self.dispatched_to
         broker.worker_of = self.worker_of
+        assistants.dispatcher = self
+        # Per project: the ids the latest daily tidy-up offered for deletion.
+        self.offered: dict[str, set[str]] = {}
 
     def _owning_payload(self, payload: dict) -> Dispatch | None:
         return self.owning(str(payload.get("session_id") or ""), str(payload.get("tmux_session") or ""),
@@ -375,6 +384,121 @@ class Dispatcher:
             if hit:
                 self._save()
 
+    # ------------------------------------------------------ daily tidy-up
+
+    def _exists(self, d: Dispatch) -> bool:
+        if d.mode == "job":
+            from .tools import JOBS
+            return bool(d.job_id) and (JOBS / d.job_id).exists()
+        return bool(d.tmux) and _tmux("has-session", "-t", d.tmux).returncode == 0
+
+    def _last_activity(self, d: Dispatch) -> float:
+        t = max(d.started, d.last_active)
+        with self.broker.lock:
+            for s in self.broker.sessions.values():
+                if (d.session_id and s.session_id == d.session_id) or (d.tmux and s.tmux_session == d.tmux):
+                    t = max(t, s.updated)
+        if d.session_id:
+            from .tools import transcript_age
+            age = transcript_age(d.session_id)
+            if age is not None:
+                t = max(t, time.time() - age)
+        return t
+
+    def _waiting(self, d: Dispatch) -> str:
+        """Why the conversation can't go yet (an open card, still working or
+        waiting for input), or ""."""
+        mine = lambda sid, tm: (d.session_id and sid == d.session_id) or (d.tmux and tm == d.tmux)
+        with self.broker.lock:
+            if any(p.open and mine(p.session_id, p.tmux_session) for p in self.broker.pending.values()):
+                return "還有卡在等人按。"
+            if any(s.status == "waiting" and mine(s.session_id, s.tmux_session)
+                   for s in self.broker.sessions.values()):
+                return "它在等輸入。"
+        if d.mode == "job":
+            from .tools import JOB_STATUS, JOBS
+            try:
+                st = json.loads((JOBS / d.job_id / "state.json").read_text()).get("state")
+            except (OSError, ValueError):
+                st = ""
+            if JOB_STATUS.get(str(st or "")) in ("running", "waiting"):
+                return "背景工作還在跑或在等輸入。"
+        return ""
+
+    def _stale_reason(self, d: Dispatch, project: str) -> str:
+        """"" when the tidy-up may delete `d`, else why not."""
+        if d.project != project or d.state != "started" or not LABEL_RE.match(d.label):
+            return "只能刪你派出、標題是「XX AI - …」的工作對話。"
+        if not self._exists(d):
+            return "這個對話已經不在了。"
+        idle = time.time() - self._last_activity(d)
+        if idle < STALE_DAYS * 86400:
+            return f"才閒置 {idle / 86400:.1f} 天，未滿 {STALE_DAYS} 天。"
+        return self._waiting(d)
+
+    def stale(self, project: Project) -> list[Dispatch]:
+        with self.lock:
+            rows = [d for d in self.items.values() if d.project == project.name and d.state == "started"]
+        return [d for d in sorted(rows, key=lambda d: d.started) if not self._stale_reason(d, project.name)]
+
+    def tidy_note(self, project: Project) -> str:
+        """For the daily restart message: the stale conversations to judge."""
+        rows = self.stale(project)
+        self.offered[project.name] = {d.id for d in rows}
+        if not rows:
+            return ""
+        now = time.time()
+        lines = [f"- id={d.id}｜{d.label}｜閒置 {int((now - self._last_activity(d)) // 86400)} 天"
+                 f"｜{'背景工作 ' + d.job_id if d.mode == 'job' else '分頁'}｜{Path(d.repo).name} {d.branch}"
+                 for d in rows]
+        return (f"\n\n另外，下面是你派出、超過 {STALE_DAYS} 天沒動靜、也沒有卡或輸入在等的工作對話：\n"
+                + "\n".join(lines) + "\n"
+                "逐一判斷（需要就用 read_worker_log 看內容）：\n"
+                "1. 它的結果（做了什麼、分支、MR／上線狀態、留下的待辦）已經寫進記憶；還沒寫的先補進 update_state。\n"
+                "2. 沒有在等任何人回覆，之後也不會再用到（MR 還沒合併、待驗收、還要接著做、他說過要留的都算會用到）。\n"
+                "兩項都確定才用 close_worker 刪掉，拿不準就留著。刪了哪些在記憶記一行。")
+
+    def close(self, project: Project, dispatch_id: str, owner_turn: bool = False) -> str:
+        """Delete one of the assistant's own stale conversations: a job as
+        `claude rm` does, a tab by closing its tmux session and removing its
+        worktree (the branch stays). Work not committed or pushed keeps it."""
+        d = self.items.get(dispatch_id)
+        if d is None:
+            return "找不到這個工作對話（用 list_dispatches 看 id）。"
+        if not owner_turn and d.id not in self.offered.get(project.name, set()):
+            return "只能刪每日整理列出的工作對話，或負責人本人親自要你刪的。"
+        why = self._stale_reason(d, project.name)
+        if why:
+            return f"沒有刪：{why}"
+        if d.mode == "job":
+            from .tools import job_remove
+            err = job_remove({"id": d.job_id, "cwd": d.worktree})
+            if err:
+                return f"沒有刪：{err}"
+        else:
+            wt = Path(d.worktree)
+            if wt.exists():
+                if git(wt, "status", "--porcelain").stdout.strip():
+                    return "沒有刪：worktree 裡還有沒 commit 的改動。"
+                r = git(wt, "rev-list", "--count", "HEAD", "--not", "--remotes", d.base)
+                if r.returncode != 0 or r.stdout.strip() != "0":
+                    return f"沒有刪：分支 {d.branch} 有還沒 push 的 commit。"
+            _tmux("kill-session", "-t", d.tmux)
+            if wt.exists():
+                r = git(Path(d.repo), "worktree", "remove", str(wt))
+                if r.returncode != 0:
+                    log(f"dispatch {d.id}: worktree remove: {r.stderr.strip()[:200]}")
+        with self.lock:
+            d.state = "closed"
+            self.offered.get(project.name, set()).discard(d.id)
+            self._save()
+        with open(project.dir / "events.jsonl", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"ts": time.time(), "type": "dispatch_closed", "id": d.id, "title": d.title},
+                                ensure_ascii=False) + "\n")
+        self.assistants.get(project.name).add("notice", f"🧹 已刪除閒置的工作對話「{d.label}」", source="system")
+        self.broker.bump()
+        return f"已刪除「{d.label}」（分支 {d.branch} 保留）。"
+
     # ------------------------------------------------------ worker events
 
     def owning(self, session_id: str = "", tmux: str = "", job: str = "", cwd: str = "") -> Dispatch | None:
@@ -395,6 +519,8 @@ class Dispatcher:
         if d is None:
             return
         d.stops += 1
+        d.last_active = time.time()
+        d.session_id = d.session_id or session_id
         self._save()
         msg = (f"你派出的工作對話「{d.title}」（id={d.id}，{Path(d.repo).name} / {d.branch}"
                f"{'，背景工作 ' + d.job_id if d.job_id else ''}）停下來了，"

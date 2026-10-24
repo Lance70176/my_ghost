@@ -157,6 +157,11 @@ TOOLS = [
          "dispatch_id": {"type": "string"}, "text": {"type": "string"}}, "required": ["dispatch_id", "text"]}},
     {"name": "list_dispatches", "description": "列出這個專案派工中的工作（id、標題、狀態、分支）。",
      "inputSchema": {"type": "object", "properties": {"project": {"type": "string", "description": "看／回覆另一個專案的（填專案名稱）。只限負責人本人親自交辦的那一輪，其他輪會被拒絕；沒填＝本專案"}, }}},
+    {"name": "close_worker",
+     "description": "刪掉你派出、標題「XX AI - …」、超過 7 天沒動靜的工作對話（背景工作或分頁，worktree 一起清，分支保留）。"
+                    "只能刪每日整理列出的（或負責人本人親自要你刪的），而且要確定結果已寫進記憶、沒在等輸入、之後用不到。"
+                    "有沒 commit 或沒 push 的工作會被拒絕。",
+     "inputSchema": {"type": "object", "properties": {"dispatch_id": {"type": "string"}}, "required": ["dispatch_id"]}},
     {"name": "db_query",
      "description": "唯讀查詢這個專案設定好的資料庫（project.yaml 的 databases，有哪些見系統提示）。"
                     "一次一條 SELECT／SHOW／DESCRIBE／EXPLAIN／WITH，daemon 代為連線，你看不到帳密，只拿到結果"

@@ -577,7 +577,9 @@ class Assistant:
         if lt.tm_hour == DAILY_RESTART_HOUR and now - last > 3 * 3600:
             log(f"assistant {self.project.name}: daily restart")
             self.compact_stage = ""
-            self.send("每日重開前：請用 update_state 把目前的記憶寫完整，完成後只回覆「已整理」。",
+            d = getattr(self.m, "dispatcher", None)
+            tidy = d.tidy_note(self.project) if d is not None else ""
+            self.send("每日重開前：請用 update_state 把目前的記憶寫完整。" + tidy + "\n全部完成後只回覆「已整理」。",
                       "system", show=False, internal=True)
             self.m.after_turn(self, lambda: (self.stop("daily restart"), self.start()))
 
