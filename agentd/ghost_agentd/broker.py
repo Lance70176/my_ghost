@@ -566,9 +566,11 @@ class Broker:
         return {"behavior": "deny", "message": msg, "id": p.id}
 
     def create_choice(self, project: str, question: str, options: list, card_id: str | None = None,
-                      session_id: str = "", grant: dict | None = None, owner_only: bool = False) -> Pending:
+                      session_id: str = "", grant: dict | None = None, owner_only: bool = False,
+                      member: dict | None = None) -> Pending:
         """An assistant's multiple-choice question. Options with an action
-        ("allow"/"deny") decide card_id when picked."""
+        ("allow"/"deny") decide card_id when picked. `member`: the member the
+        owner let decide this kind of card, who may press it then."""
         clean = []
         for o in options[:8]:
             o = o if isinstance(o, dict) else {"label": str(o)}
@@ -585,7 +587,12 @@ class Broker:
                 grant=grant,
             )
             # owner_only: who may talk to the work account is the owner's call.
-            p.requested_by = None if owner_only else self._card_requester(project, p.card_id)
+            if owner_only:
+                p.requested_by = None
+            elif member and not card_id:
+                p.requested_by = member
+            else:
+                p.requested_by = self._card_requester(project, p.card_id)
             self._number(p)
             self.pending[p.id] = p
             self.by_key[p.key] = p
@@ -665,6 +672,29 @@ class Broker:
             target = self.pending.get(card_id)
             return target.requested_by if target else None
         return self.requester_of(project)
+
+    def hand_over(self, project: str, ids: list[str], member: dict) -> tuple[list[str], list[str]]:
+        """Give the owner's open questions to a member he just let decide
+        that kind, so they can press them themselves. Only plain ask_decision
+        cards: not one about a permission card, a work account or a database.
+        Returns (tags handed over, why each other one wasn't)."""
+        done, refused = [], []
+        for oid in dict.fromkeys(str(i).strip() for i in ids if str(i).strip()):
+            found = self.find(project, oid)
+            with self.lock:
+                p = self.pending.get(found.id if found else oid)
+                if p is None or not p.open or p.project != project:
+                    refused.append(f"{oid}：已處理過或不是這個專案的卡")
+                elif p.tool_name != "ask_decision" or p.card_id or p.grant:
+                    refused.append(f"{p.tag}：這張只有負責人能決定")
+                elif p.requested_by:
+                    refused.append(f"{p.tag}：已經是 {p.requested_by.get('name') or p.requested_by.get('id')} 的卡")
+                else:
+                    p.requested_by = member
+                    done.append(p.tag)
+                    self._bump()
+                    self._emit("on_update", p)
+        return done, refused
 
     def bump(self) -> None:
         with self.lock:

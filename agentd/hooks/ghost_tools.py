@@ -27,8 +27,25 @@ TOOLS = [
          "card_id": {"type": "string", "description": "正在討論的決策卡 id（沒有就省略）"},
          "replaces": {"type": "array", "items": {"type": "string"},
                       "description": "這張新卡推翻／取代的舊卡 id（還沒人按的選擇題、開工卡、回覆卡）。"
-                                     "舊卡會被撤掉並標「已改由新決策卡處理」，免得有人再按舊卡"}},
+                                     "舊卡會被撤掉並標「已改由新決策卡處理」，免得有人再按舊卡"},
+         "for_member": {"type": "string",
+                        "description": "這張卡要給哪位專案成員決定（名字或 TG user_id）。成員自己那一輪開的卡本來就是對方的，不用帶；"
+                                       "其他輪（負責人、工作對話求助）要對方能按，負責人得先用 member_grant 授權這類卡"},
+         "kind": {"type": "string",
+                  "description": "配合 for_member：這張卡屬於哪一類決策（例如「發文文案修改」「排程核准」），"
+                                 "要跟 member_grant 記的類型一樣"}},
          "required": ["question", "options"]}},
+    {"name": "member_grant",
+     "description": "成員授權：負責人同意讓某位成員以後自己決定某一類決策卡時記下（add），收回（remove），或查目前授權（list）。"
+                    "add／remove 只限負責人本人親自說的那一輪；成員要求、工作對話求助都不能自己授權，要先問負責人。"
+                    "add 帶 cards 可以把現在還開著、記在負責人名下的同類卡立刻交給對方。",
+     "inputSchema": {"type": "object", "properties": {
+         "action": {"type": "string", "enum": ["add", "remove", "list"]},
+         "member": {"type": "string", "description": "成員名字或 TG user_id"},
+         "kind": {"type": "string", "description": "決策類型（remove 不帶＝收回這位成員的全部授權）"},
+         "cards": {"type": "array", "items": {"type": "string"},
+                   "description": "add 時一併交給對方的卡（今天的編號 #12 或 id）"}},
+         "required": ["action"]}},
     {"name": "close_cards",
      "description": "他（或交辦的成員）已經用文字回答了還沒按的卡時用，分兩步，免得誤會："
                     "① 不帶 confirmed：只登記，回傳一段確認訊息（卡片編號、問題摘要、答案），原樣傳給他；"

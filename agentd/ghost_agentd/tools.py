@@ -16,6 +16,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from . import config as cfgmod
 from .config import DEFAULT_PROJECT
 from .policy import redact
 
@@ -359,11 +360,126 @@ class Tools:
         if card:
             found = self.broker.find(p.name, card)  # an id, or today's "#3"
             card = found.id if found else None  # decided elsewhere: still ask, don't link
+        member, ask_owner = self._card_member(p, args, card)
         a = self.assistants.get(p.name)
         c = self.broker.create_choice(p.name, question, options, card_id=card,
-                                      session_id=a.meta.get("session_id", ""))
-        return (f"已把選擇題送給他（{c.tag}，id={c.id}），在 MyGhost 和 TG 都看得到。提到這張卡時用 {c.tag}。不要等待，先結束這一輪；"
-                "他選好後你會收到一則新訊息告訴你選了什麼。" + self._replace(p, args, c.id))
+                                      session_id=a.meta.get("session_id", ""), member=member)
+        out = (f"已把選擇題送給他（{c.tag}，id={c.id}），在 MyGhost 和 TG 都看得到。提到這張卡時用 {c.tag}。不要等待，先結束這一輪；"
+               "他選好後你會收到一則新訊息告訴你選了什麼。" + self._replace(p, args, c.id))
+        if member:
+            out += f"\n這張卡交給 {member['name']}（負責人已授權對方決定「{self._kind(args)}」），對方和負責人都能按。"
+        return out + ask_owner.replace("{tag}", c.tag)
+
+    # ------------------------------------------------- member grants
+
+    def _grants(self, p) -> list[dict]:
+        """Kinds of card the owner let a member decide:
+        [{id, name, kind, at}] in member_grants.json."""
+        try:
+            return json.loads((p.dir / "member_grants.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+
+    def _save_grants(self, p, grants: list[dict]) -> None:
+        f = p.dir / "member_grants.json"
+        tmp = f.with_suffix(".tmp")
+        tmp.write_text(json.dumps(grants, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(f)
+
+    @staticmethod
+    def _kind(args) -> str:
+        return re.sub(r"\s+", " ", str(args.get("kind") or "")).strip()[:40]
+
+    @staticmethod
+    def _same_kind(a: str, b: str) -> bool:
+        return re.sub(r"\s+", "", a).lower() == re.sub(r"\s+", "", b).lower()
+
+    def _member(self, p, who: str) -> dict | None:
+        """One of the project's members, by user id or name (spaces ignored)."""
+        names = cfgmod.member_names(p)
+        key = re.sub(r"\s+", "", who)
+        for uid, name in names.items():
+            if key == str(uid) or (name and key == re.sub(r"\s+", "", name)):
+                return {"id": uid, "name": name or str(uid)}
+        return None
+
+    def _card_member(self, p, args, card) -> tuple[dict | None, str]:
+        """Who a new question is for (args["for_member"]), and what to tell
+        the assistant when that member can't press it yet: in a member's own
+        turn the card is theirs anyway; otherwise only a kind the owner let
+        them decide hands it over, and anything else is the owner's to OK."""
+        want = str(args.get("for_member") or "").strip()
+        if not want or card:
+            return None, ""
+        m = self._member(p, want)
+        names = "、".join(n or str(i) for i, n in cfgmod.member_names(p).items()) or "（沒有成員）"
+        if m is None:
+            return None, f"\n找不到成員「{want}」，這張卡只有負責人能按。這個專案的成員：{names}。"
+        req = self.broker.requester_of(p.name)
+        if req:  # a member's turn: their cards are theirs already
+            if req.get("id") != m["id"]:
+                return None, f"\n成員那一輪開的卡只會是 {req.get('name')} 的，不能給 {m['name']}。"
+            return None, ""
+        kind = self._kind(args)
+        if kind and any(g["id"] == m["id"] and self._same_kind(g["kind"], kind) for g in self._grants(p)):
+            return m, ""
+        have = [g["kind"] for g in self._grants(p) if g["id"] == m["id"]]
+        return None, (
+            f"\n⚠️ {m['name']} 按不到這張卡：負責人還沒授權 {m['name']} 決定「{kind or '（沒帶 kind）'}」這類卡"
+            + (f"（目前授權的類型：{'、'.join(have)}；同一類就用一樣的 kind）" if have else "") + "。"
+            f"現在就在群組跟 {cfgmod.owner()} 確認：要不要讓 {m['name']} 以後自己決定「{kind or '這類'}」的卡？"
+            f"他本人說可以，就用 member_grant（action=add、member={m['name']}、kind、cards=[\"{{tag}}\"]）記下，"
+            "這張卡會立刻交給對方，之後同類的卡帶一樣的 for_member＋kind 就直接給對方。他沒同意之前別跟對方說按得到。")
+
+    def t_member_grant(self, p, args) -> str:
+        """The owner lets a member decide one kind of card from now on (add),
+        takes it back (remove), or asks what's granted (list)."""
+        action = str(args.get("action") or "list")
+        grants = self._grants(p)
+        if action == "list":
+            if not grants:
+                return "沒有成員授權：成員只能按自己交辦的卡。"
+            return "成員可以自己決定的卡：\n" + "\n".join(
+                f"• {g['name']}：{g['kind']}（{time.strftime('%m/%d', time.localtime(g['at']))} 授權）" for g in grants)
+        if not self._owner_turn(p):
+            return "只有負責人本人親自說的那一輪可以改成員授權；成員、工作對話或排程要求的一律不做，先在群組問負責人。"
+        m = self._member(p, str(args.get("member") or ""))
+        if m is None:
+            names = "、".join(n or str(i) for i, n in cfgmod.member_names(p).items()) or "（沒有成員）"
+            return f"找不到這位成員。這個專案的成員：{names}（不是成員要先在群組用 /addmember 加入）。"
+        kind = self._kind(args)
+        if action == "remove":
+            keep = [g for g in grants if not (g["id"] == m["id"] and (not kind or self._same_kind(g["kind"], kind)))]
+            if len(keep) == len(grants):
+                return f"{m['name']} 沒有「{kind}」的授權。" if kind else f"{m['name']} 沒有任何授權。"
+            self._save_grants(p, keep)
+            return f"已收回 {m['name']} 的授權：{kind or '全部類型'}。已經開出的卡不變。"
+        if action != "add":
+            return "action 要是 add、remove 或 list。"
+        if not kind:
+            return "需要 kind：這類卡的名稱（例如「發文文案修改」「排程核准」），之後開同類卡用一樣的 kind。"
+        if not any(g["id"] == m["id"] and self._same_kind(g["kind"], kind) for g in grants):
+            grants.append({"id": m["id"], "name": m["name"], "kind": kind, "at": time.time()})
+            self._save_grants(p, grants)
+        out = f"已記住：{m['name']} 以後可以自己決定「{kind}」這類卡。開這類卡時帶 for_member={m['name']}、kind={kind}。"
+        cards = args.get("cards") or []
+        if isinstance(cards, str):
+            cards = [x for x in re.split(r"[,\s、]+", cards) if x]
+        if cards:
+            done, refused = self.broker.hand_over(p.name, list(cards), m)
+            if done:
+                out += f"\n已交給 {m['name']}：{'、'.join(done)}（對方現在按得到了，跟對方說一聲）。"
+            if refused:
+                out += "\n沒交出去：" + "；".join(refused)
+        return out
+
+    @staticmethod
+    def _refused_note(refused: list[str]) -> str:
+        """What the assistant must say when a card it meant to close stays."""
+        if not any("不是這位成員交辦的卡" in r for r in refused):
+            return ""
+        return ("\n這些卡還開著（記在負責人名下，成員那一輪動不了）。在群組講清楚哪幾張還沒關，"
+                "請負責人按掉或用文字回答；要讓成員以後自己決定同類卡，問負責人要不要用 member_grant 授權。")
 
     # How long a close_cards confirmation question stays answerable.
     CLOSE_OFFER_TTL = 2 * 3600
@@ -410,7 +526,7 @@ class Tools:
             return "需要 cards（卡的編號）和 answer（他的回答原話）。"
         found, refused = self.broker.closable(p.name, list(cards), requester)
         if not found:
-            return "沒有可以關的卡：" + "；".join(refused)
+            return "沒有可以關的卡：" + "；".join(refused) + self._refused_note(refused)
         self.close_offers[p.name] = {"ids": [c.id for c in found], "answer": answer, "who": who,
                                      "seq": getattr(a, "turn_seq", 0), "at": time.time()}
         lines = []
@@ -422,7 +538,7 @@ class Tools:
         out = ("還沒關卡。把下面這段原樣傳給他，等他下一則訊息回 OK，再用 close_cards 帶 confirmed=true 關卡"
                "（他更正的話就照更正重新登記）：\n\n" + msg)
         if refused:
-            out += "\n\n（這些不能關，不用列給他：" + "；".join(refused) + "）"
+            out += "\n\n（這些不能關，不用列在確認訊息裡：" + "；".join(refused) + "）" + self._refused_note(refused)
         return out
 
     def _replace(self, p, args, new_id: str) -> str:
@@ -444,7 +560,7 @@ class Tools:
         out = (f"\n已撤掉舊卡：{'、'.join(self.broker.closed_tags.get(i, i) for i in done)}"
                f"（標為已改由 {new_tag} 處理）。") if done else ""
         if refused:
-            out += "\n沒撤掉：" + "；".join(refused)
+            out += "\n沒撤掉：" + "；".join(refused) + self._refused_note(refused)
         return out
 
     def t_read_state(self, p, args) -> str:

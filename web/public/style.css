@@ -399,6 +399,8 @@ body {
   padding: 7px 8px; margin-bottom: 8px; background: #1d202b; }
 .dec-card.l3 { border-left-color: #e06c75; }
 .dec-meta { font-size: 11px; color: #8a8fa3; display: flex; gap: 6px; }
+.dec-meta .tag { color: #e6e8ef; font-weight: 700; }
+.dec-meta .tag:empty { display: none; }
 .dec-meta .lv { color: #e09a4e; font-weight: 700; }
 .dec-card.l3 .dec-meta .lv { color: #e06c75; }
 .dec-cmd { margin: 5px 0; padding: 5px 6px; background: #141620; border-radius: 4px; font-size: 11px;

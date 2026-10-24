@@ -683,7 +683,8 @@
     card.className = "dec-card " + (LEVEL_CLASS[p.level_name] || "");
     const head = document.createElement("div");
     head.className = "dec-meta";
-    head.innerHTML = `<span class="lv"></span> <span class="who"></span>`;
+    head.innerHTML = `<span class="tag"></span> <span class="lv"></span> <span class="who"></span>`;
+    head.querySelector(".tag").textContent = serialTag(p);
     head.querySelector(".lv").textContent = p.level_name;
     head.querySelector(".who").textContent =
       `${p.project} · ${p.tab_title || (p.session_id || "").slice(0, 8)}`;
