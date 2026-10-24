@@ -449,7 +449,7 @@ class Assistant:
             except ValueError:
                 continue
             try:
-                self._event(ev)
+                self._event(ev, proc)
             except Exception as e:  # never let one odd event kill the reader
                 log(f"assistant {self.project.name}: event failed {e!r}")
         code = proc.wait()
@@ -464,7 +464,7 @@ class Assistant:
             self._crashed()
         self._touch()
 
-    def _event(self, ev: dict) -> None:
+    def _event(self, ev: dict, proc: subprocess.Popen | None = None) -> None:
         t, sub = ev.get("type"), ev.get("subtype", "")
         # A subagent's own words (its report back to the assistant, often in
         # English) carry the Agent call's id: they aren't the assistant's reply.
@@ -520,6 +520,13 @@ class Assistant:
                             self._save_meta()
                 self.partial = ""
                 self.last_activity = time.time()
+                # The last words of a process already stopped (closed for
+                # idling, the daily restart) start nothing: sending /context
+                # from here would start the assistant again behind stop().
+                stale = proc is not None and self.proc is not proc
+            if stale:
+                self._touch()
+                return
             if ev.get("is_error") and not internal:
                 self.add("notice", f"這一輪出錯了：{str(ev.get('result') or ev.get('subtype'))[:200]}",
                          source="system")
