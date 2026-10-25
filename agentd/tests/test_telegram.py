@@ -321,3 +321,14 @@ def test_long_reply_folds_its_details():
     assert h.startswith("<b>盤點</b>\n\n兩件進行中。\n<blockquote expandable>")
     # Code is never folded.
     assert "blockquote" not in tg_html("結論\n\n" + "x" * 400 + "\n```\ncode\n```")
+
+
+def test_a_long_notice_goes_in_parts_not_cut_off(setup):
+    home, broker, bots, sent = setup
+    bot = bots["TOKEN_FQ"]
+    text = "問" * 5000 + "完"
+    bot.on_notice(broker.projects.get("fq"), text)
+    drain(bot)
+    parts = [kw["text"] for t, m, kw in sent if t == "TOKEN_FQ" and m == "sendMessage"]
+    assert len(parts) == 2 and all(len(x) <= 4096 for x in parts)
+    assert "".join(parts) == "👻 fq\n" + text

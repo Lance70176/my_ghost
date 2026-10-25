@@ -75,3 +75,16 @@ def test_later_answer_only_from_the_asked_project(two, manager):
     # kept across a restart of the daemon
     from ghost_agentd.peers import PeerDesk
     assert ask_id in PeerDesk(manager).items
+
+
+def test_both_groups_read_the_question_and_answer_in_full(two, manager):
+    t, fq, lts = two
+    notices = []
+    manager.notify = lambda project, text: notices.append((project.name, text))
+    manager.get("fq").turn_owner = True
+    t.t_ask_assistant(fq, {"project": "lts", "question": "背景" * 400 + "結尾的問題"})
+    ask_id = next(iter(manager.peers.items))
+    assert any(p == "lts" and x.endswith("結尾的問題") for p, x in notices)
+    assert any(r == "notice" and x.endswith("結尾的問題") for r, x in roles(manager.get("lts")))
+    t.t_reply_assistant(lts, {"ask_id": ask_id, "text": "答覆" * 400 + "最後一句"})
+    assert any(p == "fq" and x.endswith("最後一句") for p, x in notices)

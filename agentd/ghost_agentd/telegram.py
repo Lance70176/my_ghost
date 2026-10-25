@@ -450,8 +450,10 @@ class Bot:
                 raise
 
     def _send_notice(self, project: Project, text: str) -> None:
-        self.call("sendMessage", chat_id=self.chat_for(project.name),
-                  text=f"👻 {project.name}\n{text}", disable_notification=True)
+        text = f"👻 {project.name}\n{text}"
+        for i in range(0, len(text), CHUNK):  # past Telegram's limit: in parts, not cut off
+            self.call("sendMessage", chat_id=self.chat_for(project.name),
+                      text=text[i:i + CHUNK], disable_notification=True)
 
     # --------------------------------------------------------------- incoming
 
