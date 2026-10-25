@@ -64,7 +64,10 @@ its memory (`state.md`) and then sends `/compact`.
   once they are in its memory and not needed again), work accounts
   (`draft_reply`, `draft_dm`, `send_reply`, `read_tg_chat`, `grant_dm`…),
   `db_query` (read-only), ClickUp (`clickup_task`, `clickup_done`),
-  `share_report`, `tg_send`. The assistant never edits code itself: work is
+  `share_report`, `tg_send`, other assistants (`ask_assistant` — only in
+  turns you started yourself; the one asked answers inside its own project
+  and whatever it says in that turn goes back, later answers via
+  `reply_assistant`). The assistant never edits code itself: work is
   proposed with `propose_dispatch` and starts as a new Claude Code
   conversation (in a git worktree) only when you press 開工.
 - **It can't decide for you**: `ask_decision` options may carry an

@@ -755,6 +755,16 @@ class Tools:
     def _owner_turn(self, p) -> bool:
         return bool(getattr(self.assistants.get(p.name), "turn_owner", False))
 
+    def t_ask_assistant(self, p, args) -> str:
+        target = str(args.get("project") or "").strip()
+        if not self._owner_turn(p):
+            return self.CROSS_REFUSED.format(key="project", name=target or "（別的專案）")
+        return self.assistants.peers.ask(p, target, str(args.get("question") or ""))
+
+    def t_reply_assistant(self, p, args) -> str:
+        return self.assistants.peers.answer(p.name, str(args.get("ask_id") or ""), str(args.get("text") or ""),
+                                            later=True)
+
     def t_grant_dm(self, p, args) -> str:
         w, behalf, err = self._account(p, args)
         if err:
