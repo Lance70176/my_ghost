@@ -101,6 +101,9 @@ class Dispatch:
     # The project the repo belongs to when it isn't this one ("" = none).
     target_project: str = ""
     last_active: float = 0.0  # its last stop
+    # Other projects whose assistants the owner wants told when it's done
+    # (notify_on_done): the turn its stop starts may ask_assistant them.
+    notify: list = field(default_factory=list)
 
     @property
     def label(self) -> str:
@@ -270,8 +273,8 @@ class Dispatcher:
         if err:
             return err
         self.assistants.get(project.name).add(
-            "notice", f"助手傳給「{d.title}」：{text[:300]}", source="system")
-        self.assistants.notify(project, f"🧵 助手傳給「{d.title}」：{redact(text)[:300]}")
+            "notice", f"助手傳給「{d.title}」：{text}", source="system")
+        self.assistants.notify(project, f"🧵 助手傳給「{d.title}」：{redact(text)}")
         return "已送出。"
 
     def list_for(self, project: Project) -> str:
@@ -283,7 +286,20 @@ class Dispatcher:
             f"- id={d.id}｜{d.title}｜{d.state}"
             f"{'' if d.state != 'started' or d.mode == 'job' or d.id in live else '（分頁已關）'}"
             f"｜{'背景工作 ' + d.job_id if d.mode == 'job' else '分頁'}"
-            f"｜{Path(d.repo).name} {d.branch}" for d in sorted(rows, key=lambda d: d.created))
+            f"｜{Path(d.repo).name} {d.branch}"
+            f"{'｜完成後通知 ' + '、'.join(d.notify) + ' 助手' if d.notify else ''}"
+            for d in sorted(rows, key=lambda d: d.created))
+
+    def notify_on_done(self, project: Project, dispatch_id: str, target: str) -> str:
+        """The owner wants `target`'s assistant told when this work is done."""
+        d = self.items.get(dispatch_id)
+        if d is None or d.project != project.name or d.state not in ("proposed", "started"):
+            return f"沒有 id={dispatch_id} 的派工（只能登記這個專案還在進行的派工，用 list_dispatches 查）。"
+        if target not in d.notify:
+            d.notify.append(target)
+            self._save()
+        return (f"已登記：「{d.title}」停下來時你會收到通知，確定做完了就用 ask_assistant（project={target}）"
+                f"告訴 {target} 助手成果。")
 
     # --------------------------------------------------- broker listener
 
@@ -533,10 +549,15 @@ class Dispatcher:
                     "哪些已完成（例如已發測試站、正式站還沒發）。限流就等一下再用 message_worker 叫它繼續；"
                     "被安全機制擋下（例如 [cyber]）的，叫它跳過被擋的那一步、改用別的方法驗證後繼續，"
                     "沒有別的方法就用 ask_decision 問他要怎麼處理。")
+        if d.notify:
+            names = "、".join(d.notify)
+            msg += (f"\n負責人登記過這件工作做完要通知 {names} 助手：確定完成了（不是卡住或在問問題）才用 "
+                    f"ask_assistant 告訴對方成果（改了什麼、網址或分支、還差什麼），這一輪只能通知這幾個助手；"
+                    f"還沒做完就先不要通知。")
         if d.requested_by:
             msg += f"\n（這是 TG 成員 {member_name(d.requested_by)} 交辦的工作，要對方決定的事開卡會標對方的名字，對方和負責人都能按。）"
         threading.Thread(target=self.assistants.get(d.project).send, args=(msg, "system"), daemon=True,
-                         kwargs={"requester": d.requested_by}).start()
+                         kwargs={"requester": d.requested_by, "dispatch": d.id}).start()
 
 
 def member_name(m: dict) -> str:

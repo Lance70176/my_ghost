@@ -67,7 +67,9 @@ its memory (`state.md`) and then sends `/compact`.
   `share_report`, `tg_send`, other assistants (`ask_assistant` — only in
   turns you started yourself; the one asked answers inside its own project
   and whatever it says in that turn goes back, later answers via
-  `reply_assistant`). The assistant never edits code itself: work is
+  `reply_assistant`; `notify_on_done` registers another project's
+  assistant to be told when a dispatch is done, and the turn its stop
+  starts may then ask that one only). The assistant never edits code itself: work is
   proposed with `propose_dispatch` and starts as a new Claude Code
   conversation (in a git worktree) only when you press 開工.
 - **It can't decide for you**: `ask_decision` options may carry an

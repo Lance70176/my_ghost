@@ -757,9 +757,29 @@ class Tools:
 
     def t_ask_assistant(self, p, args) -> str:
         target = str(args.get("project") or "").strip()
+        done = None if self._owner_turn(p) else self._done_dispatch(p, target)
+        if not self._owner_turn(p) and done is None:
+            return self.CROSS_REFUSED.format(key="project", name=target or "（別的專案）") + (
+                "（工作完成時要通知別的助手，得先在負責人本人那一輪用 notify_on_done 登記。）")
+        return self.assistants.peers.ask(p, target, str(args.get("question") or ""), done=done)
+
+    def _done_dispatch(self, p, target: str):
+        """The dispatch whose stop this turn reports, if the owner registered
+        `target` to be told when it's done."""
+        did = getattr(self.assistants.get(p.name), "turn_dispatch", None)
+        d = self.dispatcher.items.get(did) if self.dispatcher is not None and did else None
+        return d if d is not None and d.project == p.name and target in d.notify else None
+
+    def t_notify_on_done(self, p, args) -> str:
+        if self.dispatcher is None:
+            return "派工沒有啟用。"
+        target = str(args.get("project") or "").strip()
         if not self._owner_turn(p):
             return self.CROSS_REFUSED.format(key="project", name=target or "（別的專案）")
-        return self.assistants.peers.ask(p, target, str(args.get("question") or ""))
+        names = {x.name for x in self.broker.projects.all() if x.name not in (DEFAULT_PROJECT, p.name)}
+        if target not in names:
+            return f"沒有叫「{target}」的其他專案。有的：{'、'.join(sorted(names))}。"
+        return self.dispatcher.notify_on_done(p, str(args.get("dispatch_id") or ""), target)
 
     def t_reply_assistant(self, p, args) -> str:
         return self.assistants.peers.answer(p.name, str(args.get("ask_id") or ""), str(args.get("text") or ""),
