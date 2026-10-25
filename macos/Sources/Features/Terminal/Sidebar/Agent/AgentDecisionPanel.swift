@@ -470,9 +470,6 @@ struct AgentDecisionCard: View {
         .padding(10)
         .frame(width: width, alignment: .leading)
         .frame(maxWidth: width == nil ? .infinity : nil, alignment: .leading)
-        .overlay(alignment: .topTrailing) {
-            AgentCardTag(tag: p.tag, day: p.serialDay).padding(6)
-        }
         .background(
             RoundedRectangle(cornerRadius: 10)
                 .fill(.regularMaterial)
@@ -492,6 +489,7 @@ struct AgentDecisionCard: View {
                     .agentFont(.headline)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 4)
+                AgentCardTag(tag: p.tag, day: p.serialDay)
                 Button {
                     AgentAssistantNav.show(project: p.project, hostKey: client.hostKey, focusCard: p.id)
                 } label: {
@@ -570,6 +568,7 @@ struct AgentDecisionCard: View {
                 Text(L("%@ assistant proposes work", p.project))
                     .agentFont(.headline)
                 Spacer(minLength: 4)
+                AgentCardTag(tag: p.tag, day: p.serialDay)
                 Button {
                     AgentAssistantNav.show(project: p.project, hostKey: client.hostKey, focusCard: p.id)
                 } label: {
@@ -657,6 +656,7 @@ struct AgentDecisionCard: View {
                 Text(L("%@ assistant asks", p.project))
                     .agentFont(.callout, weight: .semibold)
                 Spacer(minLength: 4)
+                AgentCardTag(tag: p.tag, day: p.serialDay)
                 Button {
                     AgentAssistantNav.show(project: p.project, hostKey: client.hostKey, focusCard: p.id)
                 } label: {
@@ -692,6 +692,7 @@ struct AgentDecisionCard: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 4)
+                AgentCardTag(tag: p.tag, day: p.serialDay)
                 Button {
                     closedNotice = !AgentDecisionPanel.reveal(tmuxSession: p.tmuxSession)
                 } label: {
