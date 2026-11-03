@@ -37,6 +37,9 @@ use Time::HiRes ();
 
 my ($TMUX, $SOCK, $PANE) = @ARGV;
 die "usage: $0 tmux socket pane\n" unless defined $PANE;
+# Anything but a pane id ("%12") would make tmux guess a pane; exiting closes
+# the pipe, and MyGhost attaches a fresh relay.
+exit 1 unless $PANE =~ /\A%\d+\z/;
 binmode STDIN;
 
 my %STATES = map { $_ => 1 } qw(idle working done blocked error clear);

@@ -223,7 +223,12 @@ final class ProgramStatusMonitor: ObservableObject {
         attachAttempts[pane] = tries + 1
         let q = Self.shellQuote
         let cmd = "exec /usr/bin/perl \(q(ProgramStatusRelay.path)) \(q(tmux)) \(q(socket)) \(q(pane))"
-        Self.run(tmux, ["pipe-pane", "-O", "-o", "-t", pane, cmd])
+        // tmux runs the command through format and strftime expansion
+        // first: unescaped, the pane id "%51" reaches the relay as "51".
+        let escaped = cmd
+            .replacingOccurrences(of: "#", with: "##")
+            .replacingOccurrences(of: "%", with: "%%")
+        Self.run(tmux, ["pipe-pane", "-O", "-o", "-t", pane, escaped])
     }
 
     private func publish(_ found: [String: ProgramStatus]) {
