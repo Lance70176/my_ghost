@@ -37,11 +37,15 @@ class SidebarTabEntry: ObservableObject, Identifiable {
     /// The screen session name associated with this tab (e.g. "myghost_<uuid>").
     /// When set, the tab's shell runs inside a GNU screen session for persistence.
     /// For remote tabs, this is the tmux session name on the remote host.
-    var screenSessionName: String?
+    var screenSessionName: String? {
+        didSet { publishSessionName() }
+    }
 
     /// SSH destination for remote tabs (ssh config alias or "user@host").
     /// nil for local tabs.
-    var remoteTarget: String?
+    var remoteTarget: String? {
+        didSet { publishSessionName() }
+    }
 
     /// Extra ssh options (port, identity file) for remote tabs.
     var remoteSSHOptions: [String] = []
@@ -160,6 +164,7 @@ class SidebarTabEntry: ObservableObject, Identifiable {
     /// Show this tab's sidebar name — custom, or the terminal's own — in the
     /// title bar above its pane, so the pane reads the same as the sidebar.
     private func publishName() {
+        publishSessionName()
         guard !isGroup, let surface = originalSurface else {
             nameCancellable = nil
             return
@@ -170,5 +175,14 @@ class SidebarTabEntry: ObservableObject, Identifiable {
             .sink { [weak surface] custom, fallback in
                 surface?.sidebarTitle = custom ?? fallback
             }
+    }
+
+    /// Tell this tab's surface which local tmux session it runs in, so its
+    /// pane title bar can show the program's status. A remote tab's session
+    /// lives in the other host's tmux, which this Mac doesn't watch.
+    private func publishSessionName() {
+        guard !isGroup, let surface = originalSurface else { return }
+        let name = isRemote ? nil : screenSessionName
+        if surface.tmuxSessionName != name { surface.tmuxSessionName = name }
     }
 }

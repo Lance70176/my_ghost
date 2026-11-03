@@ -17,6 +17,10 @@ extension Ghostty {
         // pane title bar in place of `title`. nil outside the sidebar window.
         @Published var sidebarTitle: String?
 
+        // MyGhost: the local tmux session this surface's tab runs in, for
+        // the program status (OSC 7501) shown in its pane title bar.
+        @Published var tmuxSessionName: String?
+
         // The current title of the surface as defined by the pty. This can be
         // changed with escape codes. This is public because the callbacks go
         // to the app level and it is set from there.
@@ -451,6 +455,11 @@ extension Ghostty {
 
                 // We unset our bell state if we gained focus
                 bell = false
+
+                // MyGhost: a finished program status has now been seen.
+                if let tmuxSessionName {
+                    ProgramStatusMonitor.shared.markSeen(session: tmuxSessionName)
+                }
 
                 // Remove any notifications for this surface once we gain focus.
                 if !notificationIdentifiers.isEmpty {

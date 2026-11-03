@@ -457,5 +457,17 @@ enum L10nStrings {
         "Toggle comment": t("切換註解", "切换注释", "コメントの切り替え"),
         "New line below / above": t("在下方 / 上方插入新行", "在下方 / 上方插入新行", "下 / 上に新しい行"),
         "Zoom in / out / reset": t("放大 / 縮小 / 還原", "放大 / 缩小 / 还原", "拡大 / 縮小 / リセット"),
+
+        // MARK: Pane title bar & program status (OSC 7501)
+        "Split right": t("向右分割", "向右分割", "右に分割"),
+        "Split down": t("向下分割", "向下分割", "下に分割"),
+        "Zoom this pane": t("放大這個窗格", "放大这个窗格", "このペインを拡大"),
+        "Restore the other panes": t("還原其他窗格", "还原其他窗格", "ほかのペインを戻す"),
+        "Close pane": t("關閉窗格", "关闭窗格", "ペインを閉じる"),
+        "Needs permission": t("等你授權", "等你授权", "許可待ち"),
+        "Has a question": t("有問題要問你", "有问题要问你", "質問があります"),
+        "Needs sign-in": t("需要登入", "需要登录", "サインインが必要"),
+        "Idle": t("閒置", "闲置", "待機中"),
+        "%d reports": t("共 %d 筆回報", "共 %d 条报告", "報告 %d 件"),
     ]
 }

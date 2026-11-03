@@ -839,6 +839,7 @@ private struct SidebarStandaloneTabRow: View {
             Spacer()
 
             AgentStatusBadgeIfEnabled(tab: tab)
+            ProgramStatusBadge(tab: tab)
 
             if tab.bell {
                 Image(systemName: "bell.fill")
@@ -1062,6 +1063,7 @@ private struct SidebarGroupChildRow: View {
             Spacer()
 
             AgentStatusBadgeIfEnabled(tab: child)
+            ProgramStatusBadge(tab: child)
 
             if isActiveChild {
                 Image(systemName: "circle.fill")

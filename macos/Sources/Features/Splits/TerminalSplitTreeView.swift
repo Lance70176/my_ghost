@@ -1,4 +1,5 @@
 import SwiftUI
+import GhosttyKit
 
 // MARK: - Environment key for split pane title bars
 
@@ -54,6 +55,7 @@ struct TerminalSplitTreeView: View {
             TerminalSplitSubtreeView(
                 node: node,
                 isRoot: node == tree.root,
+                isZoomed: tree.zoomed != nil,
                 action: action)
             // This is necessary because we can't rely on SwiftUI's implicit
             // structural identity to detect changes to this view. Due to
@@ -69,12 +71,13 @@ private struct TerminalSplitSubtreeView: View {
 
     let node: SplitTree<Ghostty.SurfaceView>.Node
     var isRoot: Bool = false
+    var isZoomed: Bool = false
     let action: (TerminalSplitOperation) -> Void
 
     var body: some View {
         switch node {
         case .leaf(let leafView):
-            TerminalSplitLeaf(surfaceView: leafView, isSplit: !isRoot, action: action)
+            TerminalSplitLeaf(surfaceView: leafView, isSplit: !isRoot, isZoomed: isZoomed, action: action)
 
         case .split(let split):
             let splitViewDirection: SplitViewDirection = switch split.direction {
@@ -109,6 +112,7 @@ private struct TerminalSplitSubtreeView: View {
 private struct TerminalSplitLeaf: View {
     let surfaceView: Ghostty.SurfaceView
     let isSplit: Bool
+    var isZoomed: Bool = false
     let action: (TerminalSplitOperation) -> Void
 
     @Environment(\.splitPaneTitleBarVisible) private var showTitleBar
@@ -119,7 +123,11 @@ private struct TerminalSplitLeaf: View {
         GeometryReader { geometry in
             VStack(spacing: 0) {
                 if showTitleBar {
-                    SplitPaneTitleBar(surfaceView: surfaceView, action: action)
+                    SplitPaneTitleBar(
+                        surfaceView: surfaceView,
+                        isSplit: isSplit,
+                        isZoomed: isZoomed,
+                        action: action)
                 }
 
                 Ghostty.InspectableSurface(
@@ -286,16 +294,20 @@ enum TerminalSplitDropZone: String, Equatable {
 // MARK: - Split Pane Title Bar
 
 /// A small title bar shown above each split pane when in sidebar mode.
-/// Shows the terminal title, an X close button, and supports drag-to-swap between panes.
+/// Shows the terminal title, what its program reports (OSC 7501), buttons to
+/// split, zoom and close the pane, and supports drag-to-swap between panes.
 struct SplitPaneTitleBar: View {
+    @EnvironmentObject private var ghostty: Ghostty.App
     @ObservedObject var surfaceView: Ghostty.SurfaceView
+    var isSplit: Bool = false
+    var isZoomed: Bool = false
     let action: (TerminalSplitOperation) -> Void
 
     @State private var isHovering = false
     @State private var isDropTarget = false
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 6) {
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: 10))
                 .foregroundColor(.secondary.opacity(isHovering ? 1 : 0.5))
@@ -307,20 +319,40 @@ struct SplitPaneTitleBar: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .foregroundColor(.secondary)
+                .layoutPriority(1)
 
-            Spacer()
+            ProgramStatusInline(session: surfaceView.tmuxSessionName)
 
-            Button {
-                NotificationCenter.default.post(
-                    name: Ghostty.Notification.ghosttyCloseSurface,
-                    object: surfaceView
-                )
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.secondary.opacity(isHovering ? 1 : 0.3))
+            Spacer(minLength: 4)
+
+            HStack(spacing: 2) {
+                paneButton("square.split.2x1", help: L("Split right")) {
+                    guard let surface = surfaceView.surface else { return }
+                    ghostty.split(surface: surface, direction: GHOSTTY_SPLIT_DIRECTION_RIGHT)
+                }
+                paneButton("square.split.1x2", help: L("Split down")) {
+                    guard let surface = surfaceView.surface else { return }
+                    ghostty.split(surface: surface, direction: GHOSTTY_SPLIT_DIRECTION_DOWN)
+                }
+                if isSplit {
+                    paneButton(
+                        isZoomed
+                            ? "arrow.down.right.and.arrow.up.left"
+                            : "arrow.up.left.and.arrow.down.right",
+                        help: isZoomed ? L("Restore the other panes") : L("Zoom this pane"),
+                        active: isZoomed
+                    ) {
+                        guard let surface = surfaceView.surface else { return }
+                        ghostty.splitToggleZoom(surface: surface)
+                    }
+                }
+                paneButton("xmark", help: L("Close pane")) {
+                    NotificationCenter.default.post(
+                        name: Ghostty.Notification.ghosttyCloseSurface,
+                        object: surfaceView
+                    )
+                }
             }
-            .buttonStyle(.borderless)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
@@ -340,5 +372,26 @@ struct SplitPaneTitleBar: View {
         } isTargeted: { targeted in
             isDropTarget = targeted
         }
+    }
+
+    /// A title bar button: faint until the bar is hovered, accent while on.
+    private func paneButton(
+        _ symbol: String,
+        help: String,
+        active: Bool = false,
+        perform: @escaping () -> Void
+    ) -> some View {
+        Button(action: perform) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(active
+                    ? Color.accentColor
+                    : .secondary.opacity(isHovering ? 1 : 0.3))
+                .frame(width: 18, height: 16)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .help(help)
+        .accessibilityLabel(help)
     }
 }

@@ -18,6 +18,12 @@ class ScreenSessionManager {
         return appSupport.appendingPathComponent("MyGhost")
     }
 
+    /// The tmux binary every MyGhost session runs under.
+    var tmuxExecutable: String { tmuxPath }
+
+    /// ~/Library/Application Support/MyGhost — tmux.conf and friends.
+    var supportDirectoryURL: URL { supportDirectory }
+
     /// Path to the custom tmux config file.
     private var tmuxConfPath: URL {
         supportDirectory.appendingPathComponent("tmux.conf")

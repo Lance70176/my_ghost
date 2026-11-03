@@ -89,6 +89,7 @@ class SidebarTerminalController: BaseTerminalController {
 
         // If screen is available and no custom command, wrap in screen
         let mgr = ScreenSessionManager.shared
+        ProgramStatusMonitor.shared.start()
         var config = base
         var initialScreenName: String? = nil
         if mgr.isAvailable && (base == nil || base?.command == nil) {
