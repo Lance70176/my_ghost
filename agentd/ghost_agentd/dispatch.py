@@ -204,7 +204,10 @@ class Dispatcher:
                 top = git(rp, "rev-parse", "--show-toplevel")
                 if top.returncode != 0:
                     return f"{rp} 不是 git repo。"
-                target, wt_root = "", top.stdout.strip()
+                # A repo in no project: its worktrees go under this
+                # assistant's project, so its agent view lists the work
+                # (the user's choice, 2026-11-03: LTG work hangs under lts).
+                target, wt_root = "", str(root or top.stdout.strip())
             else:
                 return f"跨專案派工只能派到專案資料夾，或 {PROJECTS_HOME} 底下的 git repo。"
         if git(rp, "rev-parse", "--show-toplevel").returncode != 0:

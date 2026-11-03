@@ -173,9 +173,12 @@ def test_owner_dispatches_into_other_repos(dispatching, manager, broker):
     broker.decide(card2.id, "o0", "tg")
     item = next(x for x in d.items.values() if x.title == "MyGhost 改")
     wait_for(lambda: item.state == "started")
-    assert item.worktree.startswith(str(loose / ".worktrees")) and item.project == "fq"
+    # A repo in no project: the worktree goes under the dispatching
+    # project, so that project's agent view shows the work.
+    assert item.worktree.startswith(str(home / "code/fq/.worktrees")), item.worktree
+    assert item.project == "fq" and item.repo == str(loose)
     excl = subprocess.run(["git", "-C", str(loose), "status", "--porcelain"], capture_output=True, text=True)
-    assert ".worktrees" not in excl.stdout  # kept out of the repo's git status
+    assert ".worktrees" not in excl.stdout  # the repo's git status stays clean
     # The owner can follow it from fq; it reports to fq.
     assert item.id in t.t_list_dispatches(fq, {})
 
