@@ -1,0 +1,5 @@
+{
+  "name": "myghost-status",
+  "version": "1.0.0",
+  "description": "Shows agy's state (working / done) on its MyGhost tab via OSC 7501."
+}

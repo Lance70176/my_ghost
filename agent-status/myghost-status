@@ -1,0 +1,62 @@
+#!/bin/sh
+# myghost-status — tell MyGhost what an AI agent in this tmux pane is doing.
+#
+# Usage: myghost-status <state> <app> [kind]
+#   state: idle | working | done | blocked | error | clear
+#   kind:  permission | question | auth   (with blocked)
+#
+# Agents' hooks (Codex, agy) call this. It writes a Program Status Protocol
+# report (OSC 7501) to the pane's terminal; MyGhost's relay on that pane's
+# tmux picks it up and shows it on the tab — on this Mac or a remote host.
+# Writing to the pane's tty, not our own stdout, matters: hooks run with
+# their output captured by the agent.
+#
+# With "blocked", the hook's JSON on stdin supplies the message (the tool and
+# its command). Always exits 0 so it can never get in the agent's way.
+
+state=$1
+app=$2
+kind=$3
+
+payload=
+if [ ! -t 0 ]; then
+  payload=$(cat 2>/dev/null)
+fi
+
+[ -n "$TMUX_PANE" ] || exit 0
+[ -n "$state" ] || exit 0
+
+tmux_bin=
+for c in tmux /opt/homebrew/bin/tmux /usr/local/bin/tmux /usr/bin/tmux; do
+  if command -v "$c" >/dev/null 2>&1; then tmux_bin=$c; break; fi
+done
+[ -n "$tmux_bin" ] || exit 0
+
+tty=$("$tmux_bin" display-message -p -t "$TMUX_PANE" '#{pane_tty}' 2>/dev/null)
+[ -n "$tty" ] && [ -w "$tty" ] || exit 0
+
+body="state=$state"
+[ -n "$app" ] && body="$body:app=$app"
+[ -n "$kind" ] && body="$body:kind=$kind"
+
+# "Bash: rm -rf build" from the hook payload, when perl can read it.
+if [ "$state" = blocked ] && [ -n "$payload" ] && command -v perl >/dev/null 2>&1; then
+  msg=$(printf '%s' "$payload" | perl -MJSON::PP -0777 -ne '
+    my $j = eval { JSON::PP->new->utf8->decode($_) } or exit;
+    my $tool = $j->{tool_name} // $j->{tool} // "";
+    my $in = $j->{tool_input} // {};
+    my $what = ref $in eq "HASH" ? ($in->{command} // $in->{file_path} // $in->{path} // "") : "";
+    $what = join " ", @$what if ref $what eq "ARRAY";
+    $what = "" if ref $what;
+    my $m = length $what ? ($tool ne "" ? "$tool: $what" : $what) : $tool;
+    $m =~ s/[\x00-\x1f\x7f]+/ /g;
+    $m = substr($m, 0, 117) . "..." if length $m > 120;
+    binmode STDOUT, ":utf8";
+    print $m;' 2>/dev/null)
+  if [ -n "$msg" ]; then
+    body="$body:msg=$(printf '%s' "$msg" | base64 | tr -d '\n')"
+  fi
+fi
+
+printf '\033]7501;%s\007' "$body" > "$tty" 2>/dev/null
+exit 0
