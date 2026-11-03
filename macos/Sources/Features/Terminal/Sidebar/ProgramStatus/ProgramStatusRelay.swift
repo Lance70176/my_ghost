@@ -30,10 +30,76 @@ enum ProgramStatusRelay {
 # summary in the pane option @myghost_psp, which MyGhost polls.
 #
 # Usage: myghost-psp.pl <tmux binary> <tmux socket> <pane id>
+#        myghost-psp.pl --watch <session prefix>
+#
+# --watch runs on a remote host, over the one ssh connection MyGhost keeps to
+# it: it attaches the relay to every pane of a matching session and prints the
+# panes that have a status ("pane session pipe command socket summary", tab
+# separated) each time that set changes, ending each snapshot with "--end--".
+# "--hb--" every 15 s lets it notice, through SIGPIPE, that MyGhost is gone.
 use strict;
 use warnings;
 use MIME::Base64 ();
 use Time::HiRes ();
+use File::Spec ();
+
+if (@ARGV && $ARGV[0] eq '--watch') {
+    watch(defined $ARGV[1] ? $ARGV[1] : 'myghostr_');
+    exit 0;
+}
+
+sub watch {
+    my ($prefix) = @_;
+    $SIG{PIPE} = sub { exit 0 };
+    $| = 1;
+    my $tmux;
+    for my $c ((map { "$_/tmux" } split /:/, ($ENV{PATH} || '')),
+               '/opt/homebrew/bin/tmux', '/usr/local/bin/tmux', '/usr/bin/tmux') {
+        if (-x $c) { $tmux = $c; last }
+    }
+    unless ($tmux) { print "--error-- tmux not found\n"; exit 3 }
+    my $self = File::Spec->rel2abs($0);
+    my $fmt = join("\t", '#{pane_id}', '#{session_name}', '#{pane_pipe}',
+                   '#{pane_current_command}', '#{socket_path}', '#{@myghost_psp}');
+    my (%tries, $last, $beat);
+    $last = '';
+    $beat = time;
+    print "--end--\n";
+    while (1) {
+        my @snap;
+        my %live;
+        if (open(my $fh, '-|', $tmux, 'list-panes', '-a', '-F', $fmt)) {
+            while (my $line = <$fh>) {
+                chomp $line;
+                my @f = split /\t/, $line, -1;
+                next unless @f >= 6 && index($f[1], $prefix) == 0;
+                $live{ $f[0] } = 1;
+                if ($f[2] eq '0' && ($tries{ $f[0] } || 0) < 3) {
+                    $tries{ $f[0] }++;
+                    my $cmd = join ' ', 'exec', map { my $s = $_; $s =~ s/'/'\\''/g; "'$s'" }
+                        ($^X, $self, $tmux, $f[4], $f[0]);
+                    $cmd =~ s/#/##/g;
+                    $cmd =~ s/%/%%/g;
+                    system($tmux, 'pipe-pane', '-O', '-o', '-t', $f[0], $cmd);
+                }
+                push @snap, $line if $f[5] ne '';
+            }
+            close $fh;
+        }
+        delete @tries{ grep { !$live{$_} } keys %tries };
+        my $snap = join("\n", sort @snap);
+        if ($snap ne $last) {
+            print "$snap\n" if length $snap;
+            print "--end--\n";
+            $last = $snap;
+            $beat = time;
+        } elsif (time - $beat >= 15) {
+            print "--hb--\n";
+            $beat = time;
+        }
+        Time::HiRes::sleep(1.5);
+    }
+}
 
 my ($TMUX, $SOCK, $PANE) = @ARGV;
 die "usage: $0 tmux socket pane\n" unless defined $PANE;

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -112,6 +113,11 @@ struct ProgramStatus: Equatable {
 /// summary into the pane option `@myghost_psp`. One `list-panes -a` per poll
 /// both reads those summaries and finds panes still missing the relay —
 /// new tabs, tabs restored after a relaunch, a restarted tmux server.
+///
+/// Remote tabs' tmux runs on the other host, so each host with an open tab
+/// gets one long-lived ssh (RemoteStatusWatcher) running the same script in
+/// `--watch` mode there: it attaches the relay to the `myghostr_*` panes and
+/// streams their summaries back.
 final class ProgramStatusMonitor: ObservableObject {
     static let shared = ProgramStatusMonitor()
 
@@ -120,19 +126,25 @@ final class ProgramStatusMonitor: ObservableObject {
     static let disabledKey = "ProgramStatusRelayDisabled"
 
     /// tmux session name → what its program reports, minus finished
-    /// reports the user has already looked at.
+    /// reports the user has already looked at. Local and remote sessions
+    /// share it: their names never collide (myghost_ vs myghostr_<uuid>).
     @Published private(set) var statuses: [String: ProgramStatus] = [:]
 
-    private let queue = DispatchQueue(label: "com.myghost.program-status", qos: .utility)
+    let queue = DispatchQueue(label: "com.myghost.program-status", qos: .utility)
     private var timer: DispatchSourceTimer?
+    private var ticks = 0
 
     // Confined to `queue`.
     private var attachAttempts: [String: Int] = [:]
     /// The pane's command when a working/blocked report first showed up:
     /// once the pane is back at a shell that isn't that command, the
     /// program has exited and the report is over (the spec's process-exit
-    /// rule, which the relay can't see from the output stream).
+    /// rule, which the relay can't see from the output stream). Keyed by
+    /// "<scope>|<pane id>": pane ids repeat across hosts.
     private var commandAtReport: [String: (token: String, command: String)] = [:]
+    private var localFound: [String: ProgramStatus] = [:]
+    private var remoteFound: [String: [String: ProgramStatus]] = [:]
+    private var watchers: [String: RemoteStatusWatcher] = [:]
 
     // Confined to the main thread.
     private var latest: [String: ProgramStatus] = [:]
@@ -141,6 +153,8 @@ final class ProgramStatusMonitor: ObservableObject {
     private static let shells: Set<String> = [
         "zsh", "bash", "fish", "sh", "dash", "ksh", "tcsh", "csh", "nu", "elvish", "xonsh",
     ]
+
+    private static let localScope = "local"
 
     private init() {}
 
@@ -152,7 +166,7 @@ final class ProgramStatusMonitor: ObservableObject {
                   !UserDefaults.standard.bool(forKey: Self.disabledKey) else { return }
             let timer = DispatchSource.makeTimerSource(queue: queue)
             timer.schedule(deadline: .now() + 1, repeating: 1.5, leeway: .milliseconds(300))
-            timer.setEventHandler { [weak self] in self?.poll() }
+            timer.setEventHandler { [weak self] in self?.tick() }
             self.timer = timer
             queue.async { ProgramStatusRelay.install() }
             timer.resume()
@@ -170,27 +184,51 @@ final class ProgramStatusMonitor: ObservableObject {
 
     // MARK: - Polling
 
-    private func poll() {
+    private func tick() {
+        pollLocal()
+        ticks += 1
+        // Every ~6 s: open a watcher for each remote host with a tab, close
+        // the ones whose host tab is gone.
+        if ticks % 4 == 1 {
+            DispatchQueue.main.async { [self] in
+                let hosts = Self.openRemoteHosts()
+                queue.async { self.syncWatchers(hosts) }
+            }
+        }
+    }
+
+    private func pollLocal() {
         let tmux = ScreenSessionManager.shared.tmuxExecutable
         let format = ["#{pane_id}", "#{session_name}", "#{pane_pipe}",
                       "#{pane_current_command}", "#{socket_path}", "#{@myghost_psp}"]
             .joined(separator: "\t")
-        guard let out = Self.run(tmux, ["list-panes", "-a", "-F", format]) else {
-            publish([:])
-            return
-        }
+        let lines = (Self.run(tmux, ["list-panes", "-a", "-F", format]) ?? "")
+            .split(separator: "\n").map(String.init)
 
+        var live = Set<String>()
+        for line in lines {
+            let f = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            guard f.count >= 6, f[1].hasPrefix("myghost_") else { continue }
+            live.insert(f[0])
+            if f[2] == "0" { attach(pane: f[0], tmux: tmux, socket: f[4]) }
+        }
+        attachAttempts = attachAttempts.filter { live.contains($0.key) }
+        localFound = ingest(lines, scope: Self.localScope, prefix: "myghost_")
+        publish()
+    }
+
+    /// Statuses from list-panes style lines ("pane session pipe command
+    /// socket summary"), most urgent pane per session.
+    private func ingest(_ lines: [String], scope: String, prefix: String) -> [String: ProgramStatus] {
         var found: [String: ProgramStatus] = [:]
-        var livePanes = Set<String>()
-        for line in out.split(separator: "\n") {
+        var live = Set<String>()
+        for line in lines {
             let f = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
             guard f.count >= 6 else { continue }
-            let (pane, session, piped, command, socket, summary) = (f[0], f[1], f[2], f[3], f[4], f[5])
-            guard session.hasPrefix("myghost_") else { continue }
-            livePanes.insert(pane)
-
-            if piped == "0" { attach(pane: pane, tmux: tmux, socket: socket) }
-
+            let (session, command, summary) = (f[1], f[3], f[5])
+            guard session.hasPrefix(prefix) else { continue }
+            let pane = "\(scope)|\(f[0])"
+            live.insert(pane)
             guard !summary.isEmpty, let status = ProgramStatus(summary: summary, pane: pane) else {
                 commandAtReport[pane] = nil
                 continue
@@ -199,9 +237,8 @@ final class ProgramStatusMonitor: ObservableObject {
             if let other = found[session], other.state.rank >= status.state.rank { continue }
             found[session] = status
         }
-        attachAttempts = attachAttempts.filter { livePanes.contains($0.key) }
-        commandAtReport = commandAtReport.filter { livePanes.contains($0.key) }
-        publish(found)
+        commandAtReport = commandAtReport.filter { !$0.key.hasPrefix("\(scope)|") || live.contains($0.key) }
+        return found
     }
 
     private func isOver(_ status: ProgramStatus, pane: String, command: String) -> Bool {
@@ -231,7 +268,57 @@ final class ProgramStatusMonitor: ObservableObject {
         Self.run(tmux, ["pipe-pane", "-O", "-o", "-t", pane, escaped])
     }
 
-    private func publish(_ found: [String: ProgramStatus]) {
+    // MARK: - Remote hosts
+
+    struct RemoteHost: Equatable {
+        let target: String
+        let options: [String]
+    }
+
+    /// Remote hosts with a host tab in any sidebar window, by host key.
+    private static func openRemoteHosts() -> [String: RemoteHost] {
+        dispatchPrecondition(condition: .onQueue(.main))
+        var hosts: [String: RemoteHost] = [:]
+        for window in NSApp.windows {
+            guard let controller = window.windowController as? SidebarTerminalController else { continue }
+            for host in controller.hostTabs {
+                guard let target = host.target else { continue }
+                hosts[host.key] = RemoteHost(target: target, options: host.sshOptions)
+            }
+        }
+        return hosts
+    }
+
+    private func syncWatchers(_ hosts: [String: RemoteHost]) {
+        for (key, watcher) in watchers where hosts[key] != watcher.host {
+            watcher.stop()
+            watchers[key] = nil
+            remoteFound[key] = nil
+        }
+        for (key, host) in hosts where watchers[key] == nil {
+            let watcher = RemoteStatusWatcher(key: key, host: host, queue: queue) { [weak self] lines in
+                guard let self else { return }
+                if let lines {
+                    remoteFound[key] = ingest(lines, scope: key, prefix: "myghostr_")
+                } else {
+                    remoteFound[key] = nil
+                }
+                publish()
+            }
+            watchers[key] = watcher
+            watcher.start()
+        }
+        publish()
+    }
+
+    private func publish() {
+        var found = localFound
+        for statuses in remoteFound.values {
+            for (session, status) in statuses {
+                if let other = found[session], other.state.rank >= status.state.rank { continue }
+                found[session] = status
+            }
+        }
         DispatchQueue.main.async { [self] in
             latest = found
             seenTokens = seenTokens.filter { found[$0.key]?.token == $0.value }
@@ -272,7 +359,7 @@ struct ProgramStatusBadge: View {
     let tab: SidebarTabEntry
 
     var body: some View {
-        if let name = tab.screenSessionName, !tab.isRemote,
+        if let name = tab.screenSessionName,
            let status = monitor.statuses[name], status.state != .idle,
            !agentBadgeShowing(name) {
             Group {

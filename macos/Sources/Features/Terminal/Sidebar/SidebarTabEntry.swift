@@ -177,12 +177,10 @@ class SidebarTabEntry: ObservableObject, Identifiable {
             }
     }
 
-    /// Tell this tab's surface which local tmux session it runs in, so its
-    /// pane title bar can show the program's status. A remote tab's session
-    /// lives in the other host's tmux, which this Mac doesn't watch.
+    /// Tell this tab's surface which tmux session it runs in — local, or on
+    /// the remote host — so its pane title bar can show the program's status.
     private func publishSessionName() {
         guard !isGroup, let surface = originalSurface else { return }
-        let name = isRemote ? nil : screenSessionName
-        if surface.tmuxSessionName != name { surface.tmuxSessionName = name }
+        if surface.tmuxSessionName != screenSessionName { surface.tmuxSessionName = screenSessionName }
     }
 }
