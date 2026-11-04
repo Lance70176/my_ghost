@@ -603,18 +603,28 @@ enum AntigravityUsageFetcher {
         guard let agy = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
             throw AIUsageFetchError.noCredential(L("agy not found (~/.local/bin/agy)"))
         }
-        let start = Date()
-        let (status, out, err) = try await run(agy, ["-p", "/usage", "--output-format", "json"])
-        guard status == 0,
-              let json = (try? JSONSerialization.jsonObject(with: Data(out.utf8))) as? [String: Any]
-        else {
+        // agy now and then hangs past the 30 s limit or exits non-zero and
+        // then answers fine on the very next run, so one failed attempt is
+        // retried straight away before the row shows a warning.
+        var json: [String: Any]?
+        var failure = ""
+        for attempt in 1...2 {
+            let start = Date()
+            let (status, out, err) = try await run(agy, ["-p", "/usage", "--output-format", "json"])
+            if status == 0,
+               let parsed = (try? JSONSerialization.jsonObject(with: Data(out.utf8))) as? [String: Any] {
+                AIUsageRequestLog.record(provider: "antigravity", trigger: trigger, start: start,
+                                         status: (parsed["status"] as? String) ?? "?")
+                json = parsed
+                break
+            }
             AIUsageRequestLog.record(provider: "antigravity", trigger: trigger, start: start,
-                                     status: "exit-\(status)")
-            let detail = (err.isEmpty ? out : err).trimmingCharacters(in: .whitespacesAndNewlines)
-            throw AIUsageFetchError.badResponse("agy: " + String(detail.suffix(160)))
+                                     status: attempt == 1 ? "exit-\(status)-retry" : "exit-\(status)")
+            failure = (err.isEmpty ? out : err).trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        AIUsageRequestLog.record(provider: "antigravity", trigger: trigger, start: start,
-                                 status: (json["status"] as? String) ?? "?")
+        guard let json else {
+            throw AIUsageFetchError.badResponse("agy: " + String(failure.suffix(160)))
+        }
         guard json["status"] as? String == "SUCCESS",
               let data = (json["command"] as? [String: Any])?["data"] as? [String: Any],
               let groups = data["groups"] as? [[String: Any]]
