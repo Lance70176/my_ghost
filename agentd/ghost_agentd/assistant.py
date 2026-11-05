@@ -562,6 +562,8 @@ class Assistant:
             if ev.get("is_error") and not internal:
                 self.add("notice", f"這一輪出錯了：{str(ev.get('result') or ev.get('subtype'))[:200]}",
                          source="system")
+            if ev.get("is_error") and is_flagged_session(ev.get("result")):
+                self._replace_flagged_session()  # restarts once this turn ends
             self.m.on_turn_end(self, internal)
             if spontaneous:
                 self._touch()
@@ -604,6 +606,24 @@ class Assistant:
         if self.project.resident:
             threading.Timer(5, self.start).start()
 
+    def _replace_flagged_session(self) -> None:
+        """The API's safeguards flagged this session: every later turn of it
+        fails the same way (the daily housekeeping too), so whatever is asked
+        next, the assistant stays dead until it gets a new session. Start one;
+        the flagged message is not sent again — he rephrases it."""
+        with self.lock:
+            old = self.meta.get("session_id", "")
+            flagged = self.meta.get("flagged_sessions", [])
+            flagged.append({"session_id": old, "ts": time.time()})
+            self.meta["flagged_sessions"] = flagged[-20:]
+            self.meta["session_id"] = str(uuid.uuid4())
+            self.meta["started_once"] = False
+            self._save_meta()
+        log(f"assistant {self.project.name}: session {old[:8]} flagged by safeguards, starting a new one")
+        self.add("notice", FLAGGED_NOTICE, source="system")
+        self.m.notify(self.project, "⚠️ " + FLAGGED_NOTICE)
+        self.m.after_turn(self, lambda: (self.stop("session flagged"), self.start()))
+
     def tick(self) -> None:
         """Called every few seconds: idle stop and the daily restart."""
         if not self.running or self.busy:
@@ -625,6 +645,16 @@ class Assistant:
 
 
 PROBE_HEADING = "## Context Usage"
+
+FLAGGED_NOTICE = ("這個對話被 Claude 的安全機制標記了，之後每則訊息都會被擋，已自動換成新的對話。"
+                  "之前的對話脈絡不見了（記憶還在），剛才那則沒有重送：請換個說法再問一次，"
+                  "資安問題講清楚是要防護自己的主機會比較順。")
+
+
+def is_flagged_session(result) -> bool:
+    """`API Error: Opus 5.5's safeguards flagged this session (…)`: the
+    session, not just the message, is refused from here on."""
+    return "safeguards flagged this session" in str(result or "").lower()
 
 
 def is_probe_output(msg: dict) -> bool:

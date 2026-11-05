@@ -235,3 +235,31 @@ def test_a_turn_cut_short_is_picked_up_after_a_restart(manager):
     a.start()
     time.sleep(0.5)
     assert sum("打斷了你上一輪" in t for r, t in roles(a) if r == "assistant") == 1
+
+
+def test_a_flagged_session_is_replaced(manager, broker, tmp_path):
+    """Once the API's safeguards flag a session every later turn of it fails
+    (the daily housekeeping too): the assistant moves to a new session, says
+    so in MyGhost and TG, and does not send the flagged message again."""
+    notices = []
+
+    class Listener:
+        def on_notice(self, project, text):
+            notices.append(text)
+    broker.listeners.append(Listener())
+    a = manager.get("fq")
+    a.start()
+    old = a.meta["session_id"]
+    a.send("查漏洞FLAG", "tg")
+    wait_for(lambda: a.meta["session_id"] != old)
+    assert a.meta["flagged_sessions"][-1]["session_id"] == old
+    wait_for(lambda: any(r == "notice" and "安全機制" in t for r, t in roles(a)))
+    assert any("安全機制" in t for t in notices)
+    log = tmp_path / "argv.log"
+    wait_for(lambda: log.exists() and len(log.read_text().splitlines()) == 2)
+    argv = [json.loads(l) for l in log.read_text().splitlines()]
+    new = a.meta["session_id"]
+    assert "--session-id" in argv[1] and new in argv[1] and old not in argv[1]
+    a.send("你好", "tg")
+    wait_for(lambda: any(r == "assistant" and t.endswith("你好") for r, t in roles(a)))
+    assert sum(1 for r, t in roles(a) if r == "user" and "FLAG" in t) == 1

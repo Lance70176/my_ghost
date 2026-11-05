@@ -64,6 +64,11 @@ for line in sys.stdin:
     elif text == "/compact":
         out({"type": "system", "subtype": "compact_boundary", "compact_metadata": {"trigger": "manual"}})
         result()
+    elif text.endswith("FLAG"):  # the API's safeguards refuse the session
+        err = ("API Error: Opus 5.5's safeguards flagged this session "
+               "(https://www.anthropic.com/legal/aup). Details: [cyber]")
+        out({"type": "assistant", "message": {"content": [{"type": "text", "text": err}]}})
+        result(err, is_error=True)
     elif text.endswith("SLOW"):
         # Wait for an interrupt (or give up after 5 s).
         r, _, _ = select.select([sys.stdin], [], [], 5)
