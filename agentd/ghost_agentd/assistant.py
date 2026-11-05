@@ -463,6 +463,14 @@ class Assistant:
             line = line.strip()
             if line and "Permission allow rule" not in line:
                 log(f"assistant {self.project.name} stderr: {line[:300]}")
+            if "No conversation found with session ID" in line:
+                # Claude Code writes the conversation at its first message: a
+                # session started (a new one, a flagged one replaced) and
+                # restarted before anyone spoke has nothing to resume. The
+                # restart after this exit opens it new, under the same id.
+                with self.lock:
+                    self.meta["started_once"] = False
+                    self._save_meta()
 
     def _read(self, proc: subprocess.Popen) -> None:
         for line in proc.stdout:

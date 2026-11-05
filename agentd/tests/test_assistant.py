@@ -237,6 +237,25 @@ def test_a_turn_cut_short_is_picked_up_after_a_restart(manager):
     assert sum("打斷了你上一輪" in t for r, t in roles(a) if r == "assistant") == 1
 
 
+def test_a_session_nobody_spoke_in_is_opened_new_after_a_restart(manager, tmp_path, monkeypatch):
+    """`--resume` of a session without a first message fails; that used to
+    crash the assistant three times in a row and leave it stopped."""
+    monkeypatch.setenv("FAKE_NO_CONVERSATION", "1")
+    a = manager.get("fq")
+    a.start()
+    sid = a.meta["session_id"]
+    a.stop()
+    a.start()  # --resume: no conversation yet
+    log = tmp_path / "argv.log"
+    wait_for(lambda: log.exists() and len(log.read_text().splitlines()) == 3, timeout=12)
+    argv = [json.loads(l) for l in log.read_text().splitlines()]
+    assert "--resume" in argv[1]
+    assert "--session-id" in argv[2] and sid in argv[2]
+    wait_for(lambda: a.running)
+    a.send("你好", "myghost")
+    wait_for(lambda: ("assistant", "回覆：你好") in roles(a))
+
+
 def test_a_flagged_session_is_replaced(manager, broker, tmp_path):
     """Once the API's safeguards flag a session every later turn of it fails
     (the daily housekeeping too): the assistant moves to a new session, says

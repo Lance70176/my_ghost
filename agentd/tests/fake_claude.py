@@ -21,6 +21,12 @@ for flag in ("--session-id", "--resume"):
         sid = sys.argv[sys.argv.index(flag) + 1]
 
 
+if "--resume" in sys.argv and os.environ.get("FAKE_NO_CONVERSATION"):
+    # What Claude Code says resuming a session nobody has spoken in yet.
+    sys.stderr.write(f"No conversation found with session ID: {sid}\n")
+    sys.exit(1)
+
+
 def out(obj):
     obj.setdefault("session_id", sid)
     sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
